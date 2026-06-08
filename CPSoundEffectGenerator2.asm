@@ -170,19 +170,19 @@ playmusicf:
   getnextnote:
   ; READ SOUND FOR CHANNEL A
   ld a,(hl)
-  cp 2                   ; NO NOTES TO PLAY ON THIS BEAT
-  jr z,skipnosoundchannelc2
-  cp 3                   ; SET HALF BEAT - DOUBLES MUSIC INTERRUPT SPEED
-  jr z,sethalfbeat
-  cp 4
-  jr z,unsethalfbeat
-  cp 1                   ; LOOP
-  jr z,loopmusic
   or a
   jr z,skipnosoundchannela
-  
+  dec a;cp 1                   ; LOOP
+  jr z,loopmusic
+  dec a;cp 2                   ; NO NOTES TO PLAY ON THIS BEAT
+  jr z,skipnosoundchannelc2
+  dec a;cp 3                   ; SET HALF BEAT - DOUBLES MUSIC INTERRUPT SPEED
+  jr z,sethalfbeat
+  dec a;cp 4
+  jr z,unsethalfbeat
+
   ; LOAD TONE INTO SOUND EFFECT
-  ld c,a
+  ld c,(hl)
   inc hl
   ld b,(hl)
   ld (soundeffect_a_tone),bc
@@ -209,11 +209,11 @@ playmusicf:
   ld c,a
   inc hl
   ld b,(hl)
-  ld (soundeffect_a_tone),bc
+  ld (soundeffect_b_tone),bc
   
   ; LOAD SOUND INTO INTERRUPT
   push hl
-  ld hl,instrument_a
+  ld hl,instrument_b
   ld de,soundbufferb
   call ldir14
   pop hl
@@ -233,11 +233,11 @@ playmusicf:
   ld c,a
   inc hl
   ld b,(hl)
-  ld (soundeffect_a_tone),bc
+  ld (soundeffect_c_tone),bc
   
   ; LOAD SOUND INTO INTERRUPT
   push hl
-  ld hl,instrument_a
+  ld hl,instrument_c
   ld de,soundbufferc
   call ldir14
   pop hl
@@ -321,6 +321,42 @@ instrument_a:
   defb 0         ; VOLUME STEP COUNT
   defb 0         ; TONE STEP UP OR DOWN
   soundeffect_a_tone:
+  defb %11111111 ; TONE - LOWER 8 BITS 
+  defb %00000000 ; TONE - UPPER 4 BITS
+  defb %00000000 ; NOISE %---NNNNN 
+  defb %00001111 ; VOLUME / ENVELOPE ---EVVVV
+  defb %00000000 ; REPEAT SOUND WHEN FINISHED
+  defb %00000000 ; TONE START COPY - LOWER 8 BITS
+  defb %00000000 ; TONE START COPY - UPPER 8 BITS
+  defb %00000000 ; VOLUME COPY
+  
+; PIANO
+instrument_b: 
+  defb %00000101 ; SET UP SOUND, WE HAVE FADE
+  defb 0         ; TIMER
+  defb 0         ; CURRENT TIME
+  defb 3         ; VOLUME STEP FADE
+  defb 0         ; VOLUME STEP COUNT
+  defb 0         ; TONE STEP UP OR DOWN
+  soundeffect_b_tone:
+  defb %11111111 ; TONE - LOWER 8 BITS 
+  defb %00000000 ; TONE - UPPER 4 BITS
+  defb %00000000 ; NOISE %---NNNNN 
+  defb %00001111 ; VOLUME / ENVELOPE ---EVVVV
+  defb %00000000 ; REPEAT SOUND WHEN FINISHED
+  defb %00000000 ; TONE START COPY - LOWER 8 BITS
+  defb %00000000 ; TONE START COPY - UPPER 8 BITS
+  defb %00000000 ; VOLUME COPY
+  
+; PIANO
+instrument_c: 
+  defb %00000101 ; SET UP SOUND, WE HAVE FADE
+  defb 0         ; TIMER
+  defb 0         ; CURRENT TIME
+  defb 3         ; VOLUME STEP FADE
+  defb 0         ; VOLUME STEP COUNT
+  defb 0         ; TONE STEP UP OR DOWN
+  soundeffect_c_tone:
   defb %11111111 ; TONE - LOWER 8 BITS 
   defb %00000000 ; TONE - UPPER 4 BITS
   defb %00000000 ; NOISE %---NNNNN 
@@ -1580,10 +1616,10 @@ RegWrite:
   ld bc,&F6C0	 ;Select REG
   out (c),c	
 
-  ld bc,&f600    ;Inactive
+  ld c,&00    ;Inactive
   out (c),c
 
-  ld bc,&F680	 ;Write VALUE
+  ld c,&80	 ;Write VALUE
   out (c),c	
   pop bc
 
