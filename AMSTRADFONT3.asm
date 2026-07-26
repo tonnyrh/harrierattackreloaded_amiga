@@ -1585,7 +1585,7 @@ db %00000001,%00000100
 
 endif
 
-read "CPSoundEffectGenerator2.asm"
+include "CPSoundEffectGenerator2.asm"
 
 ifdef HARRIERATTACK
 

@@ -33,7 +33,7 @@
 
 ifndef ISCART
   ; TEST OUR OWN ROUTINES IN THE MAIN PROGRAM
-  read "AMSTRADFONT3.asm"
+  include "AMSTRADFONT3.asm"
 endif
 
   cartbank_addr       equ &C100

@@ -1,0 +1,17 @@
+.tools/
+.Amstrad-snapshot/
+.claude/
+.vscode/
+**/__pycache__/
+*.py[cod]
+compile/*.bin
+compile/*.sym
+compile/build/
+amiga/obj/
+amiga/out/
+amiga/*.map
+amiga/*.s
+dist/
+*.adf
+*.hdf
+*.uae
