@@ -3185,3 +3185,38 @@ Built a new LOGGEN cartridge variant specifically to measure real R behaviour in
 **Independent second sample confirms the calibration**: a second, separate play session (`Snap7.sna`, 250 records - the log filled to its full capacity that run, vs. 249/250 the first time) reproduced the same pattern independently: every path again clustered without meaningful separation (means roughly 48-79 across all 10 paths, same shape as the first sample), and height stayed correctly within the skill-1 bounds (11-14) the entire session. Combined across both independent samples (498 real logged columns total): grand mean R-delta = 64.3, median 60 - within noise of the 63 already calibrated into `amiga/main.c`, so no further adjustment made. This is exactly the kind of cross-run agreement that makes the "no per-path difference, one shared constant is enough" conclusion trustworthy rather than a one-sample fluke.
 
 Verified: clean rebuild (Amiga side, no errors/warnings beyond the pre-existing benign LTO ones), headless autoplay pass with no crash/hang. `amiga/main.c`'s `CPC_R_COST_DEFAULT`/`_FLAT`/`_HILL`/`_TARGET`/`_TANK_REAR` all read 63, matching the measured value from both samples - Amiga code and documented findings are in sync as of this sprint.
+
+## Sprint 14.102 - Sea/Flak R Calibration, Skill-Scaled Ammo Fix
+
+An independent review of Sprint 14.101 (Norwegian "Lederboks" review, same style as the corrective reviews in Sprint 14.100) agreed the land calibration (63) was now well-validated, but flagged a real remaining problem: `CPC_R_COST_DEFAULT` was given the same name/shape as the measured land constants, which makes it *look* equally validated when it was actually still a pure guess - the two LOGGEN samples only ever instrumented the land dispatch. Recommended concretely: instrument R at flak's `ld a,r`, measure sea's entry/exit cost, instrument town's building-selection `ld a,r`, and only introduce distinct calibrated values where measurement shows a real difference - not before.
+
+**Immediate documentation fix**: reworded the `CPC_R_COST_DEFAULT` comment and the flak-tile-choice/town-block-choice comments in `amiga/main.c` to explicitly say UNMEASURED/assumed, rather than letting the shared naming convention imply otherwise.
+
+**Extended the LOGGEN cartridge to cover sea, flak and town** (not just land): the record format gained a `recordType` byte (0=land, 1=sea, 2=flak, 3=town) so all four interleave chronologically in one shared buffer as a session naturally passes through each stage, using the same `rEntry`/`rExit` capture pattern already proven for land. Instrumented `drawseatiles` (single `ld a,r`, no branching - the cleanest possible measurement), `launchflakattack` (entry vs. its own tile-choice `ld a,r`, only logged when flak actually draws), and `buildportstanley` (entry vs. the building-selection `ld a,r`, tagged with the chosen blockId 0-7).
+
+**Results** (`Snap8.sna`, one session, log filled to 250 records before town was ever reached - sea+land+flak crowd out town in a single sitting given the shared buffer, so town still needs a dedicated follow-up run):
+- **Sea**: n=100, essentially deterministic - 99/100 samples exactly 7, one outlier at 27 (almost certainly an interrupt landing mid-capture, not a second code path; `drawseatiles` has no branching to produce one). This is a genuinely calibrated value, not an average across a noisy spread like land's.
+- **Flak**: n=30, similarly tight - 29/30 exactly 55 M1 fetches from `launchflakattack`'s entry to its tile-choice read, 1 outlier at 91.
+- **Land** (same session, cross-check against Snap6/7): consistent with the prior two samples, no new surprises.
+- **Town**: 0 records - buffer filled before reaching it. Needs its own dedicated run (e.g. a debug stage-skip, or simply a much longer/more patient session) before `CPC_R_COST_DEFAULT`'s town half can be replaced with a real measurement.
+
+**Applied to `amiga/main.c`**:
+- New `CPC_R_COST_SEA` (7, measured) - `resetCpcRandomSequence()`'s per-column loop now checks `terrainKindForCloudColumn(column) == HAR_TERRAIN_SEA` and uses this instead of `CPC_R_COST_DEFAULT` for sea columns specifically. `CPC_R_COST_DEFAULT` now covers only town, and its comment is explicit that it's still unmeasured.
+- Flak's tile-choice (`trySpawnFlak()`) now applies the measured `+55` offset before taking bit 0 (`(rState + 55) & 1`), rather than reading the column-start R value directly - since 55 is odd this is a real behavioural correction (flips which tile parity comes out), not just a comment update. Still an approximation - real CPC calls `launchflakattack` from a different point in the per-frame sequence than column generation, so "entry R lines up with column-start R" isn't guaranteed - but it's now a measurement-informed correction instead of an unexamined reuse.
+- Town's block-choice is unchanged (still reads raw column-start R) pending its own measurement.
+
+**Separately, checked which other menu-selectable skill parameters CPC actually scales** (prompted by a question about whether the R-cost calibration or anything else had been verified across skill levels - it hadn't; all four LOGGEN samples were captured at `leveldifficulty=1`, the compiled-in default, since `leveldifficulty` only changes via a landing/relaunch progression loop the Amiga port doesn't implement). Traced every `leveldifficulty` read in the CPC source:
+
+| Parameter | CPC formula | Amiga status |
+|---|---|---|
+| Flak damage budget | `25 - 2*skill` | Already correct (`flakDamageThresholdForSkill`, Sprint 14.96) |
+| Land max height (hill ceiling) | `12 - skill` | Already correct (`cpcLandMinimumRow`, Sprint 14.95) |
+| Starting/replenished ammo | `bombs=skill+3`, `rockets=bombs/2` | **Was hardcoded 12 rockets/6 bombs at every skill level - genuinely never wired up. Fixed this sprint.** |
+| Enemy plane spawn gating | player altitude row `< 11-skill` | Not implemented (fixed world-column trigger table instead) - already an explicit Sprint 14.91 scope decision, not a new gap |
+| Land section length before town | `300 + skill*256` | Not implemented (fixed-length route table) - already documented as deliberately deferred (Sprint 14.97) |
+| `leveldifficulty` auto-increments each successful landing (capped at 5) | asm:3040-3046 | Not implemented (no landing/relaunch loop yet) - already documented as deferred |
+| Border-flash delay timing (accel/decel) | scales with skill | CPC-hardware border-color effect - no Amiga equivalent exists to compare against |
+
+Only the ammo line was a genuine, previously-unnoticed gap. Fixed with a new `ammoForSkill(skillLevel, &bombs, &rockets)` matching the exact CPC formula (`bombs=skill+3`, `rockets=bombs/2` integer division), wired into both `startGameSession()` (game start, mirroring how `lives`/`cpcLandSkillLevel` are already set post-`initGameState()` for the same "must reflect the just-picked skill, not a stale default" reason) and `replenishPlayerFromFrigate()` (landing replenish, previously a flat 12/6 there too).
+
+Verified: clean rebuild, headless autoplay pass with no crash/hang.

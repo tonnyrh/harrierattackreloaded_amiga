@@ -1023,6 +1023,7 @@ static void resetDestroyedTargets(void);
 static void resetRuntimeFlak(void);
 static void resetTargetLock(void);
 static void resetCpcRandomSequence(void);
+static void ammoForSkill(UBYTE skillLevel, UBYTE* bombs, UBYTE* rockets);
 static void resetDestroyedShipColumns(void);
 static void resetLandCraters(void);
 static void resetCityFade(GameState* game);
@@ -4780,7 +4781,22 @@ static void resetCpcTownBlockTable(void);
  * See AMIGA_PORT_PLAN.md Sprint 14.101 for the full writeup. */
 static UBYTE cpcRStateByColumn[GAME_LEVEL_WIDTH_TILES];
 #define CPC_R_MASK 0x7f
-#define CPC_R_COST_DEFAULT 63  /* outside land (sea/town) - unchanged flat rate */
+/* Sprint 14.102: sea got its own LOGGEN instrumentation (drawseatiles'
+ * single ld a,r, no branching) alongside land's. Measured extremely tight
+ * across 100 real sea columns from one session: 99/100 exactly 7, one
+ * outlier at 27 (almost certainly an interrupt landing between the rEntry/
+ * rExit capture, not a real second code path - drawseatiles has none).
+ * CPC_R_COST_SEA is therefore a genuinely calibrated value, unlike
+ * CPC_R_COST_DEFAULT below. CPC_R_COST_DEFAULT still only covers town,
+ * which the same session's log buffer filled up (250 records shared across
+ * land/sea/flak/town) before ever reaching - still an unverified
+ * assumption, carried over unchanged from before any calibration work.
+ * Do not treat CPC_R_COST_DEFAULT as calibrated until town gets its own
+ * dedicated LOGGEN run (its instrumentation already exists in
+ * HarrierAttackSourceNew2_alt_CRTC_CART16.asm - buildportstanley - it just
+ * hasn't been reached by a session yet without the log filling up first). */
+#define CPC_R_COST_SEA 7        /* measured (asm:drawseatiles, n=100, mean 7.2) */
+#define CPC_R_COST_DEFAULT 63  /* town only now - UNMEASURED, assumed */
 #define CPC_R_COST_FLAT 63     /* land: flat, or a blocked hill/target degenerating to flat */
 #define CPC_R_COST_HILL 63     /* land: hill up/down actually stepping */
 #define CPC_R_COST_TARGET 63   /* land: successful target insertion */
@@ -4929,7 +4945,8 @@ static void resetCpcRandomSequence(void) {
 		 * unconditionally, every tick regardless of sea/land/town stage. */
 		state = (UWORD)(state * 1509U + 0x0029U);
 		UBYTE l8859 = (UBYTE)(state >> 8);
-		UBYTE rCost = CPC_R_COST_DEFAULT;
+		UBYTE rCost = (terrainKindForCloudColumn((LONG)column) == HAR_TERRAIN_SEA)
+			? CPC_R_COST_SEA : CPC_R_COST_DEFAULT;
 
 		LONG landLocalColumn = (LONG)column - CPC_LAND_PROCEDURAL_WORLD_START;
 		if (landLocalColumn >= 0 && landLocalColumn < CPC_LAND_PROCEDURAL_LENGTH) {
@@ -5166,7 +5183,15 @@ static void generateCpcTownBlockTable(void) {
 	/* Town segment starts at column 411 in the current route. The R state
 	 * for each town column is looked up by absolute world column, matching
 	 * how CPC's R would have advanced by the time the town section's column
-	 * generation runs. */
+	 * generation runs. Bounded approximation, not yet measured: real CPC
+	 * only picks a new building once the previous spriteblock has finished
+	 * drawing, so the real R value at each block-choice point depends on
+	 * how much code the previous block's own drawing cost - a per-world-
+	 * column lookup like this can't capture that block-to-block dependency.
+	 * This still gives a varied, session-deterministic town layout; the
+	 * exact block sequence is an approximation until town's own ld a,r
+	 * point gets its own LOGGEN instrumentation (see AMIGA_PORT_PLAN.md
+	 * Sprint 14.101's "not yet calibrated" list). */
 	const LONG townWorldStart = 411;
 
 	UWORD i = CPC_TOWN_PROCEDURAL_START_MARGIN;
@@ -5751,13 +5776,17 @@ static UBYTE replenishPlayerFromFrigate(GameState* game) {
 		game->fuel = 999;
 		changed = 1;
 	}
-	if (game->rockets != 12) {
-		game->rockets = 12;
-		changed = 1;
-	}
-	if (game->bombs != 6) {
-		game->bombs = 6;
-		changed = 1;
+	{
+		UBYTE fullBombs, fullRockets;
+		ammoForSkill(game->skillLevel, &fullBombs, &fullRockets);
+		if (game->rockets != fullRockets) {
+			game->rockets = fullRockets;
+			changed = 1;
+		}
+		if (game->bombs != fullBombs) {
+			game->bombs = fullBombs;
+			changed = 1;
+		}
 	}
 	if (game->armour != 100 || game->flakDamageCount != 0) {
 		game->armour = 100;
@@ -6934,9 +6963,24 @@ static void trySpawnFlak(GameState* game, UBYTE** worldBuffers) {
 	if (!objectCellForWorldColumnTile((LONG)checkColumn, flakRow, &existingCell) || existingCell.id != HAR_OBJ_SKY)
 		return;
 
-	/* Flak sprite: 57 or 58 based on R bit 0 (asm:6082-6087). */
+	/* Flak sprite: 57 or 58 based on R bit 0 (asm:6082-6087). Sprint 14.102:
+	 * launchflakattack got its own LOGGEN instrumentation (R at function
+	 * entry vs. R at this exact ld a,r). Measured tightly across 30 real
+	 * flak spawns in one session: 29/30 exactly 55 M1 fetches (1 outlier at
+	 * 91, almost certainly an interrupt during capture). Real CPC reads R
+	 * here only after the gate/threshold checks above have already run, not
+	 * at this column's generation time - applying that measured +55 offset
+	 * before taking bit 0 is a real correction, not just documentation:
+	 * since 55 is odd, it actually flips which tile parity comes out
+	 * compared to using the raw column-start R directly. This is still an
+	 * approximation (it assumes launchflakattack's own entry R lines up
+	 * with this column's start R, which real CPC doesn't guarantee - they're
+	 * called from different points in the per-frame sequence) but it's a
+	 * measurement-informed correction rather than an unexamined reuse. Only
+	 * affects which of the two near-identical flak tiles gets drawn - not
+	 * the spawn threshold, row, or sky-cell gating above. */
 	UBYTE rState = cpcRStateForWorldColumn((LONG)checkColumn);
-	UBYTE tile = (UBYTE)((rState & 1) ? 58 : 57);
+	UBYTE tile = (UBYTE)(((rState + 55) & 1) ? 58 : 57);
 	if (addRuntimeFlak((LONG)checkColumn, flakRow, tile)) {
 		dirtyRedrawWorldTile(worldBuffers, (LONG)checkColumn, flakRow, tile);
 		playSfx(SFX_FLAK_POP);
@@ -7566,6 +7610,21 @@ static UBYTE flakDamageThresholdForSkill(UBYTE skillLevel) {
 	return threshold < 5 ? 5 : (UBYTE)threshold;
 }
 
+/* Found while checking which menu-selectable difficulty parameters the CPC
+ * actually scales (asm:2993-3013 replenishmissilesfuel, called at game start
+ * and again on every successful frigate landing): numberofbombs =
+ * skillLevel+3, numberofrockets = numberofbombs/2 (srl, rounds down) - skill
+ * 1 gives 4 bombs/2 rockets, skill 5 gives 8 bombs/4 rockets. Unlike
+ * flakDamageThresholdForSkill/cpcLandMinimumRow above (both already wired to
+ * skillLevel correctly), ammo was still a flat 12 rockets/6 bombs regardless
+ * of skill at both game start and frigate replenish - never connected to
+ * skillLevel at all. */
+static void ammoForSkill(UBYTE skillLevel, UBYTE* bombs, UBYTE* rockets) {
+	UBYTE totalBombs = (UBYTE)(skillLevel + 3);
+	*bombs = totalBombs;
+	*rockets = (UBYTE)(totalBombs / 2);
+}
+
 static void applyPlayerFlakDamage(GameState* game) {
 	if (game->gameOver || game->respawnSafeTimer > 0 || game->crashTimer)
 		return;
@@ -7880,6 +7939,10 @@ static void startGameSession(GameState* game,
 	 * AFTER this function returned, so a "Lives: 1" session's first HUD draw
 	 * still baked in initGameState()'s PLAYER_START_LIVES(3) default. */
 	game->lives = livesSetting;
+	/* Same reasoning as lives above - initGameState() set a flat 12/6
+	 * regardless of skill; ammoForSkill() gives the real CPC's
+	 * skill-scaled starting ammo instead. */
+	ammoForSkill(skillLevel, &game->bombs, &game->rockets);
 	*activeWorldBuffer = 0;
 	initRingWorldBuffer(worldBuffers[0], 0);
 
