@@ -4762,19 +4762,22 @@ static void resetCpcTownBlockTable(void);
  * cartridge variant that tags every l9134 dispatch with which path it took
  * and captures R immediately before/after that path, so rExit-rEntry mod
  * 128 is the real M1-fetch count for that specific path, no manual
- * instruction counting needed). Measured mean R-delta per path (249 real
- * land columns, one play session): MODE0_FLAT~65, HILL_DOWN_OK~66,
- * HILL_UP_OK~68, TARGET_RADAR/LAUNCHER/GUN/TANK combined~63,
- * TARGET_GATE_CLOSED~69 - i.e. no statistically meaningful difference
- * between paths at this sample size, because the dominant source of
- * variance turned out to be l914e's own fill-loop cost (which scales with
- * 15-height, the same for every path that reaches it), not the deciding
- * code itself. Per the project's own direction here: the goal is
- * reproducing the generating algorithm's statistical behaviour close
- * enough (roughly 95%+), not bit-exact landscape replay, so this collapses
- * to one calibrated constant instead of preserving the earlier guessed
+ * instruction counting needed). Measured across two independent play
+ * sessions (498 real logged land columns total, ~249-250 each): every path
+ * clusters in roughly the same range (individual-session means ~48-79,
+ * combined grand mean 64.3, median 60) with no statistically meaningful
+ * separation between paths in either sample, because the dominant source
+ * of variance turned out to be l914e's own fill-loop cost (which scales
+ * with 15-height, the same for every path that reaches it), not the
+ * deciding code itself - the second session reproduced the first's shape
+ * independently, so this isn't a one-sample fluke. Per the project's own
+ * direction here: the goal is reproducing the generating algorithm's
+ * statistical behaviour close enough (roughly 95%+), not bit-exact
+ * landscape replay, so this collapses to one calibrated constant (63,
+ * within noise of both samples) instead of preserving the earlier guessed
  * per-path split the data didn't actually support. Revisit only if a much
- * larger sample later shows a real per-path difference worth modelling. */
+ * larger sample later shows a real per-path difference worth modelling.
+ * See AMIGA_PORT_PLAN.md Sprint 14.101 for the full writeup. */
 static UBYTE cpcRStateByColumn[GAME_LEVEL_WIDTH_TILES];
 #define CPC_R_MASK 0x7f
 #define CPC_R_COST_DEFAULT 63  /* outside land (sea/town) - unchanged flat rate */
