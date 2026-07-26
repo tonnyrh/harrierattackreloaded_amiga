@@ -19,7 +19,7 @@ python .\tools\wav_to_amiga_sfx.py <input.wav> amiga\assets\sfx\<name>.raw --rat
 Prompts used for Sprint 10.2:
 
 - `menu.raw`: very short soft retro arcade menu click, clean, no music, no voice
-- `fire.raw`: short retro arcade laser cannon shot, punchy, no music, no voice, clean game sound
+- `fire.raw`: single close rocket launch, short dry ignition pop followed by a smooth airy exhaust hiss fading out, no explosion, laser, music or voice
 - `bomb.raw`: short falling bomb whistle then soft thump, retro arcade game sound, no music, no voice
 - `impact.raw`: short small explosion blast, crunchy retro arcade impact, no music, no voice
 - `hit.raw`: short metallic hit alarm zap, player damage, retro arcade game sound, no music, no voice

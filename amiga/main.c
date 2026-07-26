@@ -15,7 +15,7 @@
 #include <string.h>
 #include "assets/harrier_menu_text.h"
 
-#define HAR_BUILD_LABEL "SPRINT 14.80.3"
+#define HAR_BUILD_LABEL "SPRINT 14.96.0"
 
 #define SCREEN_WIDTH 320
 /* 256 lines (not 200) - PAL comfortably supports this (320x256 is a common,
@@ -203,6 +203,30 @@
 #define BOMB_IMPACT_SFX_GRACE_FRAMES 8
 #define IMPACT_FRAMES 12
 #define SEA_SURFACE_Y 121
+
+/* Sprint 14.96: descending powerups (CPC's wingmanpowerup system).
+ * Real CPC spawns these from launchenemyplane at tile 38/h=0..3, lets them
+ * scroll left with the world and fall one tile every ~6 tile-scrolls, and
+ * awards health / rockets / bombs / wingman on contact. The Amiga port
+ * renders this as a separate 16x16 hardware sprite on sprite channel 6
+ * (the first free slot - 0/1=player attached, 2=bomb, 3=enemy plane,
+ * 4=enemy missile, 5=rocket, 6=powerup, 7=unused) rather than baking it
+ * into the scrolling world ring buffer, since it's a single short-lived
+ * dynamic object that would otherwise force dirty redraws every frame.
+ * MAX_ROCKETS/MAX_BOMBS match the existing startGameSession defaults
+ * (12 / 6) - kept as named constants now that powerups refill to them. */
+#define POWERUP_SPRITE_WIDTH 16
+#define POWERUP_SPRITE_HEIGHT 16
+#define POWERUP_SPRITE_WORDS (2 + POWERUP_SPRITE_HEIGHT * 2 + 2)
+#define POWERUP_FALL_DELAY_FRAMES 12
+#define POWERUP_SPAWN_COLUMN 38
+#define POWERUP_SPAWN_MAX_ROW 3
+#define POWERUP_DESPAWN_LEFT_X (-16)
+#define POWERUP_ALTITUDE_FLOOR_BASE 11
+#define MAX_ROCKETS 12
+#define MAX_BOMBS 6
+#define POWERUP_SPAWN_ROLL_MASK 0x0f
+#define POWERUP_PICKUP_SCORE_VALUE 0
 
 #define ENEMY_SPRITE_WIDTH 16
 #define ENEMY_SPRITE_HEIGHT 8
@@ -419,6 +443,16 @@ static UWORD currentCloudTopRgb = GAME_SKY_TOP_CLOUD_RGB;
 static UWORD currentSeaLowRgb = GAME_SKY_LOW_SEA_RGB;
 static UWORD currentPanelSeaRgb = GAME_HUD_PANEL_SEA_RGB;
 
+/* Sprint 14.96: sprite 6's colour-register word inside the copper program
+ * - patched per frame to recolour the single shared powerup parachute
+ * sprite by type (CPC's wingmanpowerup does exactly this: same sprite,
+ * different palette entry per type). Captured at copper-build time exactly
+ * like activeCopperSkyTopColor above. Sprite 6/7 pair uses colour
+ * registers 28..31; register 28 is the transparent slot, so 29 is the
+ * sprite's "colour 1" - the one non-zero colour the parachute pixels use. */
+static UWORD* activeCopperPowerupColor = 0;
+static UWORD currentPowerupColorRgb = 0x0ff0;
+
 #define COPPER_TRACK_NONE 0
 #define COPPER_TRACK_SCROLL 1
 #define COPPER_TRACK_HUD 2
@@ -519,6 +553,24 @@ typedef struct WeaponState {
 	WORD dy;
 } WeaponState;
 
+/* Sprint 14.96: a single descending powerup. worldX is an absolute world
+ * pixel coordinate (so it scrolls left naturally as game->scrollX grows),
+ * y is a screen-space pixel coordinate (the powerup doesn't scroll
+ * vertically with the world - only falls under its own slow gravity).
+ * fallCounter accumulates frames until POWERUP_FALL_DELAY_FRAMES, then
+ * increments y by 1 - matches CPC's "inc h every ~6 tile-scrolls" but
+ * smoother (1px steps instead of 8px jumps). spawnId tracks position in
+ * the deterministic 1..6 type-rotation sequence (1=health, 2=rockets,
+ * 3=bombs, 4=rockets, 5=bombs, 6=skip-and-spawn-enemy-plane). */
+typedef struct {
+	UBYTE active;
+	UBYTE type;
+	LONG worldX;
+	WORD y;
+	UBYTE fallCounter;
+	UBYTE spawnId;
+} PowerupState;
+
 /* Mirrors CPC's single enemylandlocationlock. The lock is not replaced while
  * a player rocket is in flight, so a launched Maverick cannot change target. */
 typedef struct TargetLock {
@@ -565,6 +617,7 @@ typedef struct GameState {
 	UBYTE cityFadeTimer;
 	UWORD hitsCount;
 	TargetLock targetLock;
+	PowerupState powerup;
 } GameState;
 
 typedef struct ObjectCell {
@@ -866,6 +919,19 @@ enum HarObjectRowMode {
 	HAR_ROW_TERRAIN_RELATIVE = 1
 };
 
+/* Sprint 14.96: CPC's wingmanpowerupstatus values (0=none, 1=wingman,
+ * 2=health, 3=rockets, 4=bombs). Wingman type is reserved in the enum so
+ * the data structure is forward-compatible, but trySpawnPowerup() never
+ * emits it until a real wingman subsystem exists -POWERUP_WINGMAN pickups
+ * would currently have no effect, so we just don't spawn them. */
+enum PowerupType {
+	POWERUP_NONE = 0,
+	POWERUP_WINGMAN = 1,
+	POWERUP_HEALTH = 2,
+	POWERUP_ROCKETS = 3,
+	POWERUP_BOMBS = 4
+};
+
 #include "assets/level_route.h"
 #include "assets/cpc_promoted_assets.h"
 #include "assets/cpc_promoted_sprite_tiles.h"
@@ -946,6 +1012,7 @@ static void resetCpcRandomSequence(void);
 static void resetDestroyedShipColumns(void);
 static void resetLandCraters(void);
 static void resetCityFade(GameState* game);
+static void resetPowerup(GameState* game);
 static const LevelSegmentDef* levelSegmentForWorldColumn(LONG worldColumn);
 static UBYTE stageForWorldColumn(LONG worldColumn, const LevelSegmentDef* segment);
 static void dirtyRedrawWorldColumn(UBYTE** worldBuffers, LONG worldColumn);
@@ -990,6 +1057,7 @@ EMBED_CHIP sfxBombSample[] = { 0, 0 };
 EMBED_CHIP sfxImpactSample[] = { 0, 0 };
 EMBED_CHIP sfxHitSample[] = { 0, 0 };
 EMBED_CHIP sfxGameOverSample[] = { 0, 0 };
+EMBED_CHIP sfxFlakPopSample[] = { 0, 0 };
 EMBED_CHIP menuMusicMod[] = { 0, 0 };
 #else
 EMBED_CHIP sfxMenuSample[] = {
@@ -1010,6 +1078,17 @@ EMBED_CHIP sfxHitSample[] = {
 EMBED_CHIP sfxGameOverSample[] = {
 	#embed "assets/sfx/gameover.raw"
 };
+/* Sprint 14.95 Part 2 correction: CPC's doflaknoise() plays once at the
+ * instant flak is spawned (launchflakattack). This port previously
+ * replayed SFX_MENU (the menu-navigation blip) for that cue - audibly
+ * wrong and confusing during gameplay. Short percussive noise burst
+ * (decaying noise + low-freq body), generated to mimic the AY-3-8912's
+ * short flak burst. See tools/ generate-flak-pop step / the seed in
+ * scripts/. Channel 2 (shared with SFX_IMPACT - the two never coincide
+ * meaningfully, and impact preempts via playSfx's stopSfxChannel). */
+EMBED_CHIP sfxFlakPopSample[] = {
+	#embed "assets/sfx/flak_pop.raw"
+};
 /* Standard 4-channel/31-instrument ProTracker "M.K." MOD - see
  * assets/music/README.md for provenance (Thaxted/"I Vow to Thee, My
  * Country", the real CPC menu tune, re-arranged to 4 independent voices). */
@@ -1029,16 +1108,19 @@ enum {
 	SFX_IMPACT,
 	SFX_HIT,
 	SFX_GAME_OVER,
+	SFX_FLAK_POP,
 	SFX_COUNT
 };
 
 static const SfxSample sfxSamples[SFX_COUNT] = {
 	[SFX_MENU] = { sfxMenuSample, sizeof(sfxMenuSample), 322, 34, 3, 8 },
-	[SFX_FIRE] = { sfxFireSample, sizeof(sfxFireSample), 322, 48, 0, 18 },
+	/* ~700 ms: short ignition pop followed by the rocket exhaust hiss. */
+	[SFX_FIRE] = { sfxFireSample, sizeof(sfxFireSample), 322, 48, 0, 36 },
 	[SFX_BOMB] = { sfxBombSample, 768, 322, 44, 1, 6 },
 	[SFX_IMPACT] = { sfxImpactSample, 1536, 322, 58, 2, 7 },
 	[SFX_HIT] = { sfxHitSample, sizeof(sfxHitSample), 322, 50, 1, 18 },
 	[SFX_GAME_OVER] = { sfxGameOverSample, sizeof(sfxGameOverSample), 322, 46, 3, 12 },
+	[SFX_FLAK_POP] = { sfxFlakPopSample, sizeof(sfxFlakPopSample), 200, 60, 2, 8 },
 };
 
 static const UWORD menuPalette[32] = {
@@ -1189,6 +1271,8 @@ static UBYTE sfxRetriggerGuardFrames(UBYTE sfxId) {
 			return 30;
 		case SFX_GAME_OVER:
 			return 40;
+		case SFX_FLAK_POP:
+			return 10;
 		default:
 			return 6;
 	}
@@ -2340,7 +2424,7 @@ static __attribute__((always_inline)) inline USHORT* copSetPlanes(UBYTE bplPtrSt
  * combined 15-colour sprite), not an independent sprite - see
  * buildAttachedSpriteFromCpcPlusHalves(). The rocket moved to channel 5
  * (previously unused) to free channel 1 for the attach. */
-static USHORT* copSetSprites(USHORT* copListEnd, const UWORD* sprite0, const UWORD* playerAttach, const UWORD* sprite2, const UWORD* sprite3, const UWORD* sprite4, const UWORD* rocketSprite, const UWORD* nullSprite) {
+static USHORT* copSetSprites(USHORT* copListEnd, const UWORD* sprite0, const UWORD* playerAttach, const UWORD* sprite2, const UWORD* sprite3, const UWORD* sprite4, const UWORD* rocketSprite, const UWORD* powerupSprite, const UWORD* nullSprite) {
 	for (USHORT i = 0; i < 8; i++) {
 		const UWORD* sprite = nullSprite;
 		if (i == 0)
@@ -2355,6 +2439,8 @@ static USHORT* copSetSprites(USHORT* copListEnd, const UWORD* sprite0, const UWO
 			sprite = sprite4;
 		else if (i == 5)
 			sprite = rocketSprite;
+		else if (i == 6)
+			sprite = powerupSprite;
 		ULONG addr = (ULONG)sprite;
 		*copListEnd++ = offsetof(struct Custom, sprpt[0]) + i * sizeof(APTR);
 		*copListEnd++ = (UWORD)(addr >> 16);
@@ -2487,7 +2573,7 @@ static void setCopperFineScroll(UWORD bplcon1) {
 		*activeCopperBplcon1 = bplcon1;
 }
 
-static void buildDisplayCopperEx(USHORT* copper, const UBYTE* screen, const UWORD* palette, USHORT rowBytes, USHORT fetchWidth, UWORD bplcon1, UBYTE fetchExtraWordLeft, USHORT byteOffset, const UWORD* sprite0, const UWORD* playerAttach, const UWORD* sprite2, const UWORD* sprite3, const UWORD* sprite4, const UWORD* rocketSprite, const UWORD* nullSprite) {
+static void buildDisplayCopperEx(USHORT* copper, const UBYTE* screen, const UWORD* palette, USHORT rowBytes, USHORT fetchWidth, UWORD bplcon1, UBYTE fetchExtraWordLeft, USHORT byteOffset, const UWORD* sprite0, const UWORD* playerAttach, const UWORD* sprite2, const UWORD* sprite3, const UWORD* sprite4, const UWORD* rocketSprite, const UWORD* powerupSprite, const UWORD* nullSprite) {
 	USHORT* copPtr = copper;
 	const UBYTE* planes[SCREEN_PLANES];
 
@@ -2504,7 +2590,7 @@ static void buildDisplayCopperEx(USHORT* copper, const UBYTE* screen, const UWOR
 	for (int plane = 0; plane < SCREEN_PLANES; plane++)
 		planes[plane] = screen + byteOffset + rowBytes * plane;
 	copPtr = copSetPlanes(0, copPtr, planes, SCREEN_PLANES);
-	copPtr = copSetSprites(copPtr, sprite0, playerAttach, sprite2, sprite3, sprite4, rocketSprite, nullSprite);
+	copPtr = copSetSprites(copPtr, sprite0, playerAttach, sprite2, sprite3, sprite4, rocketSprite, powerupSprite, nullSprite);
 
 	for (int color = 0; color < 32; color++)
 		copPtr = copSetColor(copPtr, color, palette[color]);
@@ -2514,10 +2600,10 @@ static void buildDisplayCopperEx(USHORT* copper, const UBYTE* screen, const UWOR
 }
 
 static void buildDisplayCopper(USHORT* copper, const UBYTE* screen, const UWORD* palette, const UWORD* nullSprite) {
-	buildDisplayCopperEx(copper, screen, palette, SCREEN_ROW_BYTES, SCREEN_WIDTH, 0, 0, 0, nullSprite, nullSprite, nullSprite, nullSprite, nullSprite, nullSprite, nullSprite);
+	buildDisplayCopperEx(copper, screen, palette, SCREEN_ROW_BYTES, SCREEN_WIDTH, 0, 0, 0, nullSprite, nullSprite, nullSprite, nullSprite, nullSprite, nullSprite, nullSprite, nullSprite);
 }
 
-static void buildGameHudCopper(USHORT* copper, const UBYTE* world, const UBYTE* hud, const UWORD* palette, UWORD scrollDelay, USHORT byteOffset, const UWORD* playerSprite, const UWORD* playerAttachSprite, const UWORD* rocketSprite, const UWORD* bombSprite, const UWORD* enemySprite, const UWORD* enemyMissileSprite, const UWORD* nullSprite) {
+static void buildGameHudCopper(USHORT* copper, const UBYTE* world, const UBYTE* hud, const UWORD* palette, UWORD scrollDelay, USHORT byteOffset, const UWORD* playerSprite, const UWORD* playerAttachSprite, const UWORD* rocketSprite, const UWORD* bombSprite, const UWORD* enemySprite, const UWORD* enemyMissileSprite, const UWORD* powerupSprite, const UWORD* nullSprite) {
 	USHORT* copPtr = copper;
 	const UBYTE* planes[SCREEN_PLANES];
 
@@ -2550,10 +2636,15 @@ static void buildGameHudCopper(USHORT* copper, const UBYTE* world, const UBYTE* 
 		activeCopperPlaneHigh[plane] = 0;
 		activeCopperPlaneLow[plane] = 0;
 	}
-	copPtr = copSetSprites(copPtr, playerSprite, playerAttachSprite, bombSprite, enemySprite, enemyMissileSprite, rocketSprite, nullSprite);
+	copPtr = copSetSprites(copPtr, playerSprite, playerAttachSprite, bombSprite, enemySprite, enemyMissileSprite, rocketSprite, powerupSprite, nullSprite);
 
-	for (int color = 0; color < 32; color++)
+	for (int color = 0; color < 32; color++) {
+		/* Sprint 14.96: capture the colour-29 value-word pointer for
+		 * per-frame powerup-type recolouring (see activeCopperPowerupColor). */
+		if (color == 29)
+			activeCopperPowerupColor = (UWORD*)(copPtr + 1);
 		copPtr = copSetColor(copPtr, color, palette[color]);
+	}
 
 	copPtr = copSetGameSkyGradient(copPtr, palette);
 	/* This WAIT's horizontal position matters a lot: everything from here
@@ -3182,6 +3273,7 @@ static void initGameState(GameState* game) {
 	resetDestroyedShipColumns();
 	resetLandCraters();
 	resetCityFade(game);
+	resetPowerup(game);
 	game->scrollX = 0;
 	game->playerX = PLAYER_START_X;
 	game->playerY = PLAYER_START_Y;
@@ -4286,6 +4378,73 @@ static void buildEnemyMissileSprite(UWORD* sprite, WORD x, WORD y) {
 	buildSpriteFromGameTile(sprite, ENEMY_MISSILE_SPRITE_HEIGHT, x, y, 55, 4, gameColorToHostileSpriteColor);
 }
 
+/* Sprint 14.96: builds the 16x16 parachute powerup sprite. Shape is a
+ * hand-coded 16-row bitmap (canopy arcs over the top 8 rows, two suspension
+ * lines, and a 6x3 payload box at the bottom) - all non-zero pixels use
+ * colour index 1 (mapped to hardware colour register 29 for sprite pair
+ * 6/7), which the copper patches per frame based on powerup type, exactly
+ * matching CPC's "same sprite, different palette colour per type" approach.
+ * Each row is one 16-bit word (MSB = leftmost pixel). */
+static void buildPowerupSprite(UWORD* sprite, WORD x, WORD y, UBYTE type) {
+	(void)type;  /* type colouring happens via copper, not sprite data */
+	static const UWORD parachute[POWERUP_SPRITE_HEIGHT] = {
+		/* canopy: arc shape, widest in the middle */
+		0x07C0,  /*  .....####.....  */
+		0x0FE0,  /*  ....######....  */
+		0x1FF0,  /*  ...########...  */
+		0x3FF8,  /*  ..##########..  */
+		0x3FF8,  /*  ..##########..  */
+		0x1FF0,  /*  ...########...  */
+		0x0FE0,  /*  ....######....  */
+		0x07C0,  /*  .....####.....  */
+		/* suspension lines */
+		0x0180,  /*  ......##......  */
+		0x0180,  /*  ......##......  */
+		0x0180,  /*  ......##......  */
+		0x0180,  /*  ......##......  */
+		/* payload box */
+		0x07E0,  /*  .....#####....  */
+		0x0FF0,  /*  ....######...  */
+		0x0FF0,  /*  ....######...  */
+		0x07E0   /*  .....#####....  */
+	};
+	setHardwareSpritePosition(sprite, POWERUP_SPRITE_HEIGHT, x, y);
+	for (UWORD row = 0; row < POWERUP_SPRITE_HEIGHT; row++) {
+		sprite[2 + row * 2] = parachute[row];  /* plane 0 = colour bit 0 */
+		sprite[3 + row * 2] = 0;               /* plane 1 = colour bit 1 */
+	}
+	sprite[2 + POWERUP_SPRITE_HEIGHT * 2] = 0;
+	sprite[3 + POWERUP_SPRITE_HEIGHT * 2] = 0;
+}
+
+static void updatePowerupSprite(UWORD* sprite, const GameState* game) {
+	if (!game->powerup.active || game->gameOver) {
+		hideHardwareSprite(sprite);
+		if (activeCopperPowerupColor && currentPowerupColorRgb != 0x0000) {
+			currentPowerupColorRgb = 0x0000;
+			*activeCopperPowerupColor = 0x0000;
+		}
+		return;
+	}
+	/* CPC's per-type palette colours (GRB 12-bit):
+	 *   wingman  &0F00 (red)    health  &0FF0 (yellow)
+	 *   rockets  &000F (blue)   bombs   &00F0 (green) */
+	static const UWORD powerupTypeColor[5] = {
+		0x0000,  /* NONE (unused) */
+		0x0F00,  /* WINGMAN - red */
+		0x0FF0,  /* HEALTH - yellow */
+		0x000F,  /* ROCKETS - blue */
+		0x00F0   /* BOMBS - green */
+	};
+	UWORD typeColor = powerupTypeColor[game->powerup.type < 5 ? game->powerup.type : 0];
+	if (activeCopperPowerupColor && currentPowerupColorRgb != typeColor) {
+		currentPowerupColorRgb = typeColor;
+		*activeCopperPowerupColor = typeColor;
+	}
+	WORD screenX = (WORD)(game->powerup.worldX - (LONG)game->scrollX);
+	buildPowerupSprite(sprite, screenX, game->powerup.y, game->powerup.type);
+}
+
 static UBYTE cpcPlusPenToGameColor(UBYTE pen) {
 	switch (pen & 15) {
 		case 0:
@@ -5063,11 +5222,18 @@ static UBYTE markShipWreckSmokeAtColumnRow(LONG worldColumn, WORD tileY, UBYTE t
 	return 1;
 }
 
+/* Sprint 14.95 Part 7 correction: CPC's drawsmokesprite (asm:6259-6279) does
+ * `dec h` where H is the Y coord (getskytilemapid's comment at asm:4812
+ * confirms "H = Y COORD, L = X COORD") - so tile 51 goes ONE ROW ABOVE the
+ * struck cell, in the SAME column. This port previously placed it one column
+ * to the LEFT (worldColumn-1, same row), which detached the upper smoke from
+ * the lower smoke and could overwrite an unrelated neighbour cell. Verified
+ * against the CPC source directly. */
 static void addCpcHitSmokeAtColumnRow(LONG worldColumn, WORD tileY) {
-	ObjectCell leftCell;
+	ObjectCell aboveCell;
 	markShipWreckSmokeAtColumnRow(worldColumn, tileY, GAME_SHIP_WRECK_SMOKE_TILE_B);
-	if (objectCellForWorldColumnTile(worldColumn - 1, tileY, &leftCell) && leftCell.id == HAR_OBJ_SKY)
-		markShipWreckSmokeAtColumnRow(worldColumn - 1, tileY, GAME_SHIP_WRECK_SMOKE_TILE_A);
+	if (tileY > 0 && objectCellForWorldColumnTile(worldColumn, tileY - 1, &aboveCell) && aboveCell.id == HAR_OBJ_SKY)
+		markShipWreckSmokeAtColumnRow(worldColumn, tileY - 1, GAME_SHIP_WRECK_SMOKE_TILE_A);
 }
 
 /* CPC's bombhitenemyship (checkenemyhit) has no whole-ship health counter -
@@ -5884,9 +6050,9 @@ static void dirtyRedrawWorldTile(UBYTE** worldBuffers, LONG worldColumn, WORD ti
 }
 
 /* Menu review: addCpcHitSmokeAtColumnRow() marks smoke at the exact hit
- * cell always, plus the left-neighbour cell only if that one turned out to
+ * cell always, plus the cell ONE ROW ABOVE only if that one turned out to
  * be empty sky - callers redrawing "the hit column" via
- * dirtyRedrawWorldColumn() twice (once per column) to cover both cases were
+ * dirtyRedrawWorldColumn() twice (once per row) to cover both cases were
  * both doing far more work than needed AND redrawing the left column
  * unconditionally even on the common case where nothing there actually
  * changed. Looking the tile back up here and only drawing if something is
@@ -6195,7 +6361,7 @@ static UBYTE updateWeapons(GameState* game, UBYTE scrollPixels, UBYTE** worldBuf
 				updateHudValues(game);
 				addCpcHitSmokeAtColumnRow(rocketWorldColumn, rocketTileY);
 				dirtyRedrawWorldTileIfSmoke(worldBuffers, rocketWorldColumn, rocketTileY);
-				dirtyRedrawWorldTileIfSmoke(worldBuffers, rocketWorldColumn - 1, rocketTileY);
+				dirtyRedrawWorldTileIfSmoke(worldBuffers, rocketWorldColumn, rocketTileY - 1);
 			}
 			if (rocketCell.id == HAR_OBJ_FLAK || rocketCell.id == HAR_OBJ_SMOKE) {
 				/* Sprint 14.95 Part 2: real CPC shares one object ID between
@@ -6284,7 +6450,7 @@ static UBYTE updateWeapons(GameState* game, UBYTE scrollPixels, UBYTE** worldBuf
 				updateHudValues(game);
 				addCpcHitSmokeAtColumnRow(bombWorldColumn, bombTileY);
 				dirtyRedrawWorldTileIfSmoke(worldBuffers, bombWorldColumn, bombTileY);
-				dirtyRedrawWorldTileIfSmoke(worldBuffers, bombWorldColumn - 1, bombTileY);
+				dirtyRedrawWorldTileIfSmoke(worldBuffers, bombWorldColumn, bombTileY - 1);
 			}
 			if (bombCell.id == HAR_OBJ_FLAK || bombCell.id == HAR_OBJ_SMOKE) {
 				/* Sprint 14.95 Part 2: see the matching rocket branch above -
@@ -6384,6 +6550,24 @@ static void pruneRuntimeFlakBehindColumn(LONG cutoffColumn) {
 	}
 }
 
+static UBYTE removeRuntimeFlakAt(LONG worldColumn, WORD tileY) {
+	if (worldColumn < 0 || tileY < 0)
+		return 0;
+	for (UBYTE index = 0; index < runtimeFlakCount; index++) {
+		if (runtimeFlakColumns[index] != (UWORD)worldColumn ||
+			runtimeFlakRows[index] != (UBYTE)tileY)
+			continue;
+		/* Keep the compact runtime list by moving its final entry into the
+		 * consumed slot, matching pruneRuntimeFlakBehindColumn(). */
+		runtimeFlakCount--;
+		runtimeFlakColumns[index] = runtimeFlakColumns[runtimeFlakCount];
+		runtimeFlakRows[index] = runtimeFlakRows[runtimeFlakCount];
+		runtimeFlakTiles[index] = runtimeFlakTiles[runtimeFlakCount];
+		return 1;
+	}
+	return 0;
+}
+
 static UBYTE addRuntimeFlak(LONG worldColumn, WORD tileY, UBYTE tile) {
 	if (worldColumn < 0 || tileY < 0 || tileY >= GAME_OBJECT_MAP_HEIGHT_TILES)
 		return 0;
@@ -6428,6 +6612,10 @@ static void resetRuntimeFlak(void) {
 	runtimeFlakCount = 0;
 	runtimeFlakLastColumn = 0xffff;
 	flakCountdown = -1;
+}
+
+static void resetPowerup(GameState* game) {
+	memset(&game->powerup, 0, sizeof(PowerupState));
 }
 
 /* Sprint 14.95 Part 2: real CPC's launchflakattack (:6033-6095) runs
@@ -6515,8 +6703,10 @@ static void trySpawnFlak(GameState* game, UBYTE** worldBuffers) {
 		/* Real CPC plays doflaknoise() exactly once, at the instant flak is
 		 * created (launchflakattack, :6033-6095) - not every frame it merely
 		 * exists or gets looked at. Played after the redraw so "sound" and
-		 * "visibly appeared" happen together. */
-		playSfx(SFX_MENU);
+		 * "visibly appeared" happen together. Sprint 14.95 Part 2 correction:
+		 * was SFX_MENU (menu blip - wrong cue); now uses the dedicated
+		 * flak-pop sample matching CPC's doflaknoise(). */
+		playSfx(SFX_FLAK_POP);
 	}
 }
 
@@ -6649,9 +6839,207 @@ static void updateCityFade(GameState* game) {
 	applyCityFadeStep(game->cityFadeStep);
 }
 
-static UBYTE playerObjectMapCollision(const GameState* game) {
+/* Sprint 14.96: descending powerups. CPC's launchenemyplane routine runs
+ * a spawn roll on every right-edge column while in level phase 2..7 (after
+ * the opening sea, through land and town, before the pier/harbor) - on a
+ * 1/16 R-register pass it then either spawns an enemy plane, or spawns a
+ * powerup selected from a deterministic 1..6 sequence (1=health, 2=rockets,
+ * 3=bombs, 4=rockets, 5=bombs, 6=skip). Mirrors that here, using
+ * frameCounter's low bits in place of Z80's R (CPC's R is itself just
+ * instruction-timing dependent, not a true RNG, so a frame-count mask is a
+ * fair Amiga equivalent that doesn't lock spawning to the renderer's
+ * deterministic per-column RNG the way flak/terrain/cloud generation are).
+ * Player must also be flying high enough: CPC requires
+ * playerTileY < (11 - difficulty), i.e. above the terrain-difficulty floor
+ * - same floor as cpcLandMinimumRow(). No active enemy missile may be in
+ * flight (CPC reuses that missile's channel/slot for the spawn test). */
+static UBYTE stageAllowsPowerup(const GameState* game) {
+	LONG worldColumn = (LONG)((game->scrollX >> 3) + GAME_MAP_WIDTH);
+	const LevelSegmentDef* segment = levelSegmentForWorldColumn(worldColumn);
+	UBYTE stage = stageForWorldColumn(worldColumn, segment);
+	/* CPC: cp 2 / ret c ; cp 8 / ret nc  ->  stages 2..7 inclusive. */
+	return stage >= HAR_STAGE_ENEMY_SHIP_FIRED_MISSILE && stage <= HAR_STAGE_SECOND_SHIP_MISSILE;
+}
+
+static UBYTE playerHighEnoughForPowerup(const GameState* game) {
+	/* CPC: ld a,(leveldifficulty); ld c,a; ld a,11; sub c; ld c,a; ld a,h;
+	 * cp c; ret nc. H is the player's tile Y; lower Y = higher on screen.
+	 * Skill 1 -> floor 10, skill 5 -> floor 6. */
+	UBYTE floor = (UBYTE)(POWERUP_ALTITUDE_FLOOR_BASE - game->skillLevel);
+	return (UBYTE)(game->playerY >> 3) < floor;
+}
+
+static void spawnPowerup(GameState* game, UBYTE type) {
+	PowerupState* p = &game->powerup;
+	UBYTE startRow = (UBYTE)(frameCounter & POWERUP_SPAWN_MAX_ROW);
+	p->active = 1;
+	p->type = type;
+	p->worldX = (LONG)game->scrollX + (POWERUP_SPAWN_COLUMN << 3);
+	p->y = (WORD)(startRow << 3);
+	p->fallCounter = 0;
+}
+
+/* CPC's spawnid sequence (post-R-roll, post-wingman-check):
+ * 1=health, 2=rockets, 3=bombs, 4=rockets, 5=bombs, 6=skip (no powerup,
+ * enemy plane spawns instead). Wrapped at 6. */
+static UBYTE nextPowerupTypeForSpawnId(UBYTE spawnId) {
+	switch (spawnId) {
+		case 1: return POWERUP_HEALTH;
+		case 2: return POWERUP_ROCKETS;
+		case 3: return POWERUP_BOMBS;
+		case 4: return POWERUP_ROCKETS;
+		case 5: return POWERUP_BOMBS;
+		default: return POWERUP_NONE;
+	}
+}
+
+static void trySpawnPowerup(GameState* game) {
+	PowerupState* p = &game->powerup;
+	if (p->active)
+		return;
+	if (game->gameOver || game->crashTimer || game->respawnSafeTimer > 0)
+		return;
+	if (game->enemyMissile.active)
+		return;
+	if (!stageAllowsPowerup(game))
+		return;
+	if (!playerHighEnoughForPowerup(game))
+		return;
+
+	/* CPC: ld a,r; and #0f; ret nz - one-in-16 gate. frameCounter's low
+	 * nibble cycles at 16 frames/spawn-window, ~0.32s at PAL - comparable
+	 * density to CPC's R-driven rate. */
+	if ((frameCounter & POWERUP_SPAWN_ROLL_MASK) != 0)
+		return;
+
+	/* CPC's wingman-resurrection branch: if wingman was destroyed (status
+	 * 254), every qualifying spawn becomes a wingman powerup. Wingman
+	 * isn't implemented on the Amiga port yet - skip this branch entirely
+	 * (the data type is reserved in the enum for forward compatibility). */
+
+	/* CPC: ld a,r; sub 100; jr c,spawnenemyplane - roughly 100/256 chance
+	 * to keep going past the enemy-plane branch into the powerup sequence.
+	 * Mix in spawnId so back-to-back qualifying frames don't all decode the
+	 * same way. */
+	UWORD roll = (UWORD)((frameCounter ^ (game->powerup.spawnId << 5)) & 0xff);
+	if (roll < 100)
+		return;
+
+	game->powerup.spawnId = (UBYTE)(game->powerup.spawnId + 1);
+	if (game->powerup.spawnId > 6)
+		game->powerup.spawnId = 1;
+
+	UBYTE type = nextPowerupTypeForSpawnId(game->powerup.spawnId);
+	if (type == POWERUP_NONE)
+		return;  /* CPC's 6th slot: enemy plane spawns instead - leave to updateEnemyPlane */
+
+	spawnPowerup(game, type);
+}
+
+static void destroyPowerup(GameState* game, UBYTE withExplosion) {
+	(void)withExplosion;
+	game->powerup.active = 0;
+}
+
+static void activatePowerup(GameState* game, UBYTE type) {
+	switch (type) {
+		case POWERUP_HEALTH:
+			/* CPC: xor a; ld (flakdamagecount),a; call displayhealth -
+			 * clears all accumulated flak damage, restores full armour. */
+			game->flakDamageCount = 0;
+			game->armour = 100;
+			break;
+		case POWERUP_ROCKETS:
+			game->rockets = MAX_ROCKETS;
+			break;
+		case POWERUP_BOMBS:
+			game->bombs = MAX_BOMBS;
+			break;
+		case POWERUP_WINGMAN:
+			/* Deferred - no wingman subsystem yet. Treat as health so the
+			 * pickup isn't wasted (matches the spec's "or just give full
+			 * health" fallback). */
+			game->flakDamageCount = 0;
+			game->armour = 100;
+			break;
+		default:
+			break;
+	}
+	updateHudValues(game);
+}
+
+/* CPC checks the cell directly under the powerup before each fall step:
+ * sky/cloud/flak = keep falling, player = collect, anything else (terrain,
+ * building, ship, own frigate) = destroy. Collection also works the other
+ * way - the player's own object-collision pass picks up the powerup when
+ * flying into it - which is why updateGameCollisions() also has a powerup
+ * branch. */
+static UBYTE powerupHitsSolidWorld(const GameState* game, const PowerupState* p) {
+	WORD probeX = (WORD)((p->worldX - (LONG)game->scrollX) + (POWERUP_SPRITE_WIDTH / 2));
+	WORD probeY = (WORD)(p->y + POWERUP_SPRITE_HEIGHT);
+	ObjectCell cell;
+	LONG worldColumn;
+	WORD tileY;
+	if (!objectCellForWorldPoint(game, probeX, probeY, &cell, &worldColumn, &tileY))
+		return 0;
+	(void)worldColumn;
+	(void)tileY;
+	if (cell.id == HAR_OBJ_SKY || cell.id == HAR_OBJ_CLOUD)
+		return 0;
+	if (cell.id == HAR_OBJ_FLAK)
+		return 0;
+	if (cell.id == HAR_OBJ_OWN_FRIGATE)
+		return 0;
+	/* Terrain, town block, ground target, enemy ship, smoke = solid. */
+	return 1;
+}
+
+static UBYTE powerupHitsPlayer(const GameState* game, const PowerupState* p) {
+	WORD screenX = (WORD)(p->worldX - (LONG)game->scrollX);
+	return rectsOverlap(screenX, p->y, POWERUP_SPRITE_WIDTH, POWERUP_SPRITE_HEIGHT,
+		game->playerX, game->playerY, PLAYER_SPRITE_WIDTH, PLAYER_SPRITE_HEIGHT);
+}
+
+static UBYTE updatePowerup(GameState* game) {
+	PowerupState* p = &game->powerup;
+	if (!p->active)
+		return 0;
+
+	WORD screenX = (WORD)(p->worldX - (LONG)game->scrollX);
+
+	if (screenX < POWERUP_DESPAWN_LEFT_X) {
+		destroyPowerup(game, 0);
+		return 1;
+	}
+
+	/* CPC: powerup falls one tile every ~6 tile-scrolls. With Amiga's
+	 * per-frame scroll (1..4 px), 12 frames is the smoothed equivalent of
+	 * CPC's per-tile-scroll cadence at the default speed level. */
+	p->fallCounter++;
+	if (p->fallCounter >= POWERUP_FALL_DELAY_FRAMES) {
+		p->fallCounter = 0;
+		p->y++;
+	}
+
+	if (powerupHitsPlayer(game, p)) {
+		activatePowerup(game, p->type);
+		destroyPowerup(game, 0);
+		return 1;
+	}
+
+	if (powerupHitsSolidWorld(game, p)) {
+		destroyPowerup(game, 1);
+		return 1;
+	}
+
+	return 1;
+}
+
+static UBYTE playerObjectMapCollision(const GameState* game, LONG* hitWorldColumn, WORD* hitTileY) {
 	static const BYTE probeX[] = { 13, 15, 8 };
 	static const BYTE probeY[] = { 3, 5, 7 };
+	*hitWorldColumn = -1;
+	*hitTileY = -1;
 
 	if (game->respawnSafeTimer > 0 || game->crashTimer || game->gameOver)
 		return PLAYER_OBJECT_COLLISION_SAFE;
@@ -6669,16 +7057,17 @@ static UBYTE playerObjectMapCollision(const GameState* game) {
 			continue;
 		if (!objectCellForWorldPoint(game, screenX, screenY, &cell, &worldColumn, &tileY))
 			continue;
-		(void)worldColumn;
-		(void)tileY;
 		/* CPC clouds use object ID 0 so they can occupy a visual sky cell,
 		 * but they are not solid gameplay objects. The old check accepted
 		 * only empty sky (ID 1), causing every cloud probe to fall through
 		 * to the fatal default branch. */
 		if (cell.id == HAR_OBJ_SKY || cell.id == HAR_OBJ_CLOUD)
 			continue;
-		if (cell.id == HAR_OBJ_FLAK)
+		if (cell.id == HAR_OBJ_FLAK) {
+			*hitWorldColumn = worldColumn;
+			*hitTileY = tileY;
 			return PLAYER_OBJECT_COLLISION_FLAK;
+		}
 		if (cell.id == HAR_OBJ_OWN_FRIGATE)
 			continue;
 		return PLAYER_OBJECT_COLLISION_FATAL;
@@ -6854,6 +7243,17 @@ static UBYTE updateEnemyMissile(GameState* game, UBYTE scrollPixels) {
 			game->enemyMissile.active = 0;
 			game->enemyMissileFromShip = 0;
 		}
+		/* Sprint 14.96: enemy heatseeker can also destroy a powerup (CPC's
+		 * heatseekposition treats the powerup as a valid target). */
+		if (game->enemyMissile.active && game->powerup.active) {
+			WORD powerupScreenX = (WORD)(game->powerup.worldX - (LONG)game->scrollX);
+			if (rectsOverlap(game->enemyMissile.x, game->enemyMissile.y, ENEMY_MISSILE_SPRITE_WIDTH, ENEMY_MISSILE_SPRITE_HEIGHT,
+					powerupScreenX, game->powerup.y, POWERUP_SPRITE_WIDTH, POWERUP_SPRITE_HEIGHT)) {
+				game->enemyMissile.active = 0;
+				game->enemyMissileFromShip = 0;
+				destroyPowerup(game, 1);
+			}
+		}
 		changed = 1;
 	}
 
@@ -6873,6 +7273,7 @@ static void triggerGameOver(GameState* game) {
 	game->enemyMissile.active = 0;
 	game->enemyMissileFromShip = 0;
 	game->enemyRespawnTimer = 0;
+	game->powerup.active = 0;
 	playSfx(SFX_GAME_OVER);
 }
 
@@ -6893,6 +7294,7 @@ static void respawnPlayer(GameState* game) {
 	game->enemyMissile.active = 0;
 	game->enemyMissileFromShip = 0;
 	game->enemyRespawnTimer = 0;
+	game->powerup.active = 0;
 }
 
 static void losePlayerLife(GameState* game) {
@@ -6944,6 +7346,7 @@ static void startPlayerCrash(GameState* game, WORD x, WORD y) {
 	game->enemyPlane.active = 0;
 	game->enemyMissile.active = 0;
 	game->enemyMissileFromShip = 0;
+	game->powerup.active = 0;
 
 	game->crashPart[0].active = 1;
 	game->crashPart[0].x = x;
@@ -7000,9 +7403,12 @@ static UBYTE updatePlayerCrash(GameState* game) {
 	return changed;
 }
 
-static UBYTE updateGameCollisions(GameState* game, UBYTE* hudChanged, UBYTE* weaponChanged, UBYTE* enemyMissileChanged) {
+static UBYTE updateGameCollisions(GameState* game, UBYTE** worldBuffers,
+	UBYTE* hudChanged, UBYTE* weaponChanged, UBYTE* enemyMissileChanged) {
 	UBYTE enemyChanged = 0;
-	UBYTE objectCollision = playerObjectMapCollision(game);
+	LONG collisionWorldColumn;
+	WORD collisionTileY;
+	UBYTE objectCollision = playerObjectMapCollision(game, &collisionWorldColumn, &collisionTileY);
 
 	if (replenishPlayerFromFrigate(game))
 		*hudChanged = 1;
@@ -7024,6 +7430,13 @@ static UBYTE updateGameCollisions(GameState* game, UBYTE* hudChanged, UBYTE* wea
 	if (objectCollision == PLAYER_OBJECT_COLLISION_FLAK) {
 		telemetryLogRenderEvent(7, objectCollision, (UWORD)((game->scrollX + game->playerX) >> 3), game->scrollX, (UWORD)game->playerY);
 		applyPlayerFlakDamage(game);
+		/* CPC's non-fatal collision path draws the player into the flak's
+		 * object-map cell, then clears that old player cell back to sky on
+		 * the next move. Hardware sprites do not mutate Amiga world data,
+		 * so consume the runtime flak explicitly and reconstruct whatever
+		 * belongs underneath it (plain sky or a cloud tile). */
+		if (removeRuntimeFlakAt(collisionWorldColumn, collisionTileY))
+			dirtyRedrawWorldColumn(worldBuffers, collisionWorldColumn);
 		*hudChanged = 1;
 		if (game->crashTimer) {
 			*weaponChanged = 1;
@@ -7127,6 +7540,30 @@ static UBYTE updateGameCollisions(GameState* game, UBYTE* hudChanged, UBYTE* wea
 		*enemyMissileChanged = 1;
 	}
 
+	/* Sprint 14.96: player weapons can destroy an active powerup (CPC's
+	 * dododestroywingmanpowerup - explosionnoise + destroy). The weapon
+	 * vanishes with an explosion, no score is awarded. Enemy missile vs
+	 * powerup is handled in the missile's own update path. */
+	if (game->powerup.active) {
+		WORD powerupScreenX = (WORD)(game->powerup.worldX - (LONG)game->scrollX);
+		if (game->rocketShot.active &&
+			rectsOverlap(game->rocketShot.x, game->rocketShot.y, 16, WEAPON_SPRITE_HEIGHT,
+				powerupScreenX, game->powerup.y, POWERUP_SPRITE_WIDTH, POWERUP_SPRITE_HEIGHT)) {
+			game->rocketShot.active = 0;
+			destroyPowerup(game, 1);
+			startWorldImpact(game, game->rocketShot.x, game->rocketShot.y);
+			*weaponChanged = 1;
+		}
+		if (game->powerup.active && game->bombShot.active &&
+			rectsOverlap(game->bombShot.x, game->bombShot.y, 16, WEAPON_SPRITE_HEIGHT,
+				powerupScreenX, game->powerup.y, POWERUP_SPRITE_WIDTH, POWERUP_SPRITE_HEIGHT)) {
+			game->bombShot.active = 0;
+			destroyPowerup(game, 1);
+			startWorldImpact(game, game->bombShot.x, game->bombShot.y);
+			*weaponChanged = 1;
+		}
+	}
+
 	return enemyChanged;
 }
 
@@ -7167,12 +7604,14 @@ static void startGameSession(GameState* game,
 	UWORD* bombSprite,
 	UWORD* enemySprite,
 	UWORD* enemyMissileSprite,
+	UWORD* powerupSprite,
 	const UWORD* nullSprite,
 	UBYTE* pendingGameScrollCopperUpdate,
 	UBYTE* pendingPlayerSpriteUpdate,
 	UBYTE* pendingWeaponSpriteUpdate,
 	UBYTE* pendingEnemySpriteUpdate,
 	UBYTE* pendingEnemyMissileSpriteUpdate,
+	UBYTE* pendingPowerupSpriteUpdate,
 	UBYTE* hudDirty,
 	ULONG highScore,
 	UBYTE skillLevel,
@@ -7204,6 +7643,7 @@ static void startGameSession(GameState* game,
 	*pendingWeaponSpriteUpdate = 0;
 	*pendingEnemySpriteUpdate = 0;
 	*pendingEnemyMissileSpriteUpdate = 0;
+	*pendingPowerupSpriteUpdate = 0;
 	*hudDirty = 0;
 
 	drawHudBuffer(hudBuffer, game, highScore, 0);
@@ -7214,9 +7654,10 @@ static void startGameSession(GameState* game,
 	updateWeaponSprites(rocketSprite, bombSprite, game);
 	updateEnemySprite(enemySprite, game);
 	updateEnemyMissileSprite(enemyMissileSprite, game);
+	updatePowerupSprite(powerupSprite, game);
 	buildGameHudCopper(copper, worldBuffers[*activeWorldBuffer], hudBuffer, (const UWORD*)gamePalette,
 		scrollDelayForBplcon1(game->scrollX), displayByteOffsetForGameState(game),
-		playerSprite, playerAttachSprite, rocketSprite, bombSprite, enemySprite, enemyMissileSprite, nullSprite);
+		playerSprite, playerAttachSprite, rocketSprite, bombSprite, enemySprite, enemyMissileSprite, powerupSprite, nullSprite);
 	custom->copjmp1 = 0x7fff;
 }
 
@@ -7253,13 +7694,14 @@ int main(void) {
 	UWORD* bombSprite = (UWORD*)AllocMem(WEAPON_SPRITE_WORDS * sizeof(UWORD), MEMF_CHIP | MEMF_CLEAR);
 	UWORD* enemySprite = (UWORD*)AllocMem(ENEMY_SPRITE_WORDS * sizeof(UWORD), MEMF_CHIP | MEMF_CLEAR);
 	UWORD* enemyMissileSprite = (UWORD*)AllocMem(ENEMY_MISSILE_SPRITE_WORDS * sizeof(UWORD), MEMF_CHIP | MEMF_CLEAR);
+	UWORD* powerupSprite = (UWORD*)AllocMem(POWERUP_SPRITE_WORDS * sizeof(UWORD), MEMF_CHIP | MEMF_CLEAR);
 	engineBuffer = (UBYTE*)AllocMem(ENGINE_BUFFER_BYTES, MEMF_CHIP | MEMF_CLEAR);
 	telemetrySamples = (TelemetrySample*)AllocMem(sizeof(TelemetrySample) * TELEMETRY_SAMPLE_COUNT, MEMF_FAST | MEMF_CLEAR);
 	if (!telemetrySamples && AvailMem(MEMF_PUBLIC) > sizeof(TelemetrySample) * TELEMETRY_SAMPLE_COUNT + 4096)
 		telemetrySamples = (TelemetrySample*)AllocMem(sizeof(TelemetrySample) * TELEMETRY_SAMPLE_COUNT, MEMF_PUBLIC | MEMF_CLEAR);
 	telemetryAvailable = telemetrySamples ? 1 : 0;
 	telemetryEnabled = 0;
-	if (!copper || !screenBuffer || !worldBuffers[0] || !hudBuffer || !nullSprite || !playerSprite || !playerAttachSprite || !rocketSprite || !bombSprite || !enemySprite || !enemyMissileSprite || !engineBuffer) {
+	if (!copper || !screenBuffer || !worldBuffers[0] || !hudBuffer || !nullSprite || !playerSprite || !playerAttachSprite || !rocketSprite || !bombSprite || !enemySprite || !enemyMissileSprite || !powerupSprite || !engineBuffer) {
 		if (telemetrySamples)
 			FreeMem(telemetrySamples, sizeof(TelemetrySample) * TELEMETRY_SAMPLE_COUNT);
 		if (copper)
@@ -7284,6 +7726,8 @@ int main(void) {
 			FreeMem(enemySprite, ENEMY_SPRITE_WORDS * sizeof(UWORD));
 		if (enemyMissileSprite)
 			FreeMem(enemyMissileSprite, ENEMY_MISSILE_SPRITE_WORDS * sizeof(UWORD));
+		if (powerupSprite)
+			FreeMem(powerupSprite, POWERUP_SPRITE_WORDS * sizeof(UWORD));
 		if (engineBuffer)
 			FreeMem(engineBuffer, ENGINE_BUFFER_BYTES);
 		engineBuffer = 0;
@@ -7356,6 +7800,7 @@ int main(void) {
 	UBYTE pendingWeaponSpriteUpdate = 0;
 	UBYTE pendingEnemySpriteUpdate = 0;
 	UBYTE pendingEnemyMissileSpriteUpdate = 0;
+	UBYTE pendingPowerupSpriteUpdate = 0;
 	UBYTE activeWorldBuffer = 0;
 	UBYTE hudDirty = 0;
 	UBYTE telemetryStatsPaused = 0;
@@ -7418,7 +7863,7 @@ int main(void) {
 				telemetryStatsPaused = 0;
 				buildGameHudCopper(copper, worldBuffers[activeWorldBuffer], hudBuffer, (const UWORD*)gamePalette,
 					scrollDelayForBplcon1(game.scrollX), displayByteOffsetForGameState(&game),
-					playerSprite, playerAttachSprite, rocketSprite, bombSprite, enemySprite, enemyMissileSprite, nullSprite);
+					playerSprite, playerAttachSprite, rocketSprite, bombSprite, enemySprite, enemyMissileSprite, powerupSprite, nullSprite);
 				custom->copjmp1 = 0x7fff;
 				if (!game.gameOver && game.takeoffState == TAKEOFF_STATE_AIRBORNE && !game.crashTimer)
 					startEngineSound(scrollPixelsForSpeedLevel(game.speedLevel));
@@ -7457,9 +7902,9 @@ int main(void) {
 				if (selected == MENU_ITEM_START) {
 					stopModMusic();
 					startGameSession(&game, copper, worldBuffers, &activeWorldBuffer, hudBuffer, playerSprite, playerAttachSprite, rocketSprite, bombSprite,
-						enemySprite, enemyMissileSprite, nullSprite,
+						enemySprite, enemyMissileSprite, powerupSprite, nullSprite,
 						&pendingGameScrollCopperUpdate, &pendingPlayerSpriteUpdate,
-						&pendingWeaponSpriteUpdate, &pendingEnemySpriteUpdate, &pendingEnemyMissileSpriteUpdate,
+						&pendingWeaponSpriteUpdate, &pendingEnemySpriteUpdate, &pendingEnemyMissileSpriteUpdate, &pendingPowerupSpriteUpdate,
 						&hudDirty, highScore, (UBYTE)skillLevel, (UBYTE)livesSetting);
 					if (telemetryEnabled)
 						telemetryReset();
@@ -7631,11 +8076,14 @@ int main(void) {
 						pendingWeaponSpriteUpdate = 1;
 					}
 				}
-				if (updateWeapons(&game, scrollPixels, worldBuffers))
-					pendingWeaponSpriteUpdate = 1;
-				trySpawnFlak(&game, worldBuffers);
-				updateCityFade(&game);
-				updateTargetLock(&game);
+			if (updateWeapons(&game, scrollPixels, worldBuffers))
+				pendingWeaponSpriteUpdate = 1;
+			trySpawnFlak(&game, worldBuffers);
+			trySpawnPowerup(&game);
+			updateCityFade(&game);
+			updateTargetLock(&game);
+			if (updatePowerup(&game))
+				pendingPowerupSpriteUpdate = 1;
 				if (updateEnemyPlane(&game, scrollPixels))
 					pendingEnemySpriteUpdate = 1;
 				if (updateEnemyMissile(&game, scrollPixels))
@@ -7643,7 +8091,8 @@ int main(void) {
 				UBYTE collisionHudDirty = 0;
 				UBYTE collisionWeaponDirty = 0;
 				UBYTE collisionEnemyMissileDirty = 0;
-				if (updateGameCollisions(&game, &collisionHudDirty, &collisionWeaponDirty, &collisionEnemyMissileDirty))
+				if (updateGameCollisions(&game, worldBuffers,
+					&collisionHudDirty, &collisionWeaponDirty, &collisionEnemyMissileDirty))
 					pendingEnemySpriteUpdate = 1;
 				if (collisionHudDirty) {
 					hudDirty = 1;
@@ -7674,9 +8123,9 @@ int main(void) {
 			} else {
 				if (Pressed(input.select, previousInput.select)) {
 					startGameSession(&game, copper, worldBuffers, &activeWorldBuffer, hudBuffer, playerSprite, playerAttachSprite, rocketSprite, bombSprite,
-						enemySprite, enemyMissileSprite, nullSprite,
+						enemySprite, enemyMissileSprite, powerupSprite, nullSprite,
 						&pendingGameScrollCopperUpdate, &pendingPlayerSpriteUpdate,
-						&pendingWeaponSpriteUpdate, &pendingEnemySpriteUpdate, &pendingEnemyMissileSpriteUpdate,
+						&pendingWeaponSpriteUpdate, &pendingEnemySpriteUpdate, &pendingEnemyMissileSpriteUpdate, &pendingPowerupSpriteUpdate,
 						&hudDirty, highScore, (UBYTE)skillLevel, (UBYTE)livesSetting);
 					if (telemetryEnabled)
 						telemetryReset();
@@ -7701,6 +8150,10 @@ int main(void) {
 				updateEnemyMissileSprite(enemyMissileSprite, &game);
 				pendingEnemyMissileSpriteUpdate = 0;
 			}
+			if (pendingPowerupSpriteUpdate) {
+				updatePowerupSprite(powerupSprite, &game);
+				pendingPowerupSpriteUpdate = 0;
+			}
 			serviceRingWorldStream(worldBuffers[0], &game);
 			telemetryUpdate(&game, activeWorldBuffer);
 #if HAR_DEBUG_PERF_LOG
@@ -7713,6 +8166,7 @@ int main(void) {
 	FreeMem(playerSprite, PLAYER_SPRITE_WORDS * sizeof(UWORD));
 	FreeMem(playerAttachSprite, PLAYER_SPRITE_WORDS * sizeof(UWORD));
 	FreeMem(enemyMissileSprite, ENEMY_MISSILE_SPRITE_WORDS * sizeof(UWORD));
+	FreeMem(powerupSprite, POWERUP_SPRITE_WORDS * sizeof(UWORD));
 	FreeMem(enemySprite, ENEMY_SPRITE_WORDS * sizeof(UWORD));
 	FreeMem(bombSprite, WEAPON_SPRITE_WORDS * sizeof(UWORD));
 	FreeMem(rocketSprite, WEAPON_SPRITE_WORDS * sizeof(UWORD));
