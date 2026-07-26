@@ -5069,6 +5069,29 @@ static void resetCpcRandomSequence(void) {
 	UBYTE landLastMode = 1;      /* l8861's compiled-in initial value (asm:218) */
 	UBYTE landJustInserted = 0;  /* forces flat the column right after any target */
 	UBYTE landPendingTankRear = 0;
+	/* Sprint 14.104: deliberate Amiga-only smoothing rule, NOT present in the
+	 * CPC disassembly - no such check exists anywhere in l9134/l9167/l9181's
+	 * mode dispatch. Added because a real captured CPC trace showed a lower
+	 * immediate climb-then-descend (or vice versa) reversal rate than this
+	 * port's own generator (17.2% vs 25.3% of all height changes, one sample
+	 * each), and because the user's own direct visual comparison of both
+	 * versions confirms real CPC's terrain reads as smoother regardless of
+	 * what any single-sample statistic says - that observation is the actual
+	 * target here, not a specific number. First cut required only 1 non-slope
+	 * column between opposite-direction slopes; land_log.csv then showed a
+	 * "climb, 1 flat, descend" shape still occurring in ~16% of all height
+	 * changes, matching a follow-up "steep little dump" report exactly.
+	 * Extended to require LAND_REVERSAL_MIN_GAP non-slope columns instead of
+	 * just 1. landLastSlopeDirection persists across flat/target columns
+	 * (only a NEW slope of either direction overwrites it) and
+	 * landFlatRunSinceSlope counts how many non-slope columns have passed
+	 * since - so this blocks a reversal until enough of a breather has
+	 * actually elapsed, not just one column. Deliberately not present in the
+	 * real assembly; matching the perceived CPC experience over literal
+	 * bit-for-bit reproduction was an explicit choice here. */
+	#define LAND_REVERSAL_MIN_GAP 2
+	WORD landLastSlopeDirection = 0; /* -1=last real slope was a climb, +1=descend */
+	UBYTE landFlatRunSinceSlope = LAND_REVERSAL_MIN_GAP; /* no slope yet - don't gate the very first one */
 
 	for (UWORD column = 0; column < GAME_LEVEL_WIDTH_TILES; column++) {
 		/* CPC calls genrandomhl before generating the newly revealed column,
@@ -5110,6 +5133,17 @@ static void resetCpcRandomSequence(void) {
 				if (landJustInserted)
 					mode = 0;
 				landJustInserted = 0;
+
+				/* Reversal-smoothing rule - see landLastSlopeDirection's own
+				 * comment above for why this exists and what it isn't. Mode
+				 * 1 requests descend (+1), mode 2 requests climb (-1); if
+				 * that's the opposite of the last real slope's direction and
+				 * fewer than LAND_REVERSAL_MIN_GAP non-slope columns have
+				 * passed since, force flat instead of undoing it too soon. */
+				if (mode == 1 && landLastSlopeDirection == -1 && landFlatRunSinceSlope < LAND_REVERSAL_MIN_GAP)
+					mode = 0;
+				else if (mode == 2 && landLastSlopeDirection == 1 && landFlatRunSinceSlope < LAND_REVERSAL_MIN_GAP)
+					mode = 0;
 
 				if (mode == 1) {
 					/* Descend toward baseline. Blocked at the baseline must
@@ -5161,6 +5195,15 @@ static void resetCpcRandomSequence(void) {
 					rCost = CPC_R_COST_FLAT;
 				}
 				landLastMode = mode;
+				if (transition == CPC_LAND_CLIMB) {
+					landLastSlopeDirection = -1;
+					landFlatRunSinceSlope = 0;
+				} else if (transition == CPC_LAND_DESCEND) {
+					landLastSlopeDirection = 1;
+					landFlatRunSinceSlope = 0;
+				} else if (landFlatRunSinceSlope < 255) {
+					landFlatRunSinceSlope++;
+				}
 			}
 
 			cpcLandHeightTable[i] = landHeight;
