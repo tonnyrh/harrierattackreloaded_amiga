@@ -3112,3 +3112,74 @@ The user gave a detailed corrective review (Norwegian "Lederboks") of Sprint 14.
 **Deliberately still deferred** (per the user's own softer phrasing - "bør etter hvert", "should eventually"): state-driven section transitions (sea -> coast -> procedural land -> descent -> town -> pier -> sea) keyed off `enemyshiptimer`/`leveldifficulty`/`l8860` the way real CPC does, instead of the current fixed-length `harLevelRoute[]` segment table. Doesn't mean every run must have a different total length - means the length should come from the same rules CPC uses. Bigger and more architecturally invasive (would touch `levelSegmentForWorldColumn()` and the whole segment-table model) than what was asked in this pass; revisit as its own dedicated sprint.
 
 Verified: clean rebuild (no errors), headless autoplay pass with no crash/hang.
+
+## Standing rule - CPC algorithms, never a captured map
+
+This rule overrides any older sprint wording that can be read as reproducing
+one recorded CPC landscape:
+
+Remaining work consists primarily of modelling the Z80 R register at the
+actual terrain/target, town and flak decision points. R progression must be
+derived from the M1 instruction-fetch flow in the CPC assembly. CPC LOGGEN
+captures are only control evidence for validating distributions, rhythm and
+observed state transitions; they are not lookup tables or a source of finished
+results.
+
+The binding method is:
+
+- The assembly code determines the model.
+- The executed M1 instruction-fetch path determines how R advances.
+- LOGGEN is used only to check that the model behaves credibly.
+- Missing log values must not be interpolated or reconstructed as ground
+  truth.
+- Production code generates new results from the session seed and the code
+  path actually taken.
+- A validation fixture may start both models from explicit seeds, but captured
+  output must never become runtime input.
+
+Consequently, the target architecture has several R timestamps rather than
+one ambiguous value per world column:
+
+```c
+typedef struct {
+    UBYTE atTerrainDecision;
+    UBYTE atTargetDecision;
+    UBYTE atTownDecision;
+    UBYTE atFlakDecision;
+    UBYTE afterColumn;
+} CpcRDecisionState;
+```
+
+Each member must be calculated by accumulating M1 fetches along the assembly
+branch that was actually taken. Do not introduce guessed offsets merely to
+populate this structure. Until a decision point has been counted, the current
+column-start value remains an explicitly labelled approximation. This gives
+deterministic but new landscapes from the same seed and CPC-like correlations
+without copying a recorded Amstrad run.
+
+July 2026 review also corrected two concrete issues: the per-column modeled R
+value is now stored before applying that column's path cost, and the town block
+cache is invalidated for every newly generated world. The modeled R start value
+now varies with the session seed, reflecting that a real CPC reaches gameplay
+with a menu-time-dependent refresh-register value.
+
+The review's proposed removal of the tank continuation column was rejected
+after checking the assembly. `drawspriteblock3` does advance vertically within
+one invocation, but `insertenemylandtile` saves its advanced DE in `l885e`;
+`gamelevelprogress=4` resumes at `l9206/l91cb` on the following scroll tick and
+draws the second tank pair at the new right edge. Thus the CPC tank really does
+occupy two successive world columns.
+
+## Sprint 14.101 - Real M1/R Calibration Run, Collapse Guessed R_COST_* Constants
+
+Built a new LOGGEN cartridge variant specifically to measure real R behaviour instead of guessing it, per the Standing Rule above ("R progression must be derived from the M1 instruction-fetch flow", "do not introduce guessed offsets").
+
+**Instrumentation** (`HarrierAttackSourceNew2_alt_CRTC_CART16.asm`, `ifdef LOGGEN`): tags every real `l9134` mode-dispatch tick with which of 10 decision paths fired (`LOG_PATH_MODE0_FLAT`, `HILL_DOWN_OK`/`_BLOCKED`, `HILL_UP_OK`/`_BLOCKED`, `TARGET_RADAR`/`_LAUNCHER`/`_GUN`/`_TANK`, `TARGET_GATE_CLOSED`), captures R at the top of `l9134` (`rEntryLog`, before any of that column's own code runs) and again at `l91e3` (`rExitLog`, the shared exit point after drawing) - `rExitLog-rEntryLog mod 128` *is* the real M1 count for that path, no manual counting needed for the number itself. Old 16-byte-record/rLogSea-etc scheme (Sprint 14.97-era, landscape-capture oriented) fully retired - 8 bytes/record now, `gamelevelprogress==3`-gated. Added a LOGGEN-only invincibility cheat (`checkplayeragainstobjectmap`, `planehitbyobject`, and the two direct enemy-plane/missile death sites all short-circuited) so a play session can reach deep into the land section without dying, purely for calibration purposes - never compiled into the real game.
+
+**Real finding while validating the data**: every target-insertion path (radar/launcher/gun/tank) showed an LCG-continuity gap between its logged record and the next, while `TARGET_GATE_CLOSED` and all non-target paths never did. Root cause: `insertenemylandtile` only draws 2 of each `enemylandsprites` entry's 4 bytes per call, sets `gamelevelprogress=4`, and returns; the *next* tick, `l9206` detects `gamelevelprogress==4`, redraws the remaining 2 bytes via the saved `l885e` pointer, and resets `gamelevelprogress` back to 3 - which is the tick the logger's `cp 3` guard actually accepts. So every target type is genuinely a 2-tick, 2-row sprite placement in real CPC, not just tanks as assumed earlier in this document - it only *looks* tank-specific because radar/launcher/gun's 2nd-row bytes happen to both be transparent (`00,00`), so their continuation tick draws nothing visible, while the tank's (`00,2e`) does. This confirms (with a clearer mechanism) the tank-continuation note directly above, and explains why the Amiga's existing tank-only `TANK_REAR` rendering is visually correct despite being structurally incomplete relative to the real 2-tick mechanism every target type actually uses.
+
+**Calibration result and explicit scope decision** (per direction given in this session): "the most important thing is to recreate the behaviour and random generators on the Amiga side - 95% or better is fine without further investigation; we are not matching the landscape, only the generating code." Measured mean R-delta across 249 real logged columns from one play session: all paths cluster within roughly 60-70 (MODE0_FLAT ~65, HILL_DOWN_OK ~66, HILL_UP_OK ~68, all 4 target-insertion types combined ~63, TARGET_GATE_CLOSED ~69) - no statistically meaningful separation at this sample size, because the dominant source of per-column variance is `l914e`'s own fill-loop cost (scales with `15-height`, identical for every path that reaches it), not the deciding code itself. Given this, `amiga/main.c`'s previously-guessed `CPC_R_COST_FLAT`/`_HILL`/`_TARGET`/`_TANK_REAR`/`_DEFAULT` (0x50/0x58/0x68/0x48/0x53) are collapsed to one real-measurement-calibrated value (63 decimal) for all five - a smaller, more honest model than preserving an invented split the data didn't support.
+
+**Relationship to the Standing Rule / `CpcRDecisionState` above**: that section describes the fuller target architecture (a separate R timestamp per decision point: terrain, target, town, flak). This sprint is a deliberately smaller, real-measurement-informed step toward it, not a replacement - explicitly scoped down per this session's direction to stop at "good enough" rather than building the full per-decision-point struct now. `CpcRDecisionState` remains the right target if/when finer-grained fidelity is ever wanted; the M1-tagged LOGGEN cartridge built here is exactly the tool that would feed it, and can be re-run/extended (e.g. splitting insertion-tick from continuation-tick as distinct logged paths) without further design work if that day comes.
+
+Verified: clean rebuild (Amiga side, no errors/warnings beyond the pre-existing benign LTO ones), headless autoplay pass with no crash/hang.

@@ -1249,6 +1249,9 @@ checkenemyfighterapproach:
   call checkplayerplanemovement
   ld a,status_enemyplanehit
   ld (enemyplanestatus),a
+  ifdef LOGGEN
+  jp doexplosionnoise
+  endif
   ld a,1:deathstatus2              ; PLAYER KILLED
   ld (playerstatus),a
   jp doexplosionnoise
@@ -1264,6 +1267,9 @@ checkenemyfighterapproach:
   call checkplayerplanemovement
   xor a
   ld (enemymissilestatus),a
+  ifdef LOGGEN
+  jp doexplosionnoise
+  endif
   ld a,1:deathstatus3                  ; PLAYER KILLED
   ld (playerstatus),a                  ; HIT
   jp doexplosionnoise
@@ -4483,7 +4489,7 @@ scrollscenery:;setupscreen:
   ld (enemyshiptimer),hl
   
   call genrandomhl             ; GENERATE RANDOMISED LAND HEIGHT + ENEMIES
-  call docountdowntoenemyship             
+  call docountdowntoenemyship
   call drawrandomcloudsprite
 
   ; DRAW FRESH EDGE OF TILEMAP
@@ -4509,7 +4515,11 @@ scrollscenery:;setupscreen:
     cp 255                     ; DRAW TILES THAT HAVE 255 SET AS OBJECT
   jr nz,drawfreshskytiles
   
-  ld a,(scrollsceneryafterdeath) ; CONTINUE TO SCROLL SCENERY 7 TILES AFTER WE CRASH 
+  ifdef LOGGEN
+  call log_column_end
+  endif
+  
+  ld a,(scrollsceneryafterdeath) ; CONTINUE TO SCROLL SCENERY 7 TILES AFTER WE CRASH
   or a
   ret z
   dec a
@@ -5423,12 +5433,22 @@ startoffalklandisland:
 l9134:
   dec a
   jp nz,l9206
+  ifdef LOGGEN
+  push af
+  ld a,r
+  ld (rEntryLog),a
+  pop af
+  endif
   ld a,(l8859)
   rra
   rra
   and #03
   ld (l8860),a
   jr nz,l9167
+  ifdef LOGGEN
+  ld a,LOG_PATH_MODE0_FLAT
+  ld (pathLog),a
+  endif
 
 drawflatterrain:
   ; DRAW FLAT TERRAIN TILE
@@ -5467,7 +5487,19 @@ l9167:
   ld l,a
   ld a,h
   cp #0e
-  jr z,drawflatterrain
+  jr nz,l916a_notblocked
+  ifdef LOGGEN
+  ld a,LOG_PATH_HILL_DOWN_BLOCKED
+  ld (pathLog),a
+  endif
+  jr drawflatterrain
+  l916a_notblocked:
+  ifdef LOGGEN
+  push af
+  ld a,LOG_PATH_HILL_DOWN_OK
+  ld (pathLog),a
+  pop af
+  endif
   inc a
   ld (l885d),a
   ld a,l
@@ -5489,20 +5521,38 @@ l9181:
   add 7
   cp h
   ld a,h
-  jr z,drawflatterrain
+  jr nz,l9181_notblocked
+  ifdef LOGGEN
+  ld a,LOG_PATH_HILL_UP_BLOCKED
+  ld (pathLog),a
+  endif
+  jr drawflatterrain
+  l9181_notblocked:
+  ifdef LOGGEN
+  push af
+  ld a,LOG_PATH_HILL_UP_OK
+  ld (pathLog),a
+  pop af
+  endif
   dec a
   dec h
   ld (l885d),a
   ld a,l
   jr l914e
-  
+
 checkinsertenemylandtile:
   ld a,(l8861)
   and 1
   jr z,insertenemylandtile
   xor a
   ld (l8860),a
+  ifdef LOGGEN
+  ld a,LOG_PATH_TARGET_GATE_CLOSED
+  ld (pathLog),a
+  jp drawflatterrain
+  else
   jr drawflatterrain
+  endif
 
 
 ; ONLY UPDATE MISSILE LOCK IF WE ARE NOT CURRENTLY FIRING MISSILE
@@ -5610,6 +5660,12 @@ insertenemylandtile:
   rra
   rra
   ld (l884b),a
+  ifdef LOGGEN
+  push af
+  add LOG_PATH_TARGET_RADAR              ; a (0-3) -> pathId (5-8)
+  ld (pathLog),a
+  pop af
+  endif
   add l
   ld l,a
   ld h,0
@@ -5646,6 +5702,12 @@ endif
   jp l914e
 
 l91e3:
+  ifdef LOGGEN
+  push af
+  ld a,r
+  ld (rExitLog),a
+  pop af
+  endif
   ld a,(l8860)
   ld (l8861),a
   ld a,(leveldifficulty)
@@ -6201,9 +6263,12 @@ launchheatseekingmissile:
 
   ; MISSILE HIT PLAYER 1 HARRIER
   call checkplayerplanemovement
+  ifdef LOGGEN
+  jr killenemymissile
+  endif
   ld a,1:deathstatus1
   ld (playerstatus),a
-  
+
   killenemymissile:
   call doexplosionnoise
   disableenemymissile:
@@ -7523,8 +7588,15 @@ ret
 ; COLLISION DETECTION
 
 checkplayeragainstobjectmap:
+  ifdef LOGGEN
+  ; Diagnostic-cartridge cheat (Sprint 14.101): never die, so a run can
+  ; reach and stay in the land section long enough to fill the R-path
+  ; calibration log. Not part of the real game - LOGGEN-only.
+  xor a
+  ret
+  endif
   or a    ; CP 0  - CLOUD OBJECT
-  ret z   
+  ret z
   dec a   ; CP 1  - SKY OBJECT
   ret z
   cp 19   ; CP 20 - WINGMAN
@@ -8125,6 +8197,14 @@ ownmissilehitwingman:
 ; 10 = AIRCRAFT MISSILE
 
 planehitbyobject:
+  ifdef LOGGEN
+  ; Diagnostic-cartridge cheat (Sprint 14.101): never die - see
+  ; checkplayeragainstobjectmap. Covers the other call sites into this
+  ; shared function (bomb/missile-vs-object checks) that don't go through
+  ; checkplayeragainstobjectmap's own early-out.
+  xor a
+  ret
+  endif
   ld a,1:deathstatus4               ; KILLED
   ld (playerstatus),a
   call doexplosionnoise
@@ -9610,7 +9690,105 @@ ret
 defb "CHRIS4"
 
 endofdata:
-;SAVE ’myfile.bin’,start,size,DSK,’fichierdsk.dsk’
+
+; ============================================================================
+; LOGGEN: Terrain/target R-path M1 calibration logger (Sprint 14.101)
+; Build with:  rasm.exe -DLOGGEN=1 -amper HarrierAttackSourceNew2_alt_CRTC_CART16.asm HARRIER1
+; Buffer at &F000, 8 bytes per record, 250 records max (2000 bytes).
+; Dump from WinAPE debugger:  SAVE "log.bin",&F000,2000
+;
+; Purpose: NOT a captured landscape (that approach was retired - see
+; AMIGA_PORT_PLAN.md). This measures, for every real l9134 mode-dispatch
+; column, which decision PATH ran and what R was immediately before/after
+; that path's own code - so the Amiga port's CPC_R_COST_* constants can be
+; replaced with values checked against real Z80 M1-fetch counts instead of
+; guessed relative sizes. rExit-rEntry (mod 128) for a given pathId IS the
+; real M1 fetch count for that path (R only advances on M1/opcode-fetch
+; cycles) - no manual instruction counting needed to get this number, though
+; the assembly should still be read to explain *why* it comes out that way
+; and to catch anything an interrupt/uncounted call might be hiding.
+;
+; Record format (8 bytes per generated land column, gamelevelprogress==3
+; ticks only - the actual l9134 mode dispatch, not its 4-7 continuation
+; states):
+;   Byte 0-1: currtime (16-bit LE, genrandomhl state) - cross-reference only
+;   Byte   2: l8859 (high byte of state) - cross-reference only
+;   Byte   3: l885d (terrain height at record time) - cross-reference only
+;   Byte   4: pathId (see LOG_PATH_* below)
+;   Byte   5: rEntry - R at the top of l9134, before this column's own
+;             dispatch code has run at all
+;   Byte   6: rExit - R at the top of l91e3, after this column's dispatch
+;             (including any drawing calls) has fully run
+;   Byte   7: reserved (0)
+; ============================================================================
+ifdef LOGGEN
+
+LOG_PATH_MODE0_FLAT         equ 0
+LOG_PATH_HILL_DOWN_OK       equ 1
+LOG_PATH_HILL_DOWN_BLOCKED  equ 2
+LOG_PATH_HILL_UP_OK         equ 3
+LOG_PATH_HILL_UP_BLOCKED    equ 4
+LOG_PATH_TARGET_RADAR       equ 5
+LOG_PATH_TARGET_LAUNCHER    equ 6
+LOG_PATH_TARGET_GUN         equ 7
+LOG_PATH_TARGET_TANK        equ 8
+LOG_PATH_TARGET_GATE_CLOSED equ 9
+
+log_buffer   equ &F000
+log_ptr      defw log_buffer
+log_count    defb 0
+log_max      equ 250
+
+pathLog      defb 0FFh
+rEntryLog    defb 0FFh
+rExitLog     defb 0FFh
+
+; Called after the column is fully generated (log_column_end's old call
+; site, still right for this purpose). Writes an 8-byte record only if
+; l9134's dispatch actually ran this tick (gamelevelprogress==3 exactly -
+; NOT 4-7, which are insertenemylandtile's own multi-tick continuation and
+; would otherwise duplicate this tick's already-recorded pathLog/rEntryLog/
+; rExitLog against a *different*, unrelated currtime/height).
+log_column_end:
+  ld a,(log_count)
+  cp log_max
+  ret nc
+  ld a,(gamelevelprogress)
+  cp 3
+  ret nz
+  ld hl,(log_ptr)
+  ld bc,(currtime)
+  ld (hl),c
+  inc hl
+  ld (hl),b
+  inc hl
+  ld a,(l8859)
+  ld (hl),a
+  inc hl
+  ld a,(l885d)
+  ld (hl),a
+  inc hl
+  ld a,(pathLog)
+  ld (hl),a
+  inc hl
+  ld a,(rEntryLog)
+  ld (hl),a
+  inc hl
+  ld a,(rExitLog)
+  ld (hl),a
+  inc hl
+  xor a
+  ld (hl),a
+  inc hl
+  ld (log_ptr),hl
+  ld hl,log_count
+  inc (hl)
+  ret
+
+endif
+; ============================================================================
+
+;SAVE 'myfile.bin',start,size,DSK,'fichierdsk.dsk'
 
 
 

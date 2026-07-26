@@ -578,6 +578,7 @@ typedef struct {
 	WORD y;
 	UBYTE fallCounter;
 	UBYTE spawnId;
+	UWORD lastSpawnCheckColumn;
 } PowerupState;
 
 /* Mirrors CPC's single enemylandlocationlock. The lock is not replaced while
@@ -4734,6 +4735,7 @@ static UBYTE cpcLandSkillLevel = 1;
 #define CPC_LAND_PROCEDURAL_WORLD_START 102
 static UWORD cpcRandomStateByColumn[GAME_LEVEL_WIDTH_TILES];
 static UBYTE cpcRandomSequenceReady = 0;
+static void resetCpcTownBlockTable(void);
 
 /* Sprint 14.97 PRI 5: Z80 R register state per generated column. R is a 7-bit
  * refresh counter (0-127) that increments once per M1 (opcode fetch) cycle.
@@ -4749,27 +4751,37 @@ static UBYTE cpcRandomSequenceReady = 0;
  * preserved determinism but broke CPC's correlation: R and l8859 advance
  * independently, so CPC can produce the same grass variant on two columns
  * with very different terrain heights, which a shared-state model can't.
- * Modeled as a linear counter with a fixed increment per column — R is
- * inherently a linear counter, not a PRNG, so this is the correct shape.
- * Important correction: the increment is no longer flat across every
- * column. R only advances by however many Z80 instructions actually ran
- * that tick, and land's flat/hill/target dispatch branches (asm:5433-5521)
- * run visibly different amounts of code - insertenemylandtile alone calls
- * updateenemylandlocationlock and checkwingmandobombingrun on top of a
- * wider drawspriteblock3, so it should cost noticeably more than a flat
- * column. The per-path costs below are relative approximations (not
- * measured Z80 cycle counts - that would need instruction counting or an
- * instrumented CPC run) chosen only so R's rate of advance varies by what
- * the generator actually did that column, not a constant regardless of
- * path - see resetCpcRandomSequence() for where each is applied. */
+ * Modeled as a linear counter with a path-dependent increment per column —
+ * R is inherently a linear counter, not a PRNG, so this is the correct
+ * shape. cpcRStateByColumn stores R at the start of the generated column,
+ * before that column's modeled opcode-fetch cost is applied. This is the
+ * value used by the terrain decision; later CPC reads (notably flak) occur
+ * after additional instructions and remain an explicitly documented
+ * approximation until their M1 offsets have been derived from the assembly.
+ * Calibrated against a real instrumented CPC run (Sprint 14.101 - a LOGGEN
+ * cartridge variant that tags every l9134 dispatch with which path it took
+ * and captures R immediately before/after that path, so rExit-rEntry mod
+ * 128 is the real M1-fetch count for that specific path, no manual
+ * instruction counting needed). Measured mean R-delta per path (249 real
+ * land columns, one play session): MODE0_FLAT~65, HILL_DOWN_OK~66,
+ * HILL_UP_OK~68, TARGET_RADAR/LAUNCHER/GUN/TANK combined~63,
+ * TARGET_GATE_CLOSED~69 - i.e. no statistically meaningful difference
+ * between paths at this sample size, because the dominant source of
+ * variance turned out to be l914e's own fill-loop cost (which scales with
+ * 15-height, the same for every path that reaches it), not the deciding
+ * code itself. Per the project's own direction here: the goal is
+ * reproducing the generating algorithm's statistical behaviour close
+ * enough (roughly 95%+), not bit-exact landscape replay, so this collapses
+ * to one calibrated constant instead of preserving the earlier guessed
+ * per-path split the data didn't actually support. Revisit only if a much
+ * larger sample later shows a real per-path difference worth modelling. */
 static UBYTE cpcRStateByColumn[GAME_LEVEL_WIDTH_TILES];
-#define CPC_R_INITIAL 0x00
 #define CPC_R_MASK 0x7f
-#define CPC_R_COST_DEFAULT 0x53  /* outside land (sea/town) - unchanged flat rate */
-#define CPC_R_COST_FLAT 0x50     /* land: flat, or a blocked hill/target degenerating to flat */
-#define CPC_R_COST_HILL 0x58     /* land: hill up/down actually stepping */
-#define CPC_R_COST_TARGET 0x68   /* land: successful target insertion (most code run) */
-#define CPC_R_COST_TANK_REAR 0x48 /* Amiga-only tank continuation slot, no real CPC tick */
+#define CPC_R_COST_DEFAULT 63  /* outside land (sea/town) - unchanged flat rate */
+#define CPC_R_COST_FLAT 63     /* land: flat, or a blocked hill/target degenerating to flat */
+#define CPC_R_COST_HILL 63     /* land: hill up/down actually stepping */
+#define CPC_R_COST_TARGET 63   /* land: successful target insertion */
+#define CPC_R_COST_TANK_REAR 63 /* CPC's next-tick continuation of the tank sprite block */
 
 /* CPC clouds are streamed multi-column tile blocks, not moving sprites.
  * Store only the chosen top row and block column for each world column;
@@ -4877,7 +4889,12 @@ static UBYTE cpcTargetTypeForRState(UBYTE rState);
  * folded into this same single per-world-column walk below, so terrain,
  * targets, clouds, flak and town all read the *same* sequence at the *same*
  * position - same seed now genuinely means same landscape end to end, and a
- * new seed means a new but equally CPC-like one. */
+ * new seed means a new but equally CPC-like one.
+ *
+ * LOGGEN POLICY: captured LOGGEN rows are observations used to compare the
+ * distribution and timing of this algorithm. They must never be imported as
+ * a map, a lookup sequence, or any other runtime world data. The Amiga world
+ * must always be produced by the reconstructed CPC algorithms below. */
 static void resetCpcRandomSequence(void) {
 	/* Session-random seed (frameCounter at the moment a new game starts,
 	 * itself unpredictable since it depends on how long the player sat at
@@ -4885,7 +4902,12 @@ static void resetCpcRandomSequence(void) {
 	 * world (terrain, targets, clouds, flak, town) differs from the last,
 	 * same as the real Amstrad's does. */
 	UWORD state = frameCounter;
-	UBYTE rState = CPC_R_INITIAL;
+	/* A real Z80's refresh register at mission start depends on the opcode
+	 * fetches performed while the player was in the menu. Amiga has no R
+	 * register, so derive a varying 7-bit starting point from the same
+	 * session seed. Fixed seeds may still be used by validation builds, but
+	 * captured LOGGEN values are never runtime input. */
+	UBYTE rState = (UBYTE)((state ^ (state >> 7)) & CPC_R_MASK);
 
 	/* Land generator state (asm:5433-5521 l9134, asm:5621-5665
 	 * insertenemylandtile) - persists across the whole walk below but only
@@ -4913,11 +4935,13 @@ static void resetCpcRandomSequence(void) {
 			cpcLandTargetTable[i] = CPC_LAND_TARGET_NONE;
 
 			if (landPendingTankRear) {
-				/* Amiga-side adaptation: CPC draws the 2-tile tank sprite as
-				 * a vertically-stacked block within a single generated
-				 * column (drawspriteblock3 steps by row, not column); this
-				 * port's one-tile-per-column ring buffer instead spans it
-				 * across two adjacent world columns. */
+				/* CPC continuation, not an Amiga invention. The first
+				 * insertenemylandtile call draws bytes 00,2d vertically and
+				 * stores the advanced DE in l885e. On the next scroll tick
+				 * gamelevelprogress=4 resumes at l9206/l91cb and draws
+				 * 00,2e at the fresh right edge. The visible tank therefore
+				 * spans two world columns even though drawspriteblock3 itself
+				 * advances rows within each column. */
 				landPendingTankRear = 0;
 				cpcLandTargetTable[i] = CPC_LAND_TARGET_TANK_REAR;
 				surface = (UBYTE)(32 + (rState & 3));
@@ -4989,12 +5013,16 @@ static void resetCpcRandomSequence(void) {
 		}
 
 		cpcRandomStateByColumn[column] = state;
+		/* Store the value actually visible to this column's terrain path.
+		 * The former ordering stored the post-column value, shifting every
+		 * R-based lookup away from the terrain that selected it. */
+		cpcRStateByColumn[column] = rState;
 		/* R advances independently of genrandomhl, by however much code ran
 		 * this tick - see the CPC_R_COST_* comment above. */
 		rState = (UBYTE)((rState + rCost) & CPC_R_MASK);
-		cpcRStateByColumn[column] = rState;
 	}
 	cpcRandomSequenceReady = 1;
+	resetCpcTownBlockTable();
 	generateCpcCloudTable();
 
 #if HAR_DEBUG_PERF_LOG
@@ -5034,10 +5062,11 @@ static UWORD cpcRandomStateForWorldColumn(LONG worldColumn) {
 	return cpcRandomStateByColumn[worldColumn];
 }
 
-/* Sprint 14.97 PRI 5: Z80 R register value for the given world column. Used
- * for grass variant (R&3), hill-down variant ((R>>1)&3), target type
- * ((R>>3)&3), town building ((R>>2)&7), sea tile (R&3), and flak gate
- * (R&0x0f) — all CPC decisions that read R, not l8859/genrandomhl. */
+/* Modeled Z80 R value at the start of the given generated column. This is
+ * exact within our reconstructed column walk for early terrain decisions.
+ * Consumers reached later in CPC's instruction path currently use it as the
+ * nearest deterministic approximation; they must eventually use explicit
+ * decision-point offsets, not LOGGEN-derived lookup rows. */
 static UBYTE cpcRStateForWorldColumn(LONG worldColumn) {
 	if (!cpcRandomSequenceReady)
 		resetCpcRandomSequence();
@@ -5117,6 +5146,10 @@ static UBYTE cpcLandProceduralSurface(UWORD index) {
 static UBYTE townBlockForColumn[CPC_TOWN_PROCEDURAL_LENGTH];
 static UBYTE townBlockLocalColumnForColumn[CPC_TOWN_PROCEDURAL_LENGTH];
 static UBYTE townBlockTableReady = 0;
+
+static void resetCpcTownBlockTable(void) {
+	townBlockTableReady = 0;
+}
 
 static void generateCpcTownBlockTable(void) {
 	/* Sprint 14.97 PRI 5: CPC selects town buildings from R:
@@ -6797,22 +6830,15 @@ static void resetRuntimeFlak(void) {
 
 static void resetPowerup(GameState* game) {
 	memset(&game->powerup, 0, sizeof(PowerupState));
+	game->powerup.lastSpawnCheckColumn = 0xffff;
 }
 
-/* Sprint 14.95 Part 2: real CPC's launchflakattack (:6033-6095) runs
- * continuously from checkenemyattacks and places flak directly at the right
- * screen edge as new columns scroll in - not from a precomputed lookahead
- * table like this port previously used. Mirrors that here: once per newly-
- * revealed rightmost column, roll a chance (roughly doubled during the
- * town/building stage, matching CPC's lower l884c threshold there - see
- * Amiga-Improvement-Plan-23.04.2026.md Part 2/5) and place flak into an
- * empty sky cell at a random altitude above the terrain, reusing the same
- * MIN/MAX row-offset range this port already tuned from user feedback (flak
- * needs to reach up near the player's own ceiling, not just hug the
- * ground). The per-column spawn probabilities below are an approximation of
- * the old per-target/per-block-gated density converted to a flat per-column
- * roll, since there's no longer a "how many targets/blocks exist" quantity
- * to gate on - may need further live tuning.
+/* Real CPC launchflakattack (:6055-6120) runs continuously from
+ * checkenemyattacks. This reconstruction preserves l884b/l884c/l8864,
+ * derives the absolute row from l8859's upper nibble, requires a sky cell,
+ * and uses R bit 0 for the sprite variant. R is currently the column-start
+ * approximation documented by cpcRStateForWorldColumn(); it must later be
+ * advanced to the assembly's flak decision point by an M1-derived offset.
  *
  * Correctness fix: the ring buffer streams up to RING_WORLD_STREAM_MAX_AHEAD_
  * TILES(64) columns ahead of the visible screen edge, so the column at
@@ -7098,6 +7124,14 @@ static UBYTE nextPowerupTypeForSpawnId(UBYTE spawnId) {
 
 static void trySpawnPowerup(GameState* game) {
 	PowerupState* p = &game->powerup;
+	/* CPC calls launchenemyplane once from the newly generated right-edge
+	 * world column, not once per video frame. Consume each column exactly
+	 * once even if an active powerup or another gate rejects the attempt. */
+	UWORD checkColumn = (UWORD)((game->scrollX >> 3) + POWERUP_SPAWN_COLUMN);
+	if (checkColumn == p->lastSpawnCheckColumn)
+		return;
+	p->lastSpawnCheckColumn = checkColumn;
+
 	if (p->active)
 		return;
 	if (game->gameOver || game->crashTimer || game->respawnSafeTimer > 0)
@@ -7109,10 +7143,10 @@ static void trySpawnPowerup(GameState* game) {
 	if (!playerHighEnoughForPowerup(game))
 		return;
 
-	/* CPC: ld a,r; and #0f; ret nz - one-in-16 gate. frameCounter's low
-	 * nibble cycles at 16 frames/spawn-window, ~0.32s at PAL - comparable
-	 * density to CPC's R-driven rate. */
-	if ((frameCounter & POWERUP_SPAWN_ROLL_MASK) != 0)
+	/* CPC: ld a,r; and #0f; ret nz. Use the modeled R value belonging to
+	 * this generated column rather than a frame counter. */
+	UBYTE rState = cpcRStateForWorldColumn(checkColumn);
+	if ((rState & POWERUP_SPAWN_ROLL_MASK) != 0)
 		return;
 
 	/* CPC's wingman-resurrection branch: if wingman was destroyed (status
@@ -7120,12 +7154,11 @@ static void trySpawnPowerup(GameState* game) {
 	 * isn't implemented on the Amiga port yet - skip this branch entirely
 	 * (the data type is reserved in the enum for forward compatibility). */
 
-	/* CPC: ld a,r; sub 100; jr c,spawnenemyplane - roughly 100/256 chance
-	 * to keep going past the enemy-plane branch into the powerup sequence.
-	 * Mix in spawnId so back-to-back qualifying frames don't all decode the
-	 * same way. */
-	UWORD roll = (UWORD)((frameCounter ^ (game->powerup.spawnId << 5)) & 0xff);
-	if (roll < 100)
+	/* CPC reads R again after roughly thirteen intervening opcode fetches.
+	 * R's low seven bits advance linearly, so model that second read instead
+	 * of inventing a separate frame-based random value. */
+	UBYTE powerupRoll = (UBYTE)((rState + 13) & CPC_R_MASK);
+	if (powerupRoll < 100)
 		return;
 
 	game->powerup.spawnId = (UBYTE)(game->powerup.spawnId + 1);
@@ -7137,7 +7170,7 @@ static void trySpawnPowerup(GameState* game) {
 		return;  /* CPC's 6th slot: enemy plane spawns instead - leave to updateEnemyPlane */
 
 	/* CPC uses currtime&3 after the right-edge column's RNG update. */
-	LONG spawnWorldColumn = (LONG)(game->scrollX >> 3) + POWERUP_SPAWN_COLUMN;
+	LONG spawnWorldColumn = checkColumn;
 	UBYTE startRow = (UBYTE)(cpcRandomStateForWorldColumn(spawnWorldColumn) & POWERUP_SPAWN_MAX_ROW);
 	spawnPowerup(game, type, startRow);
 }
