@@ -67,6 +67,7 @@
 #define HAR_DEBUG_REGISTER_RESOURCES 1
 #define HAR_DEBUG_PERF_LOG 0
 #define HAR_DEBUG_PERF_OVERLAY 0
+#define HAR_DEBUG_LAND_LOG 0
 #define HAR_HEADLESS_AUTOPLAY 0
 #define HAR_USE_PROMOTED_CPC_PLUS_ASSETS 1
 #define RING_WORLD_STREAM_MAX_AHEAD_TILES 64
@@ -113,6 +114,17 @@
 #define GAME_SPEED_LEVEL_MAX 15
 #define GAME_SPEED_LEVEL_DEFAULT 1
 #define GAME_THROTTLE_REPEAT_FRAMES 5
+/* Final carrier starts at world column 667. Begin when its first pixel reaches
+ * the 320px right edge, then keep the approach moving until it sits around
+ * screen x=144. CPC can move its hardware-sprite carrier independently of
+ * scenery; these two scroll positions reproduce that staging for Amiga's
+ * world-anchored carrier. */
+#define LANDING_APPROACH_SCROLL_X ((667 * GAME_TILE_WIDTH) - SCREEN_WIDTH)
+#define LANDING_HOVER_SCROLL_X ((667 * GAME_TILE_WIDTH) - 144)
+#define LANDING_SLOWDOWN_REPEAT_FRAMES 3
+#define LANDING_STATE_NONE 0
+#define LANDING_STATE_SLOWING 1
+#define LANDING_STATE_HOVER 2
 #define GAME_OBJECT_MAP_WIDTH_TILES GAME_WORLD_BUFFER_TILES
 #define GAME_OBJECT_MAP_HEIGHT_TILES GAME_MAP_HEIGHT
 #define GAME_OBJECT_MAP_CELL_COUNT (GAME_OBJECT_MAP_WIDTH_TILES * GAME_OBJECT_MAP_HEIGHT_TILES)
@@ -601,6 +613,7 @@ typedef struct GameState {
 	UWORD armour;
 	UBYTE gameOver;
 	UBYTE missionComplete;
+	UBYTE landingState;
 	UBYTE takeoffState;
 	UBYTE lives;
 	UBYTE respawnSafeTimer;
@@ -794,6 +807,36 @@ static UWORD perfMaxVblDelta = 0;
 #define PERF_LOG_BUFFER_BYTES 4096
 static char perfLogBuffer[PERF_LOG_BUFFER_BYTES];
 static UWORD perfLogBufferUsed = 0;
+
+/* Sprint 14.103: dumps the generated land height/tile/transition table to
+ * disk, for a "terrain looks too abrupt" report where the tile graphics and
+ * their anchor checked out fine in isolation (see AMIGA_PORT_PLAN.md) but
+ * the user wants to see the actual generated sequence from a real play
+ * session, not just static analysis. Same RAM-buffer-then-flush-at-shutdown
+ * pattern as perfLogBuffer above, for the same Forbid()/Disable() deadlock
+ * reason - see the comment on perfLogAppend(). Unlike perf_log.csv (which
+ * accumulates over the whole session), this only ever holds the CURRENT
+ * table - landLogBuild() resets it and rebuilds fully each time, so a
+ * mid-session restart (game over -> new game) doesn't append a second,
+ * confusing copy alongside the first. */
+#define LAND_LOG_BUFFER_BYTES 6144
+static char landLogBuffer[LAND_LOG_BUFFER_BYTES];
+static UWORD landLogBufferUsed = 0;
+
+static void landLogAppend(const char* data, UWORD len) {
+	if (landLogBufferUsed + len > LAND_LOG_BUFFER_BYTES)
+		return;
+	for (UWORD i = 0; i < len; i++)
+		landLogBuffer[landLogBufferUsed++] = data[i];
+}
+
+static void landLogFlushToDisk(void) {
+	BPTR file = Open((CONST_STRPTR)"DH1:land_log.csv", MODE_NEWFILE);
+	if (!file)
+		return;
+	Write(file, (APTR)landLogBuffer, landLogBufferUsed);
+	Close(file);
+}
 
 /* Memory-overlap canary: investigating a user report that HUD corruption
  * visually "follows terrain movement" - the leading theory being that the
@@ -3304,6 +3347,7 @@ static void initGameState(GameState* game) {
 	game->armour = 100;
 	game->gameOver = 0;
 	game->missionComplete = 0;
+	game->landingState = LANDING_STATE_NONE;
 	game->takeoffState = TAKEOFF_STATE_AIRBORNE;
 	game->lives = PLAYER_START_LIVES;
 	game->respawnSafeTimer = 0;
@@ -3441,6 +3485,54 @@ static UBYTE updateThrottle(GameState* game, const InputState* input) {
 	}
 
 	return 0;
+}
+
+/* CPC checkplayerspeed forces a decrement from gamelevelprogress 11 onward
+ * while the final friendly carrier is intact. Once speed reaches zero,
+ * gamelevelprogress 13 leaves the scrolling game loop for landinghoverloop.
+ *
+ * CPC scrolls the final carrier as separate hardware sprites while scenery
+ * slows. The Amiga carrier is world-anchored, so begin at the point where it
+ * has entered the screen (the existing 640-column landing threshold) rather
+ * than when its first off-screen column is generated. */
+static UBYTE updateLandingApproach(GameState* game) {
+	if (game->missionComplete || game->gameOver || game->crashTimer)
+		return 0;
+	if (game->playerFrigateStatus != PLAYER_FRIGATE_STATUS_CLEAR)
+		return 0;
+
+	if (game->landingState == LANDING_STATE_NONE) {
+		if (game->scrollX < LANDING_APPROACH_SCROLL_X)
+			return 0;
+		game->landingState = LANDING_STATE_SLOWING;
+		game->throttleRepeatTimer = 0;
+	}
+
+	if (game->landingState != LANDING_STATE_SLOWING)
+		return 0;
+
+	if (game->throttleRepeatTimer > 0) {
+		game->throttleRepeatTimer--;
+		return 0;
+	}
+
+	if (game->speedLevel > 0) {
+		game->speedLevel--;
+		game->throttleRepeatTimer = LANDING_SLOWDOWN_REPEAT_FRAMES;
+	}
+	if (game->speedLevel == 0 && game->scrollX >= LANDING_HOVER_SCROLL_X) {
+		game->landingState = LANDING_STATE_HOVER;
+		/* CPC jumps out of the combat/scroll loop at state 13. Remove
+		 * transient combat actors instead of letting them keep updating
+		 * inside the Amiga hover phase. */
+		game->rocketShot.active = 0;
+		game->bombShot.active = 0;
+		game->enemyPlane.active = 0;
+		game->enemyMissile.active = 0;
+		game->enemyMissileFromShip = 0;
+		game->powerup.active = 0;
+	}
+	return 1;
 }
 
 /* Real CPC in-game HUD draws SPEED/FUEL/ROCKETS/BOMBS as tick-segmented
@@ -4659,6 +4751,21 @@ static UBYTE cpcLandTargetTable[CPC_LAND_PROCEDURAL_LENGTH];
  * actually fires gets a slope tile). */
 static UBYTE cpcLandSurfaceTable[CPC_LAND_PROCEDURAL_LENGTH];
 
+/* Sprint 14.103: records which transition the height dispatcher actually
+ * took for each column, purely for validation/diagnostics - doesn't change
+ * any generation behaviour. Added while investigating a "terrain looks too
+ * abrupt, especially uphills" report: the recommended first step was to make
+ * the generator's own transition type explicit and checkable against the
+ * tile it chose, rather than guessing whether the height algorithm or the
+ * tile graphics/anchor is at fault. */
+typedef enum CpcLandTransition {
+	CPC_LAND_FLAT = 0,
+	CPC_LAND_CLIMB = 1,   /* mode 2: height-- (asm hill-up, tiles 24-27) */
+	CPC_LAND_DESCEND = 2, /* mode 1: height++ (asm hill-down, tiles 28-31) */
+	CPC_LAND_TARGET = 3
+} CpcLandTransition;
+static UBYTE cpcLandTransitionTable[CPC_LAND_PROCEDURAL_LENGTH];
+
 /* Coverage-ordered fallback used by deterministic non-procedural transitions.
  * CPC-procedural hills select their 24-27/28-31 variant randomly at the
  * actual height-change event, matching `ld a,r; rra; and 3`. */
@@ -4914,6 +5021,29 @@ static UBYTE cpcTargetTypeForRState(UBYTE rState);
  * distribution and timing of this algorithm. They must never be imported as
  * a map, a lookup sequence, or any other runtime world data. The Amiga world
  * must always be produced by the reconstructed CPC algorithms below. */
+
+#if HAR_DEBUG_LAND_LOG
+static void landLogBuild(void) {
+	landLogBufferUsed = 0;
+	{
+		static const char header[] = "index,height,surfaceTile,transition\n";
+		landLogAppend(header, sizeof(header) - 1);
+	}
+	for (UWORD i = 0; i < CPC_LAND_PROCEDURAL_LENGTH; i++) {
+		char line[24];
+		char* out = line;
+		out = appendUnsignedLong(out, i);
+		*out++ = ',';
+		out = appendUnsignedLong(out, cpcLandHeightTable[i]);
+		*out++ = ',';
+		out = appendUnsignedLong(out, cpcLandSurfaceTable[i]);
+		*out++ = ',';
+		out = appendUnsignedLong(out, cpcLandTransitionTable[i]);
+		*out++ = '\n';
+		landLogAppend(line, (UWORD)(out - line));
+	}
+}
+#endif
 static void resetCpcRandomSequence(void) {
 	/* Session-random seed (frameCounter at the moment a new game starts,
 	 * itself unpredictable since it depends on how long the player sat at
@@ -4952,6 +5082,7 @@ static void resetCpcRandomSequence(void) {
 		if (landLocalColumn >= 0 && landLocalColumn < CPC_LAND_PROCEDURAL_LENGTH) {
 			UWORD i = (UWORD)landLocalColumn;
 			UBYTE surface;
+			UBYTE transition = CPC_LAND_FLAT;
 			cpcLandTargetTable[i] = CPC_LAND_TARGET_NONE;
 
 			if (landPendingTankRear) {
@@ -4966,6 +5097,7 @@ static void resetCpcRandomSequence(void) {
 				cpcLandTargetTable[i] = CPC_LAND_TARGET_TANK_REAR;
 				surface = (UBYTE)(32 + (rState & 3));
 				rCost = CPC_R_COST_TANK_REAR;
+				transition = CPC_LAND_TARGET;
 			} else if (i == 0) {
 				/* asm:5409-5431 startoffalklandisland: one-shot land-entry
 				 * transition column - draws fixed join tiles, not mode
@@ -4988,6 +5120,7 @@ static void resetCpcRandomSequence(void) {
 						landHeight++;
 						surface = (UBYTE)(28 + ((rState >> 1) & 3));
 						rCost = CPC_R_COST_HILL;
+						transition = CPC_LAND_DESCEND;
 					} else {
 						surface = (UBYTE)(32 + (rState & 3));
 						rCost = CPC_R_COST_FLAT;
@@ -4999,6 +5132,7 @@ static void resetCpcRandomSequence(void) {
 						landHeight--;
 						surface = (UBYTE)(24 + ((l8859 >> 1) & 3));
 						rCost = CPC_R_COST_HILL;
+						transition = CPC_LAND_CLIMB;
 					} else {
 						surface = (UBYTE)(32 + (rState & 3));
 						rCost = CPC_R_COST_FLAT;
@@ -5020,6 +5154,7 @@ static void resetCpcRandomSequence(void) {
 					landJustInserted = 1;
 					surface = (UBYTE)(32 + (rState & 3));
 					rCost = CPC_R_COST_TARGET;
+					transition = CPC_LAND_TARGET;
 				} else {
 					mode = 0;
 					surface = (UBYTE)(32 + (rState & 3));
@@ -5030,6 +5165,7 @@ static void resetCpcRandomSequence(void) {
 
 			cpcLandHeightTable[i] = landHeight;
 			cpcLandSurfaceTable[i] = surface;
+			cpcLandTransitionTable[i] = transition;
 		}
 
 		cpcRandomStateByColumn[column] = state;
@@ -5044,6 +5180,9 @@ static void resetCpcRandomSequence(void) {
 	cpcRandomSequenceReady = 1;
 	resetCpcTownBlockTable();
 	generateCpcCloudTable();
+#if HAR_DEBUG_LAND_LOG
+	landLogBuild();
+#endif
 
 #if HAR_DEBUG_PERF_LOG
 	/* Sanity check: CPC's real height table only ever steps by 1 per
@@ -5065,6 +5204,41 @@ static void resetCpcRandomSequence(void) {
 			*out++ = '-'; *out++ = '>';
 			out = appendUnsignedLong(out, cpcLandHeightTable[i]);
 			*out++ = '\n';
+			*out = 0;
+			KPrintF(line);
+		}
+	}
+
+	/* Sprint 14.103: cross-check the chosen tile against the transition it's
+	 * supposed to represent - added while investigating a "terrain looks too
+	 * abrupt, especially uphills" report, to rule in/out the height algorithm
+	 * itself (this check) before suspecting the converted tile graphics or
+	 * their vertical anchor (which this can't detect - only a genuinely
+	 * mismatched tile ID for the transition type). Climbs (height decreasing)
+	 * must land in the 24-27 tile group; descends (height increasing) in
+	 * 28-31; flat columns must never use either group. None of these should
+	 * ever fire - if one does, the generator's mode/tile pairing has an
+	 * actual bug, not just a presentation issue. */
+	for (UWORD i = 1; i < CPC_LAND_PROCEDURAL_LENGTH; i++) {
+		WORD delta = (WORD)cpcLandHeightTable[i] - (WORD)cpcLandHeightTable[i - 1];
+		UBYTE tile = cpcLandSurfaceTable[i];
+		const char* problem = 0;
+		if (delta == -1 && (tile < 24 || tile > 27))
+			problem = "LAND: climb uses wrong tile @ ";
+		else if (delta == 1 && (tile < 28 || tile > 31))
+			problem = "LAND: descend uses wrong tile @ ";
+		else if (delta == 0 && tile >= 24 && tile <= 31)
+			problem = "LAND: flat column uses slope tile @ ";
+		if (problem) {
+			char line[80];
+			char* out = line;
+			const char* p = problem;
+			while (*p)
+				*out++ = *p++;
+			out = appendUnsignedLong(out, i);
+			*out++ = ' '; *out++ = '('; *out++ = 't'; *out++ = '=';
+			out = appendUnsignedLong(out, tile);
+			*out++ = ')'; *out++ = '\n';
 			*out = 0;
 			KPrintF(line);
 		}
@@ -5766,7 +5940,7 @@ static UBYTE replenishPlayerFromFrigate(GameState* game) {
 	if (!playerOnOwnFrigateDeck(game) && !playerOnNativeCarrierDeckPixels(game))
 		return 0;
 
-	if (!game->missionComplete && game->scrollX >= (UWORD)(640 * GAME_TILE_WIDTH) && game->speedLevel <= 3) {
+	if (!game->missionComplete && game->landingState == LANDING_STATE_HOVER) {
 		game->missionComplete = 1;
 		game->speedLevel = 0;
 		changed = 1;
@@ -6210,7 +6384,8 @@ static void serviceRingWorldStream(UBYTE* bitmap, const GameState* game) {
 	UWORD leftColumn = scrollLeftWorldColumnForScroll(game->scrollX);
 	UWORD maxAheadColumn = (UWORD)(leftColumn + RING_WORLD_STREAM_MAX_AHEAD_TILES);
 
-	UBYTE scrollPixels = game->missionComplete ? 0 : scrollPixelsForSpeedLevel(game->speedLevel);
+	UBYTE scrollPixels = (game->missionComplete || game->landingState == LANDING_STATE_HOVER) ?
+		0 : scrollPixelsForSpeedLevel(game->speedLevel);
 	UWORD rowBudget = (UWORD)((scrollPixels * GAME_OBJECT_MAP_HEIGHT_TILES + (GAME_TILE_WIDTH - 1)) / GAME_TILE_WIDTH);
 	while (rowBudget > 0) {
 		if (ringStreamColumn < 0) {
@@ -7333,9 +7508,11 @@ static UBYTE playerObjectMapCollision(const GameState* game, LONG* hitWorldColum
 	if (game->takeoffState == TAKEOFF_STATE_LIFTING)
 		return PLAYER_OBJECT_COLLISION_SAFE;
 
-	/* Only the mission-end carrier is a valid landing/refuel surface.
+	/* Only the mission-end carrier in CPC-style hover mode is a valid
+	 * landing/refuel surface.
 	 * Re-contact with the start carrier after liftoff is fatal. */
-	if (game->missionComplete && playerOnNativeCarrierDeckPixels(game))
+	if ((game->landingState == LANDING_STATE_HOVER || game->missionComplete) &&
+		playerOnNativeCarrierDeckPixels(game))
 		return PLAYER_OBJECT_COLLISION_SAFE;
 
 	for (UBYTE index = 0; index < sizeof(probeX) / sizeof(probeX[0]); index++) {
@@ -8314,12 +8491,20 @@ int main(void) {
 				if (game.bombLaunchCooldown > 0)
 					game.bombLaunchCooldown--;
 
-				if (!game.missionComplete && updateThrottle(&game, &input))
+				if (updateLandingApproach(&game))
+					hudDirty = 1;
+				if (!game.missionComplete && game.landingState == LANDING_STATE_NONE &&
+					updateThrottle(&game, &input))
 					hudDirty = 1;
 
-				UBYTE scrollPixels = game.missionComplete ? 0 : scrollPixelsForSpeedLevel(game.speedLevel);
-				if (!game.missionComplete && game.scrollX < GAME_SCROLL_MAX_PIXELS) {
+				UBYTE scrollPixels = (game.missionComplete || game.landingState == LANDING_STATE_HOVER) ?
+					0 : scrollPixelsForSpeedLevel(game.speedLevel);
+				if (!game.missionComplete && game.landingState != LANDING_STATE_HOVER &&
+					game.scrollX < GAME_SCROLL_MAX_PIXELS) {
 					UWORD nextScrollX = (UWORD)(game.scrollX + scrollPixels);
+					if (game.landingState == LANDING_STATE_SLOWING &&
+						nextScrollX > LANDING_HOVER_SCROLL_X)
+						nextScrollX = LANDING_HOVER_SCROLL_X;
 					game.scrollX = nextScrollX > GAME_SCROLL_MAX_PIXELS ? GAME_SCROLL_MAX_PIXELS : nextScrollX;
 				}
 
@@ -8332,6 +8517,17 @@ int main(void) {
 						game.playerY = TAKEOFF_CLEAR_Y;
 						game.takeoffState = TAKEOFF_STATE_AIRBORNE;
 					}
+				} else if (game.landingState == LANDING_STATE_HOVER) {
+					/* CPC landinghoverloop releases the speed-derived X
+					 * anchor and allows four-direction hover control. */
+					if (input.left && !input.right && game.playerX > PLAYER_MIN_X)
+						game.playerX -= PLAYER_MOVE_SPEED_PIXELS;
+					if (input.right && !input.left && game.playerX < PLAYER_MAX_X)
+						game.playerX += PLAYER_MOVE_SPEED_PIXELS;
+					if (input.up && game.playerY > PLAYER_MIN_Y)
+						game.playerY -= PLAYER_MOVE_SPEED_PIXELS;
+					if (input.down && game.playerY < PLAYER_MAX_Y)
+						game.playerY += PLAYER_MOVE_SPEED_PIXELS;
 				} else {
 					WORD targetPlayerX = playerTargetXForSpeedLevel(game.speedLevel);
 					if (game.playerX < targetPlayerX && game.playerX < PLAYER_MAX_X) {
@@ -8383,13 +8579,15 @@ int main(void) {
 					pendingEnemySpriteUpdate = 1;
 					pendingEnemyMissileSpriteUpdate = 1;
 				}
-				if (Pressed(input.select, previousInput.select)) {
+				if (game.landingState != LANDING_STATE_HOVER &&
+					Pressed(input.select, previousInput.select)) {
 					if (launchRocket(&game, input.left)) {
 						hudDirty = 1;
 						pendingWeaponSpriteUpdate = 1;
 					}
 				}
-				if (Pressed(input.bomb, previousInput.bomb)) {
+				if (game.landingState != LANDING_STATE_HOVER &&
+					Pressed(input.bomb, previousInput.bomb)) {
 					if (launchBomb(&game)) {
 						hudDirty = 1;
 						pendingWeaponSpriteUpdate = 1;
@@ -8502,6 +8700,9 @@ int main(void) {
 	FreeSystem();
 #if HAR_DEBUG_PERF_LOG
 	perfLogFlushToDisk();
+#endif
+#if HAR_DEBUG_LAND_LOG
+	landLogFlushToDisk();
 #endif
 
 	CloseLibrary((struct Library*)DOSBase);

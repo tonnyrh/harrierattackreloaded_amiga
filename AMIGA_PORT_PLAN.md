@@ -3220,3 +3220,42 @@ An independent review of Sprint 14.101 (Norwegian "Lederboks" review, same style
 Only the ammo line was a genuine, previously-unnoticed gap. Fixed with a new `ammoForSkill(skillLevel, &bombs, &rockets)` matching the exact CPC formula (`bombs=skill+3`, `rockets=bombs/2` integer division), wired into both `startGameSession()` (game start, mirroring how `lives`/`cpcLandSkillLevel` are already set post-`initGameState()` for the same "must reflect the just-picked skill, not a stale default" reason) and `replenishPlayerFromFrigate()` (landing replenish, previously a flat 12/6 there too).
 
 Verified: clean rebuild, headless autoplay pass with no crash/hang.
+
+## Sprint 14.103 - Terrain-Steepness Investigation (tile anchor + real generated-data logging)
+
+User report: terrain looks like it can change too abruptly on the Amiga port, especially uphills. Explicit review guidance: don't smooth the RNG or add artificial direction-locking (would diverge from CPC-likeness) - first make the generator's own transition type explicit and checkable, then verify the tile graphics/anchor, and only consider a deliberate wider-Amiga-slope presentation layer (kept separate from the CPC generator) if everything else checks out and it still looks too steep.
+
+**Added `cpcLandTransitionTable[CPC_LAND_PROCEDURAL_LENGTH]`** (`CpcLandTransition` enum: FLAT/CLIMB/DESCEND/TARGET) alongside the existing height/surface tables - pure metadata, no change to generation behaviour. Populated directly in `resetCpcRandomSequence()`'s mode dispatch (mirrors the same branches that already choose height/tile).
+
+**Extended the `HAR_DEBUG_PERF_LOG` validation loop**: beyond the existing |delta|<=1 check, now cross-checks the chosen tile against the transition it represents - climbs (height decreasing) must land in tiles 24-27, descends (height increasing) in 28-31, flat columns must never use either group. None of these fired during a headless verification pass.
+
+**Resolved the tile/vertical-anchor question via direct pixel-data analysis, not a screenshot.** `amiga/assets/generated/cpc/cpc_tiles.json` already stores fully-decoded 8x8 pen-index arrays for every promoted tile (not just raw bytes) - rendered tiles 24-31 as ASCII art directly from that data:
+
+```
+tile 24 (HILL UP 1)      tile 28 (HILL DOWN 1)
+......##                 ##......
+....####                 ####....
+...#####                 #####...
+...#####                 #####...
+..######                 ######..
+..######                 ######..
+.#######                 #######.
+########                 ########
+```
+
+Both show a clean diagonal spanning the full tile - the edge toward the *previous* column stays near the old height almost to the tile's bottom, while the edge toward the *new* column reaches the new height near the top. This is exactly the shape needed for a smooth one-row transition anchored at the new height row, matching how `buildWorldTileColumn()` already places it (`tileY == terrainY`, the post-step height). GRASS tiles (32-35) are solid-filled below their top texture row, matching `solidlandspriteblock`'s own fill tile, so the boundary between the surface tile and the rows filled below it is seamless. Conclusion: the tile graphics and their anchor are correct - this was not the cause.
+
+**Added `land_log.csv`**, a new debug-only dump of the actual generated table (`index,height,surfaceTile,transition` per column), gated behind a new `HAR_DEBUG_LAND_LOG` flag, using the exact same RAM-buffer-then-flush-after-`FreeSystem()` pattern `perf_log.csv` already established (same Forbid()/Disable() deadlock reasoning - see the comment on `perfLogAppend()`). Unlike the perf log, this doesn't accumulate across a session; `landLogBuild()` resets and rebuilds fully each time `resetCpcRandomSequence()` runs, so a mid-session restart doesn't produce a confusing double dump.
+
+**Ran it via headless autoplay and compared directly against real CPC-captured data** (the 188-column WinAPE trace still held from Sprint 14.99's original verification work, not re-shipped, used here only as a one-time comparison point):
+
+| | Real CPC (188 cols) | Amiga (295 cols, one run) |
+|---|---|---|
+| Height-change rate | 31.0% | 29.6% |
+| Immediate reversals (climb directly followed by descend, or vice versa) as a fraction of all height changes | 17.2% | 25.3% |
+
+Overall height-change frequency matches closely, confirming the mode-dispatch probability is right. The immediate-reversal rate looks somewhat higher in this one Amiga sample, which would read as more frequent small jagged notches rather than smooth slopes - but with only 58 vs. 87 height-change events total, this gap sits within plausible single-sample noise (not a confirmed systematic difference). Not chased further per the project's own "95%+, don't over-invest" standard from Sprint 14.101/14.102 - `land_log.csv` is now available for gathering more sessions' worth of data (from either side) if a clearer answer is ever wanted.
+
+**Standing conclusion**: the height algorithm, tile choice, and tile vertical anchor all check out. If the terrain still reads as too abrupt after watching more of it in motion, the most likely remaining explanations are (a) CPC Mode 1's non-square pixel aspect ratio making the same logical transition look visually gentler there than on Amiga's more square pixels, and/or (b) the modestly-higher reversal rate above, if a larger sample confirms it's real. Either would call for a deliberate, separate Amiga presentation adaptation (e.g. `AMIGA_WIDE_TERRAIN_SLOPES`, spreading one logical height step across two rendered columns with the collision model updated to match) - not a change to the generator itself. Not implemented this sprint; revisit only if requested.
+
+Verified: clean rebuild (both flag-off and flag-on configurations), headless autoplay pass with no crash/hang, `land_log.csv` confirmed generated and readable end to end.
