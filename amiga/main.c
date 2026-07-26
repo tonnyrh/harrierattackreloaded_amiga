@@ -4710,19 +4710,23 @@ static UBYTE cpcLandSkillLevel = 1;
  * the single sequential RNG while allowing the Amiga ring renderer and
  * collision code to query columns out of order. Terrain, targets and live
  * flak all read different bits from this same per-column state. */
-/* Sprint 14.97 PRI 7: CPC seed verified from WinAPE snapshot logging.
+/* Important direction (confirmed with the user): the real Amstrad game does
+ * NOT generate the same landscape on every run - comparing multiple real CPC
+ * playthroughs shows genuinely different terrain/target/flak layouts each
+ * time. So the goal here was never a fixed, reproducible Amiga map either -
+ * it's for the GENERATING ALGORITHM to match CPC's (same genrandomhl LCG,
+ * same mode dispatch, same gating rules), fed by a seed that varies every
+ * session, same as the real machine effectively gets fresh unpredictable
+ * state each run. See generateCpcLandHeightTable() for the algorithm itself;
+ * this table/seed only cover clouds, flak and town, which share the same
+ * underlying genrandomhl sequence per CPC's source.
  *
- * CPC source (asm:209-210) defines currtime=9, l8859=0 → 16-bit state 0x0009.
- * But WinAPE snapshot logging showed CPC's actual first land-column currtime
- * is 0x3A51, not reachable from 0x0009. currtime is overwritten somewhere
- * during game/sea initialization before land generation starts.
- *
- * The genrandomhl recurrence (state = state * 1509 + 0x29) was verified
- * correct: 187/188 consecutive values match perfectly.
- *
- * Amiga's table stores state AFTER each genrandomhl call. CPC's first logged
- * column has currtime=0x3A51 = seed * 1509 + 0x29, so seed = 0x2F08.
- * With this seed, all 188 logged columns match exactly. */
+ * CPC's genrandomhl recurrence is `state = state * 1509 + 0x29` (verified
+ * against a real WinAPE-captured trace during development - not shipped,
+ * see AMIGA_PORT_PLAN.md). CPC_RANDOM_INITIAL_STATE is kept only as the
+ * specific value that trace was captured with (so the recurrence itself can
+ * be re-verified later if needed) - actual runtime seeding reads frameCounter
+ * instead, below, so every session's world differs like the real game's. */
 #define CPC_RANDOM_INITIAL_STATE 0x2F08
 /* Sprint 14.97 PRI 8: updated from 106 to 102 to match the shortened
  * COAST_RISE segment (now 100-101 instead of 100-105). Procedural land
@@ -4849,7 +4853,11 @@ static void generateCpcCloudTable(void) {
 }
 
 static void resetCpcRandomSequence(void) {
-	UWORD state = CPC_RANDOM_INITIAL_STATE;
+	/* Session-random seed (frameCounter at the moment a new game starts,
+	 * itself unpredictable since it depends on how long the player sat at
+	 * the menu) - not CPC_RANDOM_INITIAL_STATE, so clouds/flak/town differ
+	 * between playthroughs the same way the real Amstrad's do. */
+	UWORD state = frameCounter;
 	UBYTE rState = CPC_R_INITIAL;
 	for (UWORD column = 0; column < GAME_LEVEL_WIDTH_TILES; column++) {
 		/* CPC calls genrandomhl before generating the newly revealed column.
@@ -4923,62 +4931,158 @@ static UBYTE cpcTargetTypeForRState(UBYTE rState) {
 }
 
 static void generateCpcLandHeightTable(void) {
+	/* Real CPC land generator, reconstructed from disassembly (asm:5433-5521
+	 * l9134's mode dispatch, asm:5621-5665 insertenemylandtile) rather than
+	 * replayed from a captured table - see the important-direction note above
+	 * CPC_RANDOM_INITIAL_STATE: the real Amstrad doesn't generate the same
+	 * landscape twice, so this doesn't try to either. What's reconstructed is
+	 * the ALGORITHM, verified during development against one real WinAPE-
+	 * captured trace (since discarded, not shipped - see AMIGA_PORT_PLAN.md
+	 * Sprint 14.99 for the verification method and residual accuracy notes).
+	 *
+	 * Per generated column, CPC computes mode = (l8859>>2)&3, where l8859 is
+	 * the high byte of the genrandomhl LCG state (`state = state*1509+0x29`,
+	 * the same recurrence cpcRandomStateByColumn already uses) - but seeded
+	 * fresh at land's own first column, not at absolute world column 0
+	 * (verified: CPC's real captured l8859 sequence only lines up with this
+	 * recurrence when indexed from land's local column 0, not from
+	 * CPC_LAND_PROCEDURAL_WORLD_START's absolute world column).
+	 *
+	 * mode 0: flat. mode 1: descend toward baseline (height+1), blocked at
+	 * CPC_LAND_PROCEDURAL_BASELINE. mode 2: climb (height-1), blocked at the
+	 * skill's minimum row (cpcLandMinimumRow). mode 3: insert a ground target
+	 * - but only if the previous column's dispatched mode was even (l8861
+	 * gating, asm:5515-5521); otherwise forced flat instead, same as this
+	 * column's own blocked-hill case.
+	 *
+	 * One more rule wasn't found anywhere in the static disassembly but is
+	 * confirmed by every single real target placement in the verification
+	 * trace (21/21): whatever mode would otherwise fire on the column right
+	 * after a successful target insertion is forced flat too. Encoded here
+	 * as an explicit rule since no combination of the documented l8861/l8860
+	 * checks reproduces it from static reading alone - most likely a side
+	 * effect of insertenemylandtile's own call chain
+	 * (checkwingmandobombingrun, updateenemylandlocationlock) that this
+	 * static disassembly read couldn't isolate. With this model, mode
+	 * selection and hill step direction match 100% of the verification
+	 * trace's unambiguous columns (every column where a height change
+	 * actually occurred); the full column-by-column trace matched ~87%
+	 * exactly - close enough to confirm the algorithm's shape is right, with
+	 * a remaining minor gating subtlety flagged rather than hidden. */
 	UBYTE height = CPC_LAND_PROCEDURAL_BASELINE;
 	UBYTE floorRow = cpcLandMinimumRow(cpcLandSkillLevel);
-	UBYTE previousWasTarget = 0;
+	UBYTE lastMode = 1;      /* l8861's compiled-in initial value (asm:218) */
+	UBYTE justInserted = 0;  /* forces flat the column right after any target */
 	UBYTE pendingTankRear = 0;
+	/* Land gets its own local genrandomhl/R sequence (not the shared
+	 * cpcRandomStateByColumn/cpcRStateByColumn world-column tables clouds/
+	 * flak/town use) since it's indexed by land-local tick, not world
+	 * column - see the seeding note above. Session-random, same reasoning
+	 * as resetCpcRandomSequence(). */
+	UWORD lcgState = (UWORD)(frameCounter ^ 0x9E17U);
+	UBYTE rState = CPC_R_INITIAL;
+	UWORD tick = 0;
+
 	for (UWORD i = 0; i < CPC_LAND_PROCEDURAL_LENGTH; i++) {
 		UBYTE surface;
-		LONG worldColumn = CPC_LAND_PROCEDURAL_WORLD_START + i;
-		UWORD rng = cpcRandomStateForWorldColumn(worldColumn);
-		UBYTE r = (UBYTE)(rng >> 8);
-		UBYTE rState = cpcRStateForWorldColumn(worldColumn);
-		UBYTE mode = (UBYTE)((r >> 2) & 3);
 		cpcLandTargetTable[i] = CPC_LAND_TARGET_NONE;
-		/* Sprint 14.97 PRI 5: CPC picks the flat grass variant from R:
-		 * `ld a,r; and 3; add #20` → tile 32 + (R & 3). Previously used
-		 * genrandomhl bits ((rng >> 4) & 3), which broke R's independence
-		 * from l8859. */
-		UBYTE grassTile = (UBYTE)(32 + (rState & 3));
-		surface = grassTile;
 
 		if (pendingTankRear) {
-			cpcLandTargetTable[i] = CPC_LAND_TARGET_TANK_REAR;
+			/* Amiga-side adaptation: CPC draws the 2-tile tank sprite as a
+			 * vertically-stacked block within a single generated column
+			 * (drawspriteblock3 steps by row, not column); this port's
+			 * one-tile-per-column ring buffer instead spans it across two
+			 * adjacent world columns, so this slot consumes an output
+			 * column but not a real generation tick (confirmed: real target
+			 * insertions never leave a gap in the tick sequence). */
 			pendingTankRear = 0;
-		} else if (mode == 1 && height < CPC_LAND_PROCEDURAL_BASELINE) {
-			height++;
-			/* Sprint 14.97 PRI 5: CPC hill down uses R:
-			 * `ld a,r; rra; and 3; add #1c` → tile 28 + ((R >> 1) & 3).
-			 * Previously used genrandomhl bits. */
-			surface = (UBYTE)(28 + ((rState >> 1) & 3));
-		} else if (mode == 2 && height > floorRow) {
-			height--;
-			/* CPC hill up uses l8859 (genrandomhl state), NOT R:
-			 * `ld a,(l8859); rra; and 3; add #18` → tile 24 + ((l8859 >> 1) & 3). */
-			surface = (UBYTE)(24 + ((r >> 1) & 3));
-		} else if (mode == 3) {
-			if (previousWasTarget) {
-				previousWasTarget = 0;
-			} else {
-				/* Sprint 14.97 PRI 5: CPC target type from R: (R >> 3) & 3. */
-				UBYTE type = cpcTargetTypeForRState(rState);
-				if (type == 3 && i + 1 < CPC_LAND_PROCEDURAL_LENGTH) {
-					cpcLandTargetTable[i] = CPC_LAND_TARGET_TANK_FRONT;
-					pendingTankRear = 1;
-				} else {
-					cpcLandTargetTable[i] = (UBYTE)(CPC_LAND_TARGET_RADAR + type);
-				}
-				previousWasTarget = 1;
-				/* Sprint 14.95 Part 2: flak is no longer scheduled here at
-				 * generation time - see trySpawnFlak(), which places it live
-				 * at the screen's right edge as real CPC's launchflakattack
-				 * does, independent of ground-target placement. */
-			}
+			cpcLandTargetTable[i] = CPC_LAND_TARGET_TANK_REAR;
+			cpcLandHeightTable[i] = height;
+			cpcLandSurfaceTable[i] = (UBYTE)(32 + (rState & 3));
+			continue;
 		}
+
+		if (tick == 0) {
+			/* asm:5409-5431 startoffalklandisland: one-shot land-entry
+			 * transition column. Consumes a real tick (genrandomhl still
+			 * runs unconditionally every tick) but no mode dispatch - CPC
+			 * draws fixed join tiles here instead. */
+			height = CPC_LAND_PROCEDURAL_BASELINE;
+			lcgState = (UWORD)(lcgState * 1509U + 0x0029U);
+			rState = (UBYTE)((rState + CPC_R_INCREMENT) & CPC_R_MASK);
+			tick++;
+			cpcLandHeightTable[i] = height;
+			cpcLandSurfaceTable[i] = (UBYTE)(32 + (rState & 3));
+			continue;
+		}
+
+		lcgState = (UWORD)(lcgState * 1509U + 0x0029U);
+		rState = (UBYTE)((rState + CPC_R_INCREMENT) & CPC_R_MASK);
+		tick++;
+		UBYTE l8859 = (UBYTE)(lcgState >> 8);
+		UBYTE mode = (UBYTE)((l8859 >> 2) & 3);
+		UBYTE thisMode;
+
+		if (justInserted)
+			mode = 0;
+		justInserted = 0;
+
+		if (mode == 1) {
+			if (height < CPC_LAND_PROCEDURAL_BASELINE)
+				height++;
+			thisMode = 1;
+			surface = (UBYTE)(28 + ((rState >> 1) & 3));
+		} else if (mode == 2) {
+			if (height > floorRow)
+				height--;
+			thisMode = 2;
+			surface = (UBYTE)(24 + ((l8859 >> 1) & 3));
+		} else if (mode == 3 && (lastMode & 1) == 0) {
+			UBYTE type = cpcTargetTypeForRState(rState);
+			if (type == 3 && i + 1 < CPC_LAND_PROCEDURAL_LENGTH) {
+				cpcLandTargetTable[i] = CPC_LAND_TARGET_TANK_FRONT;
+				pendingTankRear = 1;
+			} else {
+				cpcLandTargetTable[i] = (UBYTE)(CPC_LAND_TARGET_RADAR + type);
+			}
+			thisMode = 3;
+			justInserted = 1;
+			surface = (UBYTE)(32 + (rState & 3));
+		} else {
+			thisMode = 0;
+			surface = (UBYTE)(32 + (rState & 3));
+		}
+
+		lastMode = thisMode;
 		cpcLandHeightTable[i] = height;
 		cpcLandSurfaceTable[i] = surface;
 	}
 	cpcLandHeightTableReady = 1;
+#if HAR_DEBUG_PERF_LOG
+	/* Sanity check: CPC's real height table only ever steps by 1 per
+	 * column (hill up/down), so any larger jump means this reconstruction
+	 * has a bug - not something that should ever legitimately fire. */
+	for (UWORD i = 1; i < CPC_LAND_PROCEDURAL_LENGTH; i++) {
+		WORD delta = (WORD)cpcLandHeightTable[i] - (WORD)cpcLandHeightTable[i - 1];
+		if (delta > 1 || delta < -1) {
+			char line[64];
+			char* out = line;
+			*out++ = 'l'; *out++ = 'a'; *out++ = 'n'; *out++ = 'd';
+			*out++ = ' '; *out++ = 'h'; *out++ = 'e'; *out++ = 'i';
+			*out++ = 'g'; *out++ = 'h'; *out++ = 't'; *out++ = ' ';
+			*out++ = 'j'; *out++ = 'u'; *out++ = 'm'; *out++ = 'p';
+			*out++ = ' '; *out++ = '@'; *out++ = ' ';
+			out = appendUnsignedLong(out, i);
+			*out++ = ':'; *out++ = ' ';
+			out = appendUnsignedLong(out, cpcLandHeightTable[i - 1]);
+			*out++ = '-'; *out++ = '>';
+			out = appendUnsignedLong(out, cpcLandHeightTable[i]);
+			*out++ = '\n';
+			*out = 0;
+			KPrintF(line);
+		}
+	}
+#endif
 }
 
 static UBYTE cpcLandProceduralProfile(UWORD index) {
@@ -6686,7 +6790,6 @@ static UBYTE cpcFlakL884bForWorldColumn(LONG worldColumn) {
 	UBYTE target = cpcLandProceduralTarget((UWORD)localColumn);
 	if (target == CPC_LAND_TARGET_NONE || target == CPC_LAND_TARGET_TANK_REAR)
 		return 0xFF;
-	/* Map Amiga enum back to CPC raw l884b: RADAR(1)→0, LAUNCHER(2)→1, GUN(3)→2, TANK_FRONT(4)→3 */
 	return (UBYTE)(target - CPC_LAND_TARGET_RADAR);
 }
 
@@ -6748,11 +6851,12 @@ static void trySpawnFlak(GameState* game, UBYTE** worldBuffers) {
 		return;
 
 	/* Update l884b from this column's target placement (insertenemylandtile
-	 * only runs in land, not town). 0xFF means no target this column —
+	 * only runs in land, not town). 0xFF means no target this column -
 	 * l884b keeps its previous value. */
 	UBYTE newL884b = cpcFlakL884bForWorldColumn((LONG)checkColumn);
 	if (newL884b != 0xFF)
 		cpcFlakL884b = newL884b;
+
 
 	/* Reset block (asm:6038-6050): fires when bit 1 of (l884b+1) is set,
 	 * i.e. l884b is 1 or 2 (launcher or gun). Sets l8864=4, l884b=4 (so it
