@@ -2,6 +2,7 @@
   {
     "asset_id": "sprite_pixel_data1",
     "kind": "cpc_plus_sprite_pixels",
+    "graphics_mode": "cpc_plus_direct_pen_indices",
     "source_label": "sprite_pixel_data1",
     "source": "AMSTRADFONT3.asm:1594",
     "name": "Flying Harrier left/green half",
@@ -16,7 +17,7 @@
       "FLYING HARRIER - GREEN"
     ],
     "promotion_status": "candidate",
-    "notes": "Values are CPC Plus sprite pen indices. Pen 0 is treated as transparent/sky in previews.",
+    "notes": "Values are direct CPC Plus sprite pen indices, not packed Mode 0 or Mode 1 bytes. Pen 0 is transparent.",
     "pixels": [
       [
         11,
@@ -167,6 +168,7 @@
   {
     "asset_id": "sprite_pixel_data2",
     "kind": "cpc_plus_sprite_pixels",
+    "graphics_mode": "cpc_plus_direct_pen_indices",
     "source_label": "sprite_pixel_data2",
     "source": "AMSTRADFONT3.asm:1603",
     "name": "Flying Harrier right/green half",
@@ -180,7 +182,7 @@
       "Flying Harrier right/green half"
     ],
     "promotion_status": "candidate",
-    "notes": "Values are CPC Plus sprite pen indices. Pen 0 is treated as transparent/sky in previews.",
+    "notes": "Values are direct CPC Plus sprite pen indices, not packed Mode 0 or Mode 1 bytes. Pen 0 is transparent.",
     "pixels": [
       [
         0,
@@ -331,6 +333,7 @@
   {
     "asset_id": "sprite_pixel_data4",
     "kind": "cpc_plus_sprite_pixels",
+    "graphics_mode": "cpc_plus_direct_pen_indices",
     "source_label": "sprite_pixel_data4",
     "source": "AMSTRADFONT3.asm:1636",
     "name": "Landing Harrier left half",
@@ -344,7 +347,7 @@
       "Landing Harrier left half"
     ],
     "promotion_status": "candidate",
-    "notes": "Values are CPC Plus sprite pen indices. Pen 0 is treated as transparent/sky in previews.",
+    "notes": "Values are direct CPC Plus sprite pen indices, not packed Mode 0 or Mode 1 bytes. Pen 0 is transparent.",
     "pixels": [
       [
         11,
@@ -495,6 +498,7 @@
   {
     "asset_id": "sprite_pixel_data3",
     "kind": "cpc_plus_sprite_pixels",
+    "graphics_mode": "cpc_plus_direct_pen_indices",
     "source_label": "sprite_pixel_data3",
     "source": "AMSTRADFONT3.asm:1645",
     "name": "Landing Harrier right half",
@@ -508,7 +512,7 @@
       "Landing Harrier right half"
     ],
     "promotion_status": "candidate",
-    "notes": "Values are CPC Plus sprite pen indices. Pen 0 is treated as transparent/sky in previews.",
+    "notes": "Values are direct CPC Plus sprite pen indices, not packed Mode 0 or Mode 1 bytes. Pen 0 is transparent.",
     "pixels": [
       [
         0,
@@ -659,6 +663,7 @@
   {
     "asset_id": "sprite_pixel_data5",
     "kind": "cpc_plus_sprite_pixels",
+    "graphics_mode": "cpc_plus_direct_pen_indices",
     "source_label": "sprite_pixel_data5",
     "source": "AMSTRADFONT3.asm:1658",
     "name": "Enemy plane flying left half",
@@ -672,7 +677,7 @@
       "Enemy plane flying left half"
     ],
     "promotion_status": "candidate",
-    "notes": "Values are CPC Plus sprite pen indices. Pen 0 is treated as transparent/sky in previews.",
+    "notes": "Values are direct CPC Plus sprite pen indices, not packed Mode 0 or Mode 1 bytes. Pen 0 is transparent.",
     "pixels": [
       [
         0,
@@ -823,6 +828,7 @@
   {
     "asset_id": "sprite_pixel_data6",
     "kind": "cpc_plus_sprite_pixels",
+    "graphics_mode": "cpc_plus_direct_pen_indices",
     "source_label": "sprite_pixel_data6",
     "source": "AMSTRADFONT3.asm:1667",
     "name": "Enemy plane flying right half",
@@ -836,7 +842,7 @@
       "Enemy plane flying right half"
     ],
     "promotion_status": "candidate",
-    "notes": "Values are CPC Plus sprite pen indices. Pen 0 is treated as transparent/sky in previews.",
+    "notes": "Values are direct CPC Plus sprite pen indices, not packed Mode 0 or Mode 1 bytes. Pen 0 is transparent.",
     "pixels": [
       [
         0,
@@ -987,6 +993,7 @@
   {
     "asset_id": "sprite_pixel_data7",
     "kind": "cpc_plus_sprite_pixels",
+    "graphics_mode": "cpc_plus_direct_pen_indices",
     "source_label": "sprite_pixel_data7",
     "source": "AMSTRADFONT3.asm:1678",
     "name": "Enemy plane broken left half",
@@ -1000,7 +1007,7 @@
       "Enemy plane broken left half"
     ],
     "promotion_status": "candidate",
-    "notes": "Values are CPC Plus sprite pen indices. Pen 0 is treated as transparent/sky in previews.",
+    "notes": "Values are direct CPC Plus sprite pen indices, not packed Mode 0 or Mode 1 bytes. Pen 0 is transparent.",
     "pixels": [
       [
         0,
@@ -1151,6 +1158,7 @@
   {
     "asset_id": "sprite_pixel_data8",
     "kind": "cpc_plus_sprite_pixels",
+    "graphics_mode": "cpc_plus_direct_pen_indices",
     "source_label": "sprite_pixel_data8",
     "source": "AMSTRADFONT3.asm:1688",
     "name": "Enemy plane broken right half",
@@ -1164,7 +1172,7 @@
       "Enemy plane broken right half"
     ],
     "promotion_status": "candidate",
-    "notes": "Values are CPC Plus sprite pen indices. Pen 0 is treated as transparent/sky in previews.",
+    "notes": "Values are direct CPC Plus sprite pen indices, not packed Mode 0 or Mode 1 bytes. Pen 0 is transparent.",
     "pixels": [
       [
         3,
@@ -1315,6 +1323,7 @@
   {
     "asset_id": "sprite_pixel_data10",
     "kind": "cpc_plus_sprite_pixels",
+    "graphics_mode": "cpc_plus_direct_pen_indices",
     "source_label": "sprite_pixel_data10",
     "source": "AMSTRADFONT3.asm:1710",
     "name": "Carrier body",
@@ -1328,7 +1337,7 @@
       "Carrier body"
     ],
     "promotion_status": "candidate",
-    "notes": "Values are CPC Plus sprite pen indices. Pen 0 is treated as transparent/sky in previews.",
+    "notes": "Values are direct CPC Plus sprite pen indices, not packed Mode 0 or Mode 1 bytes. Pen 0 is transparent.",
     "pixels": [
       [
         1,
@@ -1479,6 +1488,7 @@
   {
     "asset_id": "sprite_pixel_data11",
     "kind": "cpc_plus_sprite_pixels",
+    "graphics_mode": "cpc_plus_direct_pen_indices",
     "source_label": "sprite_pixel_data11",
     "source": "AMSTRADFONT3.asm:1721",
     "name": "Carrier back",
@@ -1492,7 +1502,7 @@
       "Carrier back"
     ],
     "promotion_status": "candidate",
-    "notes": "Values are CPC Plus sprite pen indices. Pen 0 is treated as transparent/sky in previews.",
+    "notes": "Values are direct CPC Plus sprite pen indices, not packed Mode 0 or Mode 1 bytes. Pen 0 is transparent.",
     "pixels": [
       [
         0,
@@ -1643,6 +1653,7 @@
   {
     "asset_id": "sprite_pixel_data12",
     "kind": "cpc_plus_sprite_pixels",
+    "graphics_mode": "cpc_plus_direct_pen_indices",
     "source_label": "sprite_pixel_data12",
     "source": "AMSTRADFONT3.asm:1732",
     "name": "Carrier front",
@@ -1656,7 +1667,7 @@
       "Carrier front"
     ],
     "promotion_status": "candidate",
-    "notes": "Values are CPC Plus sprite pen indices. Pen 0 is treated as transparent/sky in previews.",
+    "notes": "Values are direct CPC Plus sprite pen indices, not packed Mode 0 or Mode 1 bytes. Pen 0 is transparent.",
     "pixels": [
       [
         1,
@@ -1807,6 +1818,7 @@
   {
     "asset_id": "sprite_pixel_data13",
     "kind": "cpc_plus_sprite_pixels",
+    "graphics_mode": "cpc_plus_direct_pen_indices",
     "source_label": "sprite_pixel_data13",
     "source": "AMSTRADFONT3.asm:1743",
     "name": "Carrier top",
@@ -1820,7 +1832,7 @@
       "Carrier top"
     ],
     "promotion_status": "candidate",
-    "notes": "Values are CPC Plus sprite pen indices. Pen 0 is treated as transparent/sky in previews.",
+    "notes": "Values are direct CPC Plus sprite pen indices, not packed Mode 0 or Mode 1 bytes. Pen 0 is transparent.",
     "pixels": [
       [
         0,
@@ -2115,6 +2127,7 @@
   {
     "asset_id": "sprite_pixel_data14",
     "kind": "cpc_plus_sprite_pixels",
+    "graphics_mode": "cpc_plus_direct_pen_indices",
     "source_label": "sprite_pixel_data14",
     "source": "AMSTRADFONT3.asm:1763",
     "name": "Carrier top 2",
@@ -2128,7 +2141,7 @@
       "Carrier top 2"
     ],
     "promotion_status": "candidate",
-    "notes": "Values are CPC Plus sprite pen indices. Pen 0 is treated as transparent/sky in previews.",
+    "notes": "Values are direct CPC Plus sprite pen indices, not packed Mode 0 or Mode 1 bytes. Pen 0 is transparent.",
     "pixels": [
       [
         0,
@@ -2423,6 +2436,7 @@
   {
     "asset_id": "sprite_pixel_data15",
     "kind": "cpc_plus_sprite_pixels",
+    "graphics_mode": "cpc_plus_direct_pen_indices",
     "source_label": "sprite_pixel_data15",
     "source": "AMSTRADFONT3.asm:1783",
     "name": "Gunship left",
@@ -2436,7 +2450,7 @@
       "Gunship left"
     ],
     "promotion_status": "candidate",
-    "notes": "Values are CPC Plus sprite pen indices. Pen 0 is treated as transparent/sky in previews.",
+    "notes": "Values are direct CPC Plus sprite pen indices, not packed Mode 0 or Mode 1 bytes. Pen 0 is transparent.",
     "pixels": [
       [
         0,
@@ -2731,6 +2745,7 @@
   {
     "asset_id": "sprite_pixel_data16",
     "kind": "cpc_plus_sprite_pixels",
+    "graphics_mode": "cpc_plus_direct_pen_indices",
     "source_label": "sprite_pixel_data16",
     "source": "AMSTRADFONT3.asm:1803",
     "name": "Gunship right",
@@ -2744,7 +2759,7 @@
       "Gunship right"
     ],
     "promotion_status": "candidate",
-    "notes": "Values are CPC Plus sprite pen indices. Pen 0 is treated as transparent/sky in previews.",
+    "notes": "Values are direct CPC Plus sprite pen indices, not packed Mode 0 or Mode 1 bytes. Pen 0 is transparent.",
     "pixels": [
       [
         0,
@@ -3039,6 +3054,7 @@
   {
     "asset_id": "sprite_pixel_data_wingmanflying1",
     "kind": "cpc_plus_sprite_pixels",
+    "graphics_mode": "cpc_plus_direct_pen_indices",
     "source_label": "sprite_pixel_data_wingmanflying1",
     "source": "AMSTRADFONT3.asm:1823",
     "name": "Wingman flying left half",
@@ -3052,7 +3068,7 @@
       "Wingman flying left half"
     ],
     "promotion_status": "candidate",
-    "notes": "Values are CPC Plus sprite pen indices. Pen 0 is treated as transparent/sky in previews.",
+    "notes": "Values are direct CPC Plus sprite pen indices, not packed Mode 0 or Mode 1 bytes. Pen 0 is transparent.",
     "pixels": [
       [
         5,
@@ -3203,6 +3219,7 @@
   {
     "asset_id": "sprite_pixel_data_wingmanflying2",
     "kind": "cpc_plus_sprite_pixels",
+    "graphics_mode": "cpc_plus_direct_pen_indices",
     "source_label": "sprite_pixel_data_wingmanflying2",
     "source": "AMSTRADFONT3.asm:1832",
     "name": "Wingman flying right half",
@@ -3216,7 +3233,7 @@
       "Wingman flying right half"
     ],
     "promotion_status": "candidate",
-    "notes": "Values are CPC Plus sprite pen indices. Pen 0 is treated as transparent/sky in previews.",
+    "notes": "Values are direct CPC Plus sprite pen indices, not packed Mode 0 or Mode 1 bytes. Pen 0 is transparent.",
     "pixels": [
       [
         0,
@@ -3367,6 +3384,7 @@
   {
     "asset_id": "sprite_pixel_data_wingmanlanded1",
     "kind": "cpc_plus_sprite_pixels",
+    "graphics_mode": "cpc_plus_direct_pen_indices",
     "source_label": "sprite_pixel_data_wingmanlanded1",
     "source": "AMSTRADFONT3.asm:1843",
     "name": "Wingman landed left half",
@@ -3380,7 +3398,7 @@
       "Wingman landed left half"
     ],
     "promotion_status": "candidate",
-    "notes": "Values are CPC Plus sprite pen indices. Pen 0 is treated as transparent/sky in previews.",
+    "notes": "Values are direct CPC Plus sprite pen indices, not packed Mode 0 or Mode 1 bytes. Pen 0 is transparent.",
     "pixels": [
       [
         5,
@@ -3531,6 +3549,7 @@
   {
     "asset_id": "sprite_pixel_data_wingmanlanded2",
     "kind": "cpc_plus_sprite_pixels",
+    "graphics_mode": "cpc_plus_direct_pen_indices",
     "source_label": "sprite_pixel_data_wingmanlanded2",
     "source": "AMSTRADFONT3.asm:1852",
     "name": "Wingman landed right half",
@@ -3544,7 +3563,7 @@
       "Wingman landed right half"
     ],
     "promotion_status": "candidate",
-    "notes": "Values are CPC Plus sprite pen indices. Pen 0 is treated as transparent/sky in previews.",
+    "notes": "Values are direct CPC Plus sprite pen indices, not packed Mode 0 or Mode 1 bytes. Pen 0 is transparent.",
     "pixels": [
       [
         0,
@@ -3695,6 +3714,7 @@
   {
     "asset_id": "sprite_pixel_data_parachute",
     "kind": "cpc_plus_sprite_pixels",
+    "graphics_mode": "cpc_plus_direct_pen_indices",
     "source_label": "sprite_pixel_data_parachute",
     "source": "AMSTRADFONT3.asm:1863",
     "name": "Parachute",
@@ -3708,7 +3728,7 @@
       "Parachute"
     ],
     "promotion_status": "candidate",
-    "notes": "Values are CPC Plus sprite pen indices. Pen 0 is treated as transparent/sky in previews.",
+    "notes": "Values are direct CPC Plus sprite pen indices, not packed Mode 0 or Mode 1 bytes. Pen 0 is transparent.",
     "pixels": [
       [
         0,

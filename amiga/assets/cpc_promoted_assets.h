@@ -5,7 +5,7 @@
 #ifndef HAR_CPC_PROMOTED_ASSETS_H
 #define HAR_CPC_PROMOTED_ASSETS_H
 
-#define HAR_CPC_PROMOTED_ASSET_COUNT 18
+#define HAR_CPC_PROMOTED_ASSET_COUNT 20
 #define HAR_CPC_TOWN_BLOCK_COUNT 8
 #define HAR_CPC_TOWN_BLOCK_HEIGHT 5
 
@@ -313,6 +313,38 @@ static const UBYTE harCpcWingmanFlyingRightPixels[128] = {
 	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 };
 
+/* wingman_landed_left: Wingman landed left half
+   CPC source: AMSTRADFONT3.asm:1843
+   CPC asset id: sprite_pixel_data_wingmanlanded1 */
+#define HAR_CPC_WINGMAN_LANDED_LEFT_WIDTH 16
+#define HAR_CPC_WINGMAN_LANDED_LEFT_HEIGHT 8
+static const UBYTE harCpcWingmanLandedLeftPixels[128] = {
+	5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	4, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	3, 4, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	2, 3, 4, 4, 4, 3, 4, 4, 0, 0, 0, 0, 0, 0, 0, 0,
+	1, 2, 2, 3, 2, 3, 3, 4, 0, 0, 0, 0, 0, 0, 0, 0,
+	0, 0, 1, 1, 2, 2, 3, 1, 0, 0, 0, 0, 0, 0, 0, 0,
+	0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+};
+
+/* wingman_landed_right: Wingman landed right half
+   CPC source: AMSTRADFONT3.asm:1852
+   CPC asset id: sprite_pixel_data_wingmanlanded2 */
+#define HAR_CPC_WINGMAN_LANDED_RIGHT_WIDTH 16
+#define HAR_CPC_WINGMAN_LANDED_RIGHT_HEIGHT 8
+static const UBYTE harCpcWingmanLandedRightPixels[128] = {
+	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	0, 0, 4, 5, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	5, 3, 2, 4, 5, 6, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	2, 3, 2, 1, 3, 3, 4, 3, 0, 0, 0, 0, 0, 0, 0, 0,
+	1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+};
+
 /* parachute: Parachute
    CPC source: AMSTRADFONT3.asm:1863
    CPC asset id: sprite_pixel_data_parachute */
@@ -330,7 +362,7 @@ static const UBYTE harCpcParachutePixels[128] = {
 };
 
 /* town_block_0: CPC town/building block
-   CPC source: HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5778
+   CPC source: HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5800
    CPC asset id: town_block_0
    Layout: column-major, HAR_CPC_TOWN_BLOCK_HEIGHT rows per column. */
 #define HAR_CPC_TOWN_BLOCK_0_WIDTH 1
@@ -339,7 +371,7 @@ static const UBYTE harCpcTownBlock0Tiles[5] = {
 };
 
 /* town_block_1: CPC town/building block
-   CPC source: HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5779
+   CPC source: HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5801
    CPC asset id: town_block_1
    Layout: column-major, HAR_CPC_TOWN_BLOCK_HEIGHT rows per column. */
 #define HAR_CPC_TOWN_BLOCK_1_WIDTH 2
@@ -348,7 +380,7 @@ static const UBYTE harCpcTownBlock1Tiles[10] = {
 };
 
 /* town_block_2: CPC town/building block
-   CPC source: HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5780
+   CPC source: HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5802
    CPC asset id: town_block_2
    Layout: column-major, HAR_CPC_TOWN_BLOCK_HEIGHT rows per column. */
 #define HAR_CPC_TOWN_BLOCK_2_WIDTH 2
@@ -357,7 +389,7 @@ static const UBYTE harCpcTownBlock2Tiles[10] = {
 };
 
 /* town_block_3: CPC town/building block
-   CPC source: HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5781
+   CPC source: HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5803
    CPC asset id: town_block_3
    Layout: column-major, HAR_CPC_TOWN_BLOCK_HEIGHT rows per column. */
 #define HAR_CPC_TOWN_BLOCK_3_WIDTH 5
@@ -367,7 +399,7 @@ static const UBYTE harCpcTownBlock3Tiles[25] = {
 };
 
 /* town_block_4: CPC town/building block
-   CPC source: HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5782
+   CPC source: HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5804
    CPC asset id: town_block_4
    Layout: column-major, HAR_CPC_TOWN_BLOCK_HEIGHT rows per column. */
 #define HAR_CPC_TOWN_BLOCK_4_WIDTH 5
@@ -377,7 +409,7 @@ static const UBYTE harCpcTownBlock4Tiles[25] = {
 };
 
 /* town_block_5: CPC town/building block
-   CPC source: HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5783
+   CPC source: HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5805
    CPC asset id: town_block_5
    Layout: column-major, HAR_CPC_TOWN_BLOCK_HEIGHT rows per column. */
 #define HAR_CPC_TOWN_BLOCK_5_WIDTH 2
@@ -386,7 +418,7 @@ static const UBYTE harCpcTownBlock5Tiles[10] = {
 };
 
 /* town_block_6: CPC town/building block
-   CPC source: HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5784
+   CPC source: HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5806
    CPC asset id: town_block_6
    Layout: column-major, HAR_CPC_TOWN_BLOCK_HEIGHT rows per column. */
 #define HAR_CPC_TOWN_BLOCK_6_WIDTH 2
@@ -395,7 +427,7 @@ static const UBYTE harCpcTownBlock6Tiles[10] = {
 };
 
 /* town_block_7: CPC town/building block
-   CPC source: HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5785
+   CPC source: HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5807
    CPC asset id: town_block_7
    Layout: column-major, HAR_CPC_TOWN_BLOCK_HEIGHT rows per column. */
 #define HAR_CPC_TOWN_BLOCK_7_WIDTH 4

@@ -45,6 +45,7 @@
       {
         "asset_id": "cpc_tile_000",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 0,
         "source_label": "spr1",
         "source": "AMSTRADFONT3.asm:1230",
@@ -77,6 +78,7 @@
       {
         "asset_id": "cpc_tile_001",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 1,
         "source_label": "spr2",
         "source": "AMSTRADFONT3.asm:1233",
@@ -109,6 +111,7 @@
       {
         "asset_id": "cpc_tile_002",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 2,
         "source_label": "spr3",
         "source": "AMSTRADFONT3.asm:1236",
@@ -141,6 +144,7 @@
       {
         "asset_id": "cpc_tile_003",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 3,
         "source_label": "spr4",
         "source": "AMSTRADFONT3.asm:1239",
@@ -173,6 +177,7 @@
       {
         "asset_id": "cpc_tile_004",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 4,
         "source_label": "spr5",
         "source": "AMSTRADFONT3.asm:1242",
@@ -205,6 +210,7 @@
       {
         "asset_id": "cpc_tile_005",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 5,
         "source_label": "spr6",
         "source": "AMSTRADFONT3.asm:1245",
@@ -237,6 +243,7 @@
       {
         "asset_id": "cpc_tile_006",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 6,
         "source_label": "spr7",
         "source": "AMSTRADFONT3.asm:1248",
@@ -269,6 +276,7 @@
       {
         "asset_id": "cpc_tile_007",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 7,
         "source_label": "spr8",
         "source": "AMSTRADFONT3.asm:1251",
@@ -301,6 +309,7 @@
       {
         "asset_id": "cpc_tile_008",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 8,
         "source_label": "spr9",
         "source": "AMSTRADFONT3.asm:1254",
@@ -333,6 +342,7 @@
       {
         "asset_id": "cpc_tile_009",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 9,
         "source_label": "spr10",
         "source": "AMSTRADFONT3.asm:1257",
@@ -365,6 +375,7 @@
       {
         "asset_id": "cpc_tile_010",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 10,
         "source_label": "spr11",
         "source": "AMSTRADFONT3.asm:1260",
@@ -397,6 +408,7 @@
       {
         "asset_id": "cpc_tile_011",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 11,
         "source_label": "spr12",
         "source": "AMSTRADFONT3.asm:1263",
@@ -429,6 +441,7 @@
       {
         "asset_id": "cpc_tile_012",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 12,
         "source_label": "spr13",
         "source": "AMSTRADFONT3.asm:1266",
@@ -461,6 +474,7 @@
       {
         "asset_id": "cpc_tile_013",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 13,
         "source_label": "spr14",
         "source": "AMSTRADFONT3.asm:1269",
@@ -493,6 +507,7 @@
       {
         "asset_id": "cpc_tile_014",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 14,
         "source_label": "spr15",
         "source": "AMSTRADFONT3.asm:1272",
@@ -525,6 +540,7 @@
       {
         "asset_id": "cpc_tile_015",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 15,
         "source_label": "spr16",
         "source": "AMSTRADFONT3.asm:1275",
@@ -557,6 +573,7 @@
       {
         "asset_id": "cpc_tile_016",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 16,
         "source_label": "spr17",
         "source": "AMSTRADFONT3.asm:1278",
@@ -589,6 +606,7 @@
       {
         "asset_id": "cpc_tile_017",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 17,
         "source_label": "spr18",
         "source": "AMSTRADFONT3.asm:1281",
@@ -621,6 +639,7 @@
       {
         "asset_id": "cpc_tile_018",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 18,
         "source_label": "spr19",
         "source": "AMSTRADFONT3.asm:1284",
@@ -653,6 +672,7 @@
       {
         "asset_id": "cpc_tile_019",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 19,
         "source_label": "spr20",
         "source": "AMSTRADFONT3.asm:1287",
@@ -685,6 +705,7 @@
       {
         "asset_id": "cpc_tile_020",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 20,
         "source_label": "spr21",
         "source": "AMSTRADFONT3.asm:1290",
@@ -717,6 +738,7 @@
       {
         "asset_id": "cpc_tile_021",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 21,
         "source_label": "spr22",
         "source": "AMSTRADFONT3.asm:1293",
@@ -749,6 +771,7 @@
       {
         "asset_id": "cpc_tile_022",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 22,
         "source_label": "spr23",
         "source": "AMSTRADFONT3.asm:1296",
@@ -781,6 +804,7 @@
       {
         "asset_id": "cpc_tile_023",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 23,
         "source_label": "spr24",
         "source": "AMSTRADFONT3.asm:1299",
@@ -813,6 +837,7 @@
       {
         "asset_id": "cpc_tile_024",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 24,
         "source_label": "spr25",
         "source": "AMSTRADFONT3.asm:1302",
@@ -845,6 +870,7 @@
       {
         "asset_id": "cpc_tile_025",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 25,
         "source_label": "spr26",
         "source": "AMSTRADFONT3.asm:1305",
@@ -877,6 +903,7 @@
       {
         "asset_id": "cpc_tile_026",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 26,
         "source_label": "spr27",
         "source": "AMSTRADFONT3.asm:1308",
@@ -909,6 +936,7 @@
       {
         "asset_id": "cpc_tile_027",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 27,
         "source_label": "spr28",
         "source": "AMSTRADFONT3.asm:1311",
@@ -941,6 +969,7 @@
       {
         "asset_id": "cpc_tile_028",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 28,
         "source_label": "spr29",
         "source": "AMSTRADFONT3.asm:1314",
@@ -973,6 +1002,7 @@
       {
         "asset_id": "cpc_tile_029",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 29,
         "source_label": "spr30",
         "source": "AMSTRADFONT3.asm:1317",
@@ -1005,6 +1035,7 @@
       {
         "asset_id": "cpc_tile_030",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 30,
         "source_label": "spr31",
         "source": "AMSTRADFONT3.asm:1320",
@@ -1037,6 +1068,7 @@
       {
         "asset_id": "cpc_tile_031",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 31,
         "source_label": "spr32",
         "source": "AMSTRADFONT3.asm:1323",
@@ -1069,6 +1101,7 @@
       {
         "asset_id": "cpc_tile_032",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 32,
         "source_label": "spr33",
         "source": "AMSTRADFONT3.asm:1326",
@@ -1101,6 +1134,7 @@
       {
         "asset_id": "cpc_tile_033",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 33,
         "source_label": "spr34",
         "source": "AMSTRADFONT3.asm:1329",
@@ -1133,6 +1167,7 @@
       {
         "asset_id": "cpc_tile_034",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 34,
         "source_label": "spr35",
         "source": "AMSTRADFONT3.asm:1332",
@@ -1165,6 +1200,7 @@
       {
         "asset_id": "cpc_tile_035",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 35,
         "source_label": "spr36",
         "source": "AMSTRADFONT3.asm:1335",
@@ -1197,6 +1233,7 @@
       {
         "asset_id": "cpc_tile_036",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 36,
         "source_label": "spr37",
         "source": "AMSTRADFONT3.asm:1338",
@@ -1229,6 +1266,7 @@
       {
         "asset_id": "cpc_tile_037",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 37,
         "source_label": "spr38",
         "source": "AMSTRADFONT3.asm:1341",
@@ -1261,6 +1299,7 @@
       {
         "asset_id": "cpc_tile_038",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 38,
         "source_label": "spr39",
         "source": "AMSTRADFONT3.asm:1344",
@@ -1293,6 +1332,7 @@
       {
         "asset_id": "cpc_tile_039",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 39,
         "source_label": "spr40",
         "source": "AMSTRADFONT3.asm:1347",
@@ -1325,6 +1365,7 @@
       {
         "asset_id": "cpc_tile_040",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 40,
         "source_label": "spr41",
         "source": "AMSTRADFONT3.asm:1350",
@@ -1357,6 +1398,7 @@
       {
         "asset_id": "cpc_tile_041",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 41,
         "source_label": "spr42",
         "source": "AMSTRADFONT3.asm:1353",
@@ -1389,6 +1431,7 @@
       {
         "asset_id": "cpc_tile_042",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 42,
         "source_label": "spr43",
         "source": "AMSTRADFONT3.asm:1356",
@@ -1421,6 +1464,7 @@
       {
         "asset_id": "cpc_tile_043",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 43,
         "source_label": "spr44",
         "source": "AMSTRADFONT3.asm:1359",
@@ -1453,6 +1497,7 @@
       {
         "asset_id": "cpc_tile_044",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 44,
         "source_label": "spr45",
         "source": "AMSTRADFONT3.asm:1362",
@@ -1485,6 +1530,7 @@
       {
         "asset_id": "cpc_tile_045",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 45,
         "source_label": "spr46",
         "source": "AMSTRADFONT3.asm:1365",
@@ -1517,6 +1563,7 @@
       {
         "asset_id": "cpc_tile_046",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 46,
         "source_label": "spr47",
         "source": "AMSTRADFONT3.asm:1368",
@@ -1549,6 +1596,7 @@
       {
         "asset_id": "cpc_tile_047",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 47,
         "source_label": "spr48",
         "source": "AMSTRADFONT3.asm:1371",
@@ -1581,6 +1629,7 @@
       {
         "asset_id": "cpc_tile_048",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 48,
         "source_label": "spr49",
         "source": "AMSTRADFONT3.asm:1374",
@@ -1613,6 +1662,7 @@
       {
         "asset_id": "cpc_tile_049",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 49,
         "source_label": "spr50",
         "source": "AMSTRADFONT3.asm:1377",
@@ -1645,6 +1695,7 @@
       {
         "asset_id": "cpc_tile_050",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 50,
         "source_label": "spr51",
         "source": "AMSTRADFONT3.asm:1380",
@@ -1677,6 +1728,7 @@
       {
         "asset_id": "cpc_tile_051",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 51,
         "source_label": "spr52",
         "source": "AMSTRADFONT3.asm:1383",
@@ -1709,6 +1761,7 @@
       {
         "asset_id": "cpc_tile_052",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 52,
         "source_label": "spr53",
         "source": "AMSTRADFONT3.asm:1386",
@@ -1741,6 +1794,7 @@
       {
         "asset_id": "cpc_tile_053",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 53,
         "source_label": "spr54",
         "source": "AMSTRADFONT3.asm:1389",
@@ -1773,6 +1827,7 @@
       {
         "asset_id": "cpc_tile_054",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 54,
         "source_label": "spr55",
         "source": "AMSTRADFONT3.asm:1392",
@@ -1805,6 +1860,7 @@
       {
         "asset_id": "cpc_tile_055",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 55,
         "source_label": "spr56",
         "source": "AMSTRADFONT3.asm:1395",
@@ -1837,6 +1893,7 @@
       {
         "asset_id": "cpc_tile_056",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 56,
         "source_label": "spr57",
         "source": "AMSTRADFONT3.asm:1398",
@@ -1869,6 +1926,7 @@
       {
         "asset_id": "cpc_tile_057",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 57,
         "source_label": "spr58",
         "source": "AMSTRADFONT3.asm:1401",
@@ -1901,6 +1959,7 @@
       {
         "asset_id": "cpc_tile_058",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 58,
         "source_label": "spr59",
         "source": "AMSTRADFONT3.asm:1404",
@@ -1933,6 +1992,7 @@
       {
         "asset_id": "cpc_tile_059",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 59,
         "source_label": "spr60",
         "source": "AMSTRADFONT3.asm:1407",
@@ -1965,6 +2025,7 @@
       {
         "asset_id": "cpc_tile_060",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 60,
         "source_label": "spr61",
         "source": "AMSTRADFONT3.asm:1410",
@@ -1997,6 +2058,7 @@
       {
         "asset_id": "cpc_tile_061",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 61,
         "source_label": "spr62",
         "source": "AMSTRADFONT3.asm:1413",
@@ -2029,6 +2091,7 @@
       {
         "asset_id": "cpc_tile_062",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 62,
         "source_label": "spr63",
         "source": "AMSTRADFONT3.asm:1416",
@@ -2066,6 +2129,7 @@
       {
         "asset_id": "cpc_tile_063",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 63,
         "source_label": "spr64",
         "source": "AMSTRADFONT3.asm:1426",
@@ -2100,6 +2164,7 @@
       {
         "asset_id": "cpc_tile_064",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 64,
         "source_label": "spr65",
         "source": "AMSTRADFONT3.asm:1433",
@@ -2134,6 +2199,7 @@
       {
         "asset_id": "cpc_tile_065",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 65,
         "source_label": "spr66",
         "source": "AMSTRADFONT3.asm:1440",
@@ -2168,6 +2234,7 @@
       {
         "asset_id": "cpc_tile_066",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 66,
         "source_label": "spr67",
         "source": "AMSTRADFONT3.asm:1447",
@@ -2200,6 +2267,7 @@
       {
         "asset_id": "cpc_tile_067",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 67,
         "source_label": "spr68",
         "source": "AMSTRADFONT3.asm:1450",
@@ -2232,6 +2300,7 @@
       {
         "asset_id": "cpc_tile_068",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 68,
         "source_label": "spr69",
         "source": "AMSTRADFONT3.asm:1453",
@@ -2264,6 +2333,7 @@
       {
         "asset_id": "cpc_tile_069",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 69,
         "source_label": "spr70",
         "source": "AMSTRADFONT3.asm:1456",
@@ -2296,6 +2366,7 @@
       {
         "asset_id": "cpc_tile_070",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 70,
         "source_label": "spr71",
         "source": "AMSTRADFONT3.asm:1459",
@@ -2328,6 +2399,7 @@
       {
         "asset_id": "cpc_tile_071",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 71,
         "source_label": "spr72",
         "source": "AMSTRADFONT3.asm:1462",
@@ -2360,6 +2432,7 @@
       {
         "asset_id": "cpc_tile_072",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 72,
         "source_label": "spr73",
         "source": "AMSTRADFONT3.asm:1465",
@@ -2392,6 +2465,7 @@
       {
         "asset_id": "cpc_tile_073",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 73,
         "source_label": "spr74",
         "source": "AMSTRADFONT3.asm:1468",
@@ -2424,6 +2498,7 @@
       {
         "asset_id": "cpc_tile_074",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 74,
         "source_label": "spr75",
         "source": "AMSTRADFONT3.asm:1471",
@@ -2456,6 +2531,7 @@
       {
         "asset_id": "cpc_tile_075",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 75,
         "source_label": "spr76",
         "source": "AMSTRADFONT3.asm:1474",
@@ -2488,6 +2564,7 @@
       {
         "asset_id": "cpc_tile_076",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 76,
         "source_label": "spr77",
         "source": "AMSTRADFONT3.asm:1477",
@@ -2520,6 +2597,7 @@
       {
         "asset_id": "cpc_tile_077",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 77,
         "source_label": "spr78",
         "source": "AMSTRADFONT3.asm:1480",
@@ -2552,6 +2630,7 @@
       {
         "asset_id": "cpc_tile_078",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 78,
         "source_label": "spr79",
         "source": "AMSTRADFONT3.asm:1483",
@@ -2584,6 +2663,7 @@
       {
         "asset_id": "cpc_tile_079",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 79,
         "source_label": "spr80",
         "source": "AMSTRADFONT3.asm:1486",
@@ -2616,6 +2696,7 @@
       {
         "asset_id": "cpc_tile_080",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 80,
         "source_label": "spr81",
         "source": "AMSTRADFONT3.asm:1489",
@@ -2648,6 +2729,7 @@
       {
         "asset_id": "cpc_tile_081",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 81,
         "source_label": "spr82",
         "source": "AMSTRADFONT3.asm:1492",
@@ -2680,6 +2762,7 @@
       {
         "asset_id": "cpc_tile_082",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 82,
         "source_label": "spr83",
         "source": "AMSTRADFONT3.asm:1495",
@@ -2712,6 +2795,7 @@
       {
         "asset_id": "cpc_tile_083",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 83,
         "source_label": "spr84",
         "source": "AMSTRADFONT3.asm:1498",
@@ -2744,6 +2828,7 @@
       {
         "asset_id": "cpc_tile_084",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 84,
         "source_label": "spr85",
         "source": "AMSTRADFONT3.asm:1501",
@@ -2776,6 +2861,7 @@
       {
         "asset_id": "cpc_tile_085",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 85,
         "source_label": "spr86",
         "source": "AMSTRADFONT3.asm:1504",
@@ -2808,6 +2894,7 @@
       {
         "asset_id": "cpc_tile_086",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 86,
         "source_label": "spr87",
         "source": "AMSTRADFONT3.asm:1507",
@@ -2840,6 +2927,7 @@
       {
         "asset_id": "cpc_tile_087",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 87,
         "source_label": "spr88",
         "source": "AMSTRADFONT3.asm:1510",
@@ -2872,6 +2960,7 @@
       {
         "asset_id": "cpc_tile_088",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 88,
         "source_label": "spr89",
         "source": "AMSTRADFONT3.asm:1513",
@@ -2904,6 +2993,7 @@
       {
         "asset_id": "cpc_tile_089",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 89,
         "source_label": "spr90",
         "source": "AMSTRADFONT3.asm:1516",
@@ -2936,6 +3026,7 @@
       {
         "asset_id": "cpc_tile_090",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 90,
         "source_label": "spr91",
         "source": "AMSTRADFONT3.asm:1519",
@@ -2968,6 +3059,7 @@
       {
         "asset_id": "cpc_tile_091",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 91,
         "source_label": "spr92",
         "source": "AMSTRADFONT3.asm:1522",
@@ -3000,6 +3092,7 @@
       {
         "asset_id": "cpc_tile_092",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 92,
         "source_label": "spr93",
         "source": "AMSTRADFONT3.asm:1525",
@@ -3032,6 +3125,7 @@
       {
         "asset_id": "cpc_tile_093",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 93,
         "source_label": "spr94",
         "source": "AMSTRADFONT3.asm:1528",
@@ -3064,6 +3158,7 @@
       {
         "asset_id": "cpc_tile_094",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 94,
         "source_label": "spr95",
         "source": "AMSTRADFONT3.asm:1531",
@@ -3096,6 +3191,7 @@
       {
         "asset_id": "cpc_tile_095",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 95,
         "source_label": "spr96",
         "source": "AMSTRADFONT3.asm:1534",
@@ -3128,6 +3224,7 @@
       {
         "asset_id": "cpc_tile_096",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 96,
         "source_label": "spr97",
         "source": "AMSTRADFONT3.asm:1537",
@@ -3160,6 +3257,7 @@
       {
         "asset_id": "cpc_tile_097",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 97,
         "source_label": "spr98",
         "source": "AMSTRADFONT3.asm:1540",
@@ -3196,6 +3294,7 @@
       {
         "asset_id": "cpc_tile_098",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 98,
         "source_label": "spr99",
         "source": "AMSTRADFONT3.asm:1549",
@@ -3232,6 +3331,7 @@
       {
         "asset_id": "cpc_tile_099",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 99,
         "source_label": "spr100",
         "source": "AMSTRADFONT3.asm:1558",
@@ -3268,6 +3368,7 @@
       {
         "asset_id": "cpc_tile_100",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 100,
         "source_label": "spr101",
         "source": "AMSTRADFONT3.asm:1567",
@@ -3304,6 +3405,7 @@
       {
         "asset_id": "cpc_tile_101",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": 101,
         "source_label": "spr102",
         "source": "AMSTRADFONT3.asm:1576",
@@ -3343,6 +3445,7 @@
       {
         "asset_id": "sprite_pixel_data1",
         "kind": "cpc_plus_sprite_pixels",
+        "graphics_mode": "cpc_plus_direct_pen_indices",
         "source_label": "sprite_pixel_data1",
         "source": "AMSTRADFONT3.asm:1594",
         "name": "Flying Harrier left/green half",
@@ -3357,11 +3460,12 @@
           "FLYING HARRIER - GREEN"
         ],
         "promotion_status": "candidate",
-        "notes": "Values are CPC Plus sprite pen indices. Pen 0 is treated as transparent/sky in previews."
+        "notes": "Values are direct CPC Plus sprite pen indices, not packed Mode 0 or Mode 1 bytes. Pen 0 is transparent."
       },
       {
         "asset_id": "sprite_pixel_data2",
         "kind": "cpc_plus_sprite_pixels",
+        "graphics_mode": "cpc_plus_direct_pen_indices",
         "source_label": "sprite_pixel_data2",
         "source": "AMSTRADFONT3.asm:1603",
         "name": "Flying Harrier right/green half",
@@ -3375,11 +3479,12 @@
           "Flying Harrier right/green half"
         ],
         "promotion_status": "candidate",
-        "notes": "Values are CPC Plus sprite pen indices. Pen 0 is treated as transparent/sky in previews."
+        "notes": "Values are direct CPC Plus sprite pen indices, not packed Mode 0 or Mode 1 bytes. Pen 0 is transparent."
       },
       {
         "asset_id": "sprite_pixel_data4",
         "kind": "cpc_plus_sprite_pixels",
+        "graphics_mode": "cpc_plus_direct_pen_indices",
         "source_label": "sprite_pixel_data4",
         "source": "AMSTRADFONT3.asm:1636",
         "name": "Landing Harrier left half",
@@ -3393,11 +3498,12 @@
           "Landing Harrier left half"
         ],
         "promotion_status": "candidate",
-        "notes": "Values are CPC Plus sprite pen indices. Pen 0 is treated as transparent/sky in previews."
+        "notes": "Values are direct CPC Plus sprite pen indices, not packed Mode 0 or Mode 1 bytes. Pen 0 is transparent."
       },
       {
         "asset_id": "sprite_pixel_data3",
         "kind": "cpc_plus_sprite_pixels",
+        "graphics_mode": "cpc_plus_direct_pen_indices",
         "source_label": "sprite_pixel_data3",
         "source": "AMSTRADFONT3.asm:1645",
         "name": "Landing Harrier right half",
@@ -3411,11 +3517,12 @@
           "Landing Harrier right half"
         ],
         "promotion_status": "candidate",
-        "notes": "Values are CPC Plus sprite pen indices. Pen 0 is treated as transparent/sky in previews."
+        "notes": "Values are direct CPC Plus sprite pen indices, not packed Mode 0 or Mode 1 bytes. Pen 0 is transparent."
       },
       {
         "asset_id": "sprite_pixel_data5",
         "kind": "cpc_plus_sprite_pixels",
+        "graphics_mode": "cpc_plus_direct_pen_indices",
         "source_label": "sprite_pixel_data5",
         "source": "AMSTRADFONT3.asm:1658",
         "name": "Enemy plane flying left half",
@@ -3429,11 +3536,12 @@
           "Enemy plane flying left half"
         ],
         "promotion_status": "candidate",
-        "notes": "Values are CPC Plus sprite pen indices. Pen 0 is treated as transparent/sky in previews."
+        "notes": "Values are direct CPC Plus sprite pen indices, not packed Mode 0 or Mode 1 bytes. Pen 0 is transparent."
       },
       {
         "asset_id": "sprite_pixel_data6",
         "kind": "cpc_plus_sprite_pixels",
+        "graphics_mode": "cpc_plus_direct_pen_indices",
         "source_label": "sprite_pixel_data6",
         "source": "AMSTRADFONT3.asm:1667",
         "name": "Enemy plane flying right half",
@@ -3447,11 +3555,12 @@
           "Enemy plane flying right half"
         ],
         "promotion_status": "candidate",
-        "notes": "Values are CPC Plus sprite pen indices. Pen 0 is treated as transparent/sky in previews."
+        "notes": "Values are direct CPC Plus sprite pen indices, not packed Mode 0 or Mode 1 bytes. Pen 0 is transparent."
       },
       {
         "asset_id": "sprite_pixel_data7",
         "kind": "cpc_plus_sprite_pixels",
+        "graphics_mode": "cpc_plus_direct_pen_indices",
         "source_label": "sprite_pixel_data7",
         "source": "AMSTRADFONT3.asm:1678",
         "name": "Enemy plane broken left half",
@@ -3465,11 +3574,12 @@
           "Enemy plane broken left half"
         ],
         "promotion_status": "candidate",
-        "notes": "Values are CPC Plus sprite pen indices. Pen 0 is treated as transparent/sky in previews."
+        "notes": "Values are direct CPC Plus sprite pen indices, not packed Mode 0 or Mode 1 bytes. Pen 0 is transparent."
       },
       {
         "asset_id": "sprite_pixel_data8",
         "kind": "cpc_plus_sprite_pixels",
+        "graphics_mode": "cpc_plus_direct_pen_indices",
         "source_label": "sprite_pixel_data8",
         "source": "AMSTRADFONT3.asm:1688",
         "name": "Enemy plane broken right half",
@@ -3483,11 +3593,12 @@
           "Enemy plane broken right half"
         ],
         "promotion_status": "candidate",
-        "notes": "Values are CPC Plus sprite pen indices. Pen 0 is treated as transparent/sky in previews."
+        "notes": "Values are direct CPC Plus sprite pen indices, not packed Mode 0 or Mode 1 bytes. Pen 0 is transparent."
       },
       {
         "asset_id": "sprite_pixel_data10",
         "kind": "cpc_plus_sprite_pixels",
+        "graphics_mode": "cpc_plus_direct_pen_indices",
         "source_label": "sprite_pixel_data10",
         "source": "AMSTRADFONT3.asm:1710",
         "name": "Carrier body",
@@ -3501,11 +3612,12 @@
           "Carrier body"
         ],
         "promotion_status": "candidate",
-        "notes": "Values are CPC Plus sprite pen indices. Pen 0 is treated as transparent/sky in previews."
+        "notes": "Values are direct CPC Plus sprite pen indices, not packed Mode 0 or Mode 1 bytes. Pen 0 is transparent."
       },
       {
         "asset_id": "sprite_pixel_data11",
         "kind": "cpc_plus_sprite_pixels",
+        "graphics_mode": "cpc_plus_direct_pen_indices",
         "source_label": "sprite_pixel_data11",
         "source": "AMSTRADFONT3.asm:1721",
         "name": "Carrier back",
@@ -3519,11 +3631,12 @@
           "Carrier back"
         ],
         "promotion_status": "candidate",
-        "notes": "Values are CPC Plus sprite pen indices. Pen 0 is treated as transparent/sky in previews."
+        "notes": "Values are direct CPC Plus sprite pen indices, not packed Mode 0 or Mode 1 bytes. Pen 0 is transparent."
       },
       {
         "asset_id": "sprite_pixel_data12",
         "kind": "cpc_plus_sprite_pixels",
+        "graphics_mode": "cpc_plus_direct_pen_indices",
         "source_label": "sprite_pixel_data12",
         "source": "AMSTRADFONT3.asm:1732",
         "name": "Carrier front",
@@ -3537,11 +3650,12 @@
           "Carrier front"
         ],
         "promotion_status": "candidate",
-        "notes": "Values are CPC Plus sprite pen indices. Pen 0 is treated as transparent/sky in previews."
+        "notes": "Values are direct CPC Plus sprite pen indices, not packed Mode 0 or Mode 1 bytes. Pen 0 is transparent."
       },
       {
         "asset_id": "sprite_pixel_data13",
         "kind": "cpc_plus_sprite_pixels",
+        "graphics_mode": "cpc_plus_direct_pen_indices",
         "source_label": "sprite_pixel_data13",
         "source": "AMSTRADFONT3.asm:1743",
         "name": "Carrier top",
@@ -3555,11 +3669,12 @@
           "Carrier top"
         ],
         "promotion_status": "candidate",
-        "notes": "Values are CPC Plus sprite pen indices. Pen 0 is treated as transparent/sky in previews."
+        "notes": "Values are direct CPC Plus sprite pen indices, not packed Mode 0 or Mode 1 bytes. Pen 0 is transparent."
       },
       {
         "asset_id": "sprite_pixel_data14",
         "kind": "cpc_plus_sprite_pixels",
+        "graphics_mode": "cpc_plus_direct_pen_indices",
         "source_label": "sprite_pixel_data14",
         "source": "AMSTRADFONT3.asm:1763",
         "name": "Carrier top 2",
@@ -3573,11 +3688,12 @@
           "Carrier top 2"
         ],
         "promotion_status": "candidate",
-        "notes": "Values are CPC Plus sprite pen indices. Pen 0 is treated as transparent/sky in previews."
+        "notes": "Values are direct CPC Plus sprite pen indices, not packed Mode 0 or Mode 1 bytes. Pen 0 is transparent."
       },
       {
         "asset_id": "sprite_pixel_data15",
         "kind": "cpc_plus_sprite_pixels",
+        "graphics_mode": "cpc_plus_direct_pen_indices",
         "source_label": "sprite_pixel_data15",
         "source": "AMSTRADFONT3.asm:1783",
         "name": "Gunship left",
@@ -3591,11 +3707,12 @@
           "Gunship left"
         ],
         "promotion_status": "candidate",
-        "notes": "Values are CPC Plus sprite pen indices. Pen 0 is treated as transparent/sky in previews."
+        "notes": "Values are direct CPC Plus sprite pen indices, not packed Mode 0 or Mode 1 bytes. Pen 0 is transparent."
       },
       {
         "asset_id": "sprite_pixel_data16",
         "kind": "cpc_plus_sprite_pixels",
+        "graphics_mode": "cpc_plus_direct_pen_indices",
         "source_label": "sprite_pixel_data16",
         "source": "AMSTRADFONT3.asm:1803",
         "name": "Gunship right",
@@ -3609,11 +3726,12 @@
           "Gunship right"
         ],
         "promotion_status": "candidate",
-        "notes": "Values are CPC Plus sprite pen indices. Pen 0 is treated as transparent/sky in previews."
+        "notes": "Values are direct CPC Plus sprite pen indices, not packed Mode 0 or Mode 1 bytes. Pen 0 is transparent."
       },
       {
         "asset_id": "sprite_pixel_data_wingmanflying1",
         "kind": "cpc_plus_sprite_pixels",
+        "graphics_mode": "cpc_plus_direct_pen_indices",
         "source_label": "sprite_pixel_data_wingmanflying1",
         "source": "AMSTRADFONT3.asm:1823",
         "name": "Wingman flying left half",
@@ -3627,11 +3745,12 @@
           "Wingman flying left half"
         ],
         "promotion_status": "candidate",
-        "notes": "Values are CPC Plus sprite pen indices. Pen 0 is treated as transparent/sky in previews."
+        "notes": "Values are direct CPC Plus sprite pen indices, not packed Mode 0 or Mode 1 bytes. Pen 0 is transparent."
       },
       {
         "asset_id": "sprite_pixel_data_wingmanflying2",
         "kind": "cpc_plus_sprite_pixels",
+        "graphics_mode": "cpc_plus_direct_pen_indices",
         "source_label": "sprite_pixel_data_wingmanflying2",
         "source": "AMSTRADFONT3.asm:1832",
         "name": "Wingman flying right half",
@@ -3645,11 +3764,12 @@
           "Wingman flying right half"
         ],
         "promotion_status": "candidate",
-        "notes": "Values are CPC Plus sprite pen indices. Pen 0 is treated as transparent/sky in previews."
+        "notes": "Values are direct CPC Plus sprite pen indices, not packed Mode 0 or Mode 1 bytes. Pen 0 is transparent."
       },
       {
         "asset_id": "sprite_pixel_data_wingmanlanded1",
         "kind": "cpc_plus_sprite_pixels",
+        "graphics_mode": "cpc_plus_direct_pen_indices",
         "source_label": "sprite_pixel_data_wingmanlanded1",
         "source": "AMSTRADFONT3.asm:1843",
         "name": "Wingman landed left half",
@@ -3663,11 +3783,12 @@
           "Wingman landed left half"
         ],
         "promotion_status": "candidate",
-        "notes": "Values are CPC Plus sprite pen indices. Pen 0 is treated as transparent/sky in previews."
+        "notes": "Values are direct CPC Plus sprite pen indices, not packed Mode 0 or Mode 1 bytes. Pen 0 is transparent."
       },
       {
         "asset_id": "sprite_pixel_data_wingmanlanded2",
         "kind": "cpc_plus_sprite_pixels",
+        "graphics_mode": "cpc_plus_direct_pen_indices",
         "source_label": "sprite_pixel_data_wingmanlanded2",
         "source": "AMSTRADFONT3.asm:1852",
         "name": "Wingman landed right half",
@@ -3681,11 +3802,12 @@
           "Wingman landed right half"
         ],
         "promotion_status": "candidate",
-        "notes": "Values are CPC Plus sprite pen indices. Pen 0 is treated as transparent/sky in previews."
+        "notes": "Values are direct CPC Plus sprite pen indices, not packed Mode 0 or Mode 1 bytes. Pen 0 is transparent."
       },
       {
         "asset_id": "sprite_pixel_data_parachute",
         "kind": "cpc_plus_sprite_pixels",
+        "graphics_mode": "cpc_plus_direct_pen_indices",
         "source_label": "sprite_pixel_data_parachute",
         "source": "AMSTRADFONT3.asm:1863",
         "name": "Parachute",
@@ -3699,7 +3821,7 @@
           "Parachute"
         ],
         "promotion_status": "candidate",
-        "notes": "Values are CPC Plus sprite pen indices. Pen 0 is treated as transparent/sky in previews."
+        "notes": "Values are direct CPC Plus sprite pen indices, not packed Mode 0 or Mode 1 bytes. Pen 0 is transparent."
       }
     ],
     "object_blocks": [
@@ -3707,7 +3829,7 @@
         "asset_id": "enemy_ship_scroll_columns",
         "kind": "composite.column_major",
         "source_label": "enemyshipsprite",
-        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5395",
+        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5405",
         "raw_bytes_hex": [
           "00",
           "00",
@@ -3768,7 +3890,7 @@
         "asset_id": "end_frigate_scroll_columns",
         "kind": "composite.column_major",
         "source_label": "endfrigatesprite",
-        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5912",
+        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5934",
         "raw_bytes_hex": [
           "00",
           "00",
@@ -3910,7 +4032,7 @@
         "asset_id": "enemy_land_targets",
         "kind": "records.2x2_terminated",
         "source_label": "enemylandsprites",
-        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5676",
+        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5695",
         "raw_bytes_hex": [
           "00",
           "2a",
@@ -4014,7 +4136,7 @@
         "asset_id": "solid_land_fill",
         "kind": "raw.drawspriteblock3_fill",
         "source_label": "solidlandspriteblock",
-        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5683",
+        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5702",
         "raw_bytes_hex": [
           "01",
           "01",
@@ -4219,7 +4341,7 @@
         "asset_id": "pier_pen_data",
         "kind": "raw.ascii_tile_stream",
         "source_label": "pendata",
-        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5788",
+        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5810",
         "raw_bytes_hex": [
           "4a",
           "48",
@@ -4261,7 +4383,7 @@
         "asset_id": "town_block_0",
         "kind": "raw.drawspriteblock3_column_stream",
         "source_label": "blk0",
-        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5778",
+        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5800",
         "raw_bytes_hex": [
           "00",
           "00",
@@ -4289,7 +4411,7 @@
         "asset_id": "town_block_1",
         "kind": "raw.drawspriteblock3_column_stream",
         "source_label": "blk1",
-        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5779",
+        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5801",
         "raw_bytes_hex": [
           "00",
           "00",
@@ -4327,7 +4449,7 @@
         "asset_id": "town_block_2",
         "kind": "raw.drawspriteblock3_column_stream",
         "source_label": "blk2",
-        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5780",
+        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5802",
         "raw_bytes_hex": [
           "00",
           "3b",
@@ -4365,7 +4487,7 @@
         "asset_id": "town_block_3",
         "kind": "raw.drawspriteblock3_column_stream",
         "source_label": "blk3",
-        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5781",
+        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5803",
         "raw_bytes_hex": [
           "00",
           "00",
@@ -4433,7 +4555,7 @@
         "asset_id": "town_block_4",
         "kind": "raw.drawspriteblock3_column_stream",
         "source_label": "blk4",
-        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5782",
+        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5804",
         "raw_bytes_hex": [
           "00",
           "3e",
@@ -4501,7 +4623,7 @@
         "asset_id": "town_block_5",
         "kind": "raw.drawspriteblock3_column_stream",
         "source_label": "blk5",
-        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5783",
+        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5805",
         "raw_bytes_hex": [
           "00",
           "00",
@@ -4539,7 +4661,7 @@
         "asset_id": "town_block_6",
         "kind": "raw.drawspriteblock3_column_stream",
         "source_label": "blk6",
-        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5784",
+        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5806",
         "raw_bytes_hex": [
           "40",
           "40",
@@ -4577,7 +4699,7 @@
         "asset_id": "town_block_7",
         "kind": "raw.drawspriteblock3_column_stream",
         "source_label": "blk7",
-        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5785",
+        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5807",
         "raw_bytes_hex": [
           "00",
           "2b",

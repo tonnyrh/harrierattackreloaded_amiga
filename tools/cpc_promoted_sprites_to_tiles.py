@@ -28,11 +28,15 @@ TILE_SIZE = 8
 DISPLAY_PLANES = 4
 TILE_BYTES = TILE_SIZE * (DISPLAY_PLANES + 1)
 
-# Matches cpcPlusPenToGameColor() in amiga/main.c exactly (pen 0 is handled
-# separately as "transparent" by the caller in the original code, and by the
-# mask here - never passed into this mapping).
+# Source of truth for CPC Plus pen -> existing 4-plane playfield colour.
+# This table is also emitted into the generated C header, so the runtime
+# pixel path and the pre-baked carrier/gunship tiles cannot drift apart.
+#
+# CPC Plus pens 1-6 are greys 111,333,555,777,AAA,FFF. Quantise that ramp
+# to the playfield's existing black/dark/mid/light/white colours. In
+# particular, pen 5 is bright grey and must never map to black.
 PEN_TO_GAME_COLOR = {
-    1: 1, 2: 2, 3: 3, 4: 4, 5: 10, 6: 2, 7: 5, 8: 5,
+    0: 0, 1: 10, 2: 4, 3: 4, 4: 3, 5: 2, 6: 1, 7: 5, 8: 5,
     9: 9, 10: 10, 11: 4, 12: 1, 13: 1, 14: 15,
 }
 DEFAULT_GAME_COLOR = 1  # matches the C switch's `default: return GAME_COLOR_WHITE;`
@@ -153,6 +157,16 @@ def main() -> None:
     w, h, px = piece("sprite_pixel_data12")  # front
     carrier.blit(px, w, h, 80, 16, 1)
 
+    # CPC movefrigateonscreen places the separate grey landed wingman on the
+    # forward deck (sprites 14/15 loaded from wingmanlanded1/2). These are
+    # direct CPC Plus pen-index sprites, not Mode 0/1 packed graphics. Their
+    # two visible 8px halves are combined exactly like
+    # buildAttachedSpriteFromCpcPlusHalves() in the Amiga runtime.
+    _, h_left, left = piece("sprite_pixel_data_wingmanlanded1")
+    _, h_right, right = piece("sprite_pixel_data_wingmanlanded2")
+    second_harrier = [left[y][:8] + right[y][:8] for y in range(min(h_left, h_right))]
+    carrier.blit(second_harrier, 16, len(second_harrier), 73, 8, 1)
+
     # Gunship canvas: left/right side by side, matches
     # drawPromotedCpcGunshipRangeAt()'s (x+0)/(x+16) offsets exactly.
     gunship = Canvas(32, 16)
@@ -168,6 +182,10 @@ def main() -> None:
         "   drawGameScrollTileMasked() in amiga/main.c for the matching runtime blit. */",
         "#ifndef HAR_CPC_PROMOTED_SPRITE_TILES_H",
         "#define HAR_CPC_PROMOTED_SPRITE_TILES_H",
+        "",
+        "static const UBYTE harCpcPlusPenToGameColor[16] = {",
+        format_ints([PEN_TO_GAME_COLOR.get(pen, DEFAULT_GAME_COLOR) for pen in range(16)]),
+        "};",
         "",
         f"#define HAR_CARRIER_TILE_BYTES {TILE_BYTES}",
         f"#define HAR_CARRIER_TILES_WIDE {carrier.tiles_wide()}",

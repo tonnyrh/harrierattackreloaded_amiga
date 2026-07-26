@@ -27,6 +27,8 @@ PROMOTED_PLUS_SPRITES: list[tuple[str, str]] = [
     ("gunship_right", "sprite_pixel_data16"),
     ("wingman_flying_left", "sprite_pixel_data_wingmanflying1"),
     ("wingman_flying_right", "sprite_pixel_data_wingmanflying2"),
+    ("wingman_landed_left", "sprite_pixel_data_wingmanlanded1"),
+    ("wingman_landed_right", "sprite_pixel_data_wingmanlanded2"),
     ("parachute", "sprite_pixel_data_parachute"),
 ]
 
@@ -64,6 +66,17 @@ def main() -> None:
     missing = [source_id for _friendly, source_id in PROMOTED_PLUS_SPRITES if source_id.lower() not in by_id]
     if missing:
         raise SystemExit(f"Missing audited CPC Plus sprites: {', '.join(missing)}")
+    wrongly_encoded = [
+        source_id
+        for _friendly, source_id in PROMOTED_PLUS_SPRITES
+        if by_id[source_id.lower()].get("kind") != "cpc_plus_sprite_pixels"
+        or by_id[source_id.lower()].get("graphics_mode") != "cpc_plus_direct_pen_indices"
+    ]
+    if wrongly_encoded:
+        raise SystemExit(
+            "Refusing to promote CPC Plus sprites without direct-pen metadata: "
+            + ", ".join(wrongly_encoded)
+        )
     missing_objects = [source_id for _friendly, source_id in PROMOTED_TOWN_BLOCKS if source_id.lower() not in objects_by_id]
     if missing_objects:
         raise SystemExit(f"Missing audited CPC object blocks: {', '.join(missing_objects)}")

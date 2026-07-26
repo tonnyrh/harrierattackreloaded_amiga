@@ -587,6 +587,7 @@ def tile_summary(tile: TileAsset, source_name: str) -> dict:
     return {
         "asset_id": f"cpc_tile_{tile.table_index:03d}",
         "kind": "cpc_mode1_tile_8x8",
+        "graphics_mode": "cpc_mode1_packed_4_pixels_per_byte",
         "table_index": tile.table_index,
         "source_label": tile.label,
         "source": f"{source_name}:{tile.source_line}",
@@ -603,6 +604,7 @@ def plus_sprite_summary(sprite: PlusSpriteAsset, source_name: str) -> dict:
     return {
         "asset_id": sprite.asset_id,
         "kind": "cpc_plus_sprite_pixels",
+        "graphics_mode": "cpc_plus_direct_pen_indices",
         "source_label": sprite.label,
         "source": f"{source_name}:{sprite.source_line}",
         "name": sprite.friendly_name,
@@ -614,7 +616,7 @@ def plus_sprite_summary(sprite: PlusSpriteAsset, source_name: str) -> dict:
         "bitplane_size": sprite.bitplane_size,
         "comments": sprite.comments,
         "promotion_status": "candidate",
-        "notes": "Values are CPC Plus sprite pen indices. Pen 0 is treated as transparent/sky in previews.",
+        "notes": "Values are direct CPC Plus sprite pen indices, not packed Mode 0 or Mode 1 bytes. Pen 0 is transparent.",
     }
 
 
@@ -819,6 +821,7 @@ def render_combat_sprite_audit_sheet(path: Path, tiles: list[TileAsset], sprites
     add_plus_pair("enemy_plane_plus", "sprite_pixel_data5", "sprite_pixel_data6")
     add_plus_pair("enemy_broken_plus", "sprite_pixel_data7", "sprite_pixel_data8")
     add_plus_pair("wingman_flying_plus", "sprite_pixel_data_wingmanflying1", "sprite_pixel_data_wingmanflying2")
+    add_plus_pair("wingman_landed_plus", "sprite_pixel_data_wingmanlanded1", "sprite_pixel_data_wingmanlanded2")
     add_tile("bomb_launched_tile40", 40)
     add_tile("bomb_descending_tile41", 41)
     add_tile("missile_left_tile55", 55)

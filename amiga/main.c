@@ -15,7 +15,7 @@
 #include <string.h>
 #include "assets/harrier_menu_text.h"
 
-#define HAR_BUILD_LABEL "SPRINT 14.96.0"
+#define HAR_BUILD_LABEL "SPRINT 14.97.0"
 
 #define SCREEN_WIDTH 320
 /* 256 lines (not 200) - PAL comfortably supports this (320x256 is a common,
@@ -97,7 +97,10 @@
 #define GAME_WORLD_SCROLL_PAGE_TILES GAME_WORLD_SCROLL_PAGE_BYTES
 #define WORLD_RENDER_TOWN_BLOCK_MAX_WIDTH 5
 #define WORLD_RENDER_CARRIER_WIDTH_TILES 12
-#define WORLD_RENDER_GUNSHIP_WIDTH_TILES 2
+/* The promoted CPC+ gunship is two 16px ASIC sprites side by side:
+ * 32 pixels = four Amiga 8px world columns. This must match
+ * HAR_GUNSHIP_TILES_WIDE emitted by cpc_promoted_sprites_to_tiles.py. */
+#define WORLD_RENDER_GUNSHIP_WIDTH_TILES 4
 #define WORLD_RENDER_OBJECT_MIN_TILE_Y 7
 #define WORLD_RENDER_OBJECT_MAX_TILE_Y 15
 #define PERF_LOG_INTERVAL_FRAMES 500
@@ -144,7 +147,7 @@
 #define PLAYER_START_Y 56
 #define TAKEOFF_SCROLL_START_PIXELS 96
 #define TAKEOFF_SCROLL_STEP_PIXELS 2
-#define TAKEOFF_PLAYER_DECK_X 126
+#define TAKEOFF_PLAYER_DECK_X 81
 #define TAKEOFF_PLAYER_DECK_Y 104
 #define CARRIER_DECK_PIXEL_Y 113
 #define CARRIER_DECK_PIXEL_HEIGHT 7
@@ -157,7 +160,9 @@
 #define TELEMETRY_GAMEPLAY_SCROLL_MIN_PIXELS 96
 #define TAKEOFF_STATE_ROLLING_IN 0
 #define TAKEOFF_STATE_READY 1
-#define TAKEOFF_STATE_AIRBORNE 2
+#define TAKEOFF_STATE_LIFTING 2
+#define TAKEOFF_STATE_AIRBORNE 3
+#define TAKEOFF_CLEAR_Y 88
 #define PLAYER_MIN_X 16
 #define PLAYER_MAX_X (SCREEN_WIDTH - PLAYER_SPRITE_WIDTH - 16)
 #define PLAYER_MIN_Y 8
@@ -213,18 +218,22 @@
  * 4=enemy missile, 5=rocket, 6=powerup, 7=unused) rather than baking it
  * into the scrolling world ring buffer, since it's a single short-lived
  * dynamic object that would otherwise force dirty redraws every frame.
- * MAX_ROCKETS/MAX_BOMBS match the existing startGameSession defaults
- * (12 / 6) - kept as named constants now that powerups refill to them. */
+ * Powerup weapon refills use CPC's literal &10 (16) independently of the
+ * Amiga session's smaller starting inventory. */
 #define POWERUP_SPRITE_WIDTH 16
-#define POWERUP_SPRITE_HEIGHT 16
+#define POWERUP_SPRITE_HEIGHT 8
 #define POWERUP_SPRITE_WORDS (2 + POWERUP_SPRITE_HEIGHT * 2 + 2)
-#define POWERUP_FALL_DELAY_FRAMES 12
+#define POWERUP_COLLISION_WIDTH 8
+/* Smoothed half-speed equivalent of one CPC 8px tile per 12 frames:
+ * add 2/3 pixel each frame instead of jumping a complete tile. */
+#define POWERUP_FALL_PHASE_ADD 2
+#define POWERUP_FALL_PHASE_PIXEL 3
 #define POWERUP_SPAWN_COLUMN 38
 #define POWERUP_SPAWN_MAX_ROW 3
 #define POWERUP_DESPAWN_LEFT_X (-16)
 #define POWERUP_ALTITUDE_FLOOR_BASE 11
-#define MAX_ROCKETS 12
-#define MAX_BOMBS 6
+#define POWERUP_ROCKET_REFILL 16
+#define POWERUP_BOMB_REFILL 16
 #define POWERUP_SPAWN_ROLL_MASK 0x0f
 #define POWERUP_PICKUP_SCORE_VALUE 0
 
@@ -557,9 +566,9 @@ typedef struct WeaponState {
  * pixel coordinate (so it scrolls left naturally as game->scrollX grows),
  * y is a screen-space pixel coordinate (the powerup doesn't scroll
  * vertically with the world - only falls under its own slow gravity).
- * fallCounter accumulates frames until POWERUP_FALL_DELAY_FRAMES, then
- * increments y by 1 - matches CPC's "inc h every ~6 tile-scrolls" but
- * smoother (1px steps instead of 8px jumps). spawnId tracks position in
+ * fallCounter is a 2/3-pixel fixed-point phase accumulator, giving the
+ * requested half-speed version of CPC's tile descent without visible jumps.
+ * spawnId tracks position in
  * the deterministic 1..6 type-rotation sequence (1=health, 2=rockets,
  * 3=bombs, 4=rockets, 5=bombs, 6=skip-and-spawn-enemy-plane). */
 typedef struct {
@@ -935,6 +944,9 @@ enum PowerupType {
 #include "assets/level_route.h"
 #include "assets/cpc_promoted_assets.h"
 #include "assets/cpc_promoted_sprite_tiles.h"
+#if WORLD_RENDER_GUNSHIP_WIDTH_TILES != HAR_GUNSHIP_TILES_WIDE
+#error "Runtime gunship width must match the promoted CPC+ composite"
+#endif
 
 #define HAR_LEVEL_OBJECT_COUNT (sizeof(harLevelObjects) / sizeof(harLevelObjects[0]))
 #define HAR_LEVEL_OBJECT_COLUMN_INDEX_NONE 0xff
@@ -1005,6 +1017,7 @@ static UBYTE harLevelObjectFirstIndexForColumn(LONG worldColumn) {
 static UBYTE objectCellForWorldColumnTile(LONG worldColumn, WORD tileY, ObjectCell* outCell);
 static UBYTE shipWreckSmokeTileAtColumnRow(LONG worldColumn, WORD tileY);
 static UBYTE runtimeFlakTileAtColumnRow(LONG worldColumn, WORD tileY);
+static UBYTE cpcRStateForWorldColumn(LONG worldColumn);
 static void resetDestroyedTargets(void);
 static void resetRuntimeFlak(void);
 static void resetTargetLock(void);
@@ -2639,11 +2652,11 @@ static void buildGameHudCopper(USHORT* copper, const UBYTE* world, const UBYTE* 
 	copPtr = copSetSprites(copPtr, playerSprite, playerAttachSprite, bombSprite, enemySprite, enemyMissileSprite, rocketSprite, powerupSprite, nullSprite);
 
 	for (int color = 0; color < 32; color++) {
-		/* Sprint 14.96: capture the colour-29 value-word pointer for
-		 * per-frame powerup-type recolouring (see activeCopperPowerupColor). */
+		/* Sprite 6 uses colour 29 for CPC pen 15 (type colour) and colour
+		 * 30 for CPC pen 1 (the parachute's dark suspension lines). */
 		if (color == 29)
 			activeCopperPowerupColor = (UWORD*)(copPtr + 1);
-		copPtr = copSetColor(copPtr, color, palette[color]);
+		copPtr = copSetColor(copPtr, color, color == 30 ? 0x0111 : palette[color]);
 	}
 
 	copPtr = copSetGameSkyGradient(copPtr, palette);
@@ -4317,7 +4330,7 @@ static void updatePlayerSprite(UWORD* sprite, UWORD* attachSprite, const GameSta
 		return;
 	}
 
-	if (game->takeoffState != TAKEOFF_STATE_AIRBORNE)
+	if (game->takeoffState == TAKEOFF_STATE_ROLLING_IN || game->takeoffState == TAKEOFF_STATE_READY)
 		buildPlayerLandingSprite(sprite, attachSprite, game->playerX, game->playerY);
 	else
 		buildPlayerSprite(sprite, attachSprite, game->playerX, game->playerY);
@@ -4378,40 +4391,26 @@ static void buildEnemyMissileSprite(UWORD* sprite, WORD x, WORD y) {
 	buildSpriteFromGameTile(sprite, ENEMY_MISSILE_SPRITE_HEIGHT, x, y, 55, 4, gameColorToHostileSpriteColor);
 }
 
-/* Sprint 14.96: builds the 16x16 parachute powerup sprite. Shape is a
- * hand-coded 16-row bitmap (canopy arcs over the top 8 rows, two suspension
- * lines, and a 6x3 payload box at the bottom) - all non-zero pixels use
- * colour index 1 (mapped to hardware colour register 29 for sprite pair
- * 6/7), which the copper patches per frame based on powerup type, exactly
- * matching CPC's "same sprite, different palette colour per type" approach.
- * Each row is one 16-bit word (MSB = leftmost pixel). */
+/* Exact CPC Plus parachute exported from AMSTRADFONT3.asm:1863. CPC pen 15
+ * is recoloured per powerup type through hardware colour 29; pen 1 keeps
+ * the dark rigging colour in hardware colour 30. The source is a 16x8 Plus
+ * sprite, with its visible pixels confined to the first 8 columns. */
 static void buildPowerupSprite(UWORD* sprite, WORD x, WORD y, UBYTE type) {
 	(void)type;  /* type colouring happens via copper, not sprite data */
-	static const UWORD parachute[POWERUP_SPRITE_HEIGHT] = {
-		/* canopy: arc shape, widest in the middle */
-		0x07C0,  /*  .....####.....  */
-		0x0FE0,  /*  ....######....  */
-		0x1FF0,  /*  ...########...  */
-		0x3FF8,  /*  ..##########..  */
-		0x3FF8,  /*  ..##########..  */
-		0x1FF0,  /*  ...########...  */
-		0x0FE0,  /*  ....######....  */
-		0x07C0,  /*  .....####.....  */
-		/* suspension lines */
-		0x0180,  /*  ......##......  */
-		0x0180,  /*  ......##......  */
-		0x0180,  /*  ......##......  */
-		0x0180,  /*  ......##......  */
-		/* payload box */
-		0x07E0,  /*  .....#####....  */
-		0x0FF0,  /*  ....######...  */
-		0x0FF0,  /*  ....######...  */
-		0x07E0   /*  .....#####....  */
-	};
 	setHardwareSpritePosition(sprite, POWERUP_SPRITE_HEIGHT, x, y);
 	for (UWORD row = 0; row < POWERUP_SPRITE_HEIGHT; row++) {
-		sprite[2 + row * 2] = parachute[row];  /* plane 0 = colour bit 0 */
-		sprite[3 + row * 2] = 0;               /* plane 1 = colour bit 1 */
+		UWORD plane0 = 0;
+		UWORD plane1 = 0;
+		for (UWORD col = 0; col < HAR_CPC_PARACHUTE_WIDTH; col++) {
+			UBYTE pen = harCpcParachutePixels[row * HAR_CPC_PARACHUTE_WIDTH + col];
+			UWORD bit = (UWORD)(0x8000 >> col);
+			if (pen == 15)
+				plane0 |= bit; /* sprite colour 1 / hardware colour 29 */
+			else if (pen == 1)
+				plane1 |= bit; /* sprite colour 2 / hardware colour 30 */
+		}
+		sprite[2 + row * 2] = plane0;
+		sprite[3 + row * 2] = plane1;
 	}
 	sprite[2 + POWERUP_SPRITE_HEIGHT * 2] = 0;
 	sprite[3 + POWERUP_SPRITE_HEIGHT * 2] = 0;
@@ -4446,38 +4445,9 @@ static void updatePowerupSprite(UWORD* sprite, const GameState* game) {
 }
 
 static UBYTE cpcPlusPenToGameColor(UBYTE pen) {
-	switch (pen & 15) {
-		case 0:
-			return GAME_COLOR_SKY;
-		case 1:
-			return GAME_COLOR_WHITE;
-		case 2:
-			return GAME_COLOR_LIGHT_GREY;
-		case 3:
-			return GAME_COLOR_MID_GREY;
-		case 4:
-			return GAME_COLOR_DARK_GREY;
-		case 5:
-			return GAME_COLOR_BLACK;
-		case 6:
-			return GAME_COLOR_LIGHT_GREY;
-		case 7:
-		case 8:
-			return GAME_COLOR_LAND;
-		case 9:
-			return GAME_COLOR_RED;
-		case 10:
-			return GAME_COLOR_BLACK;
-		case 11:
-			return GAME_COLOR_DARK_GREY;
-		case 12:
-		case 13:
-			return GAME_COLOR_WHITE;
-		case 14:
-			return GAME_COLOR_SEA;
-		default:
-			return GAME_COLOR_WHITE;
-	}
+	/* Generated with the promoted tiles from the converter's single source
+	 * table, keeping runtime and offline colour conversion identical. */
+	return harCpcPlusPenToGameColor[pen & 15];
 }
 
 static void drawCpcPlusSpriteScroll(UBYTE* bitmap, short x, short y, const UBYTE* pixels, UBYTE width, UBYTE height, UBYTE xScale) {
@@ -4607,25 +4577,17 @@ static void drawNativeDeckTileAt(UBYTE* bitmap, short tileX, short tileY) {
 }
 
 static UBYTE seaTileForColumn(LONG worldColumn, UWORD tileY) {
-	if (tileY == GAME_SEA_TOP_TILE_Y)
-		return (UBYTE)(4 + ((worldColumn * 3) & 1));
-	if (tileY == GAME_SEA_TOP_TILE_Y + 1 && (worldColumn & 3) == 0)
-		return 5;
-	/* Sprint 14.94 Part 4: worldColumn is LONG (32-bit), but its real values
-	 * always fit comfortably in 16 bits (level width is 704 tiles) - a plain
-	 * 68000 has no 32-bit divide instruction at all, so `LONG % constant`
-	 * always calls a slow __modsi3-style library routine regardless of the
-	 * divisor being a compile-time constant. Verified via a disassembly
-	 * check against this exact toolchain/flags (-m68000 -Ofast) that an
-	 * inline cast expression here - `((UWORD)worldColumn + tileY) % 11` -
-	 * still compiled to a __modsi3 call despite the cast (C's usual
-	 * arithmetic conversions promote the sum back to int before the modulo
-	 * regardless); an explicit UWORD-typed local variable does make GCC
-	 * recognize the 16-bit range and emit hardware DIVU.W instead. Called
-	 * once per sea-tile cell, so this is a real per-tile hot-path cost. */
-	UWORD seaPhaseSum = (UWORD)((UWORD)worldColumn + tileY);
-	if (tileY > GAME_SEA_TOP_TILE_Y + 2 && (seaPhaseSum % 11) == 0)
-		return 4;
+	/* Sprint 14.97 PRI 9: CPC selects sea surface tile from R:
+	 * `ld a,r; and #03; add 3` → tile 3 + (R & 3), range 3-6.
+	 * Previously used a worldColumn/row-derived pattern with modulo-11
+	 * rules — visually plausible but not CPC's random selection. Now uses
+	 * the modeled R state, same as grass/hill/town decisions. Only the
+	 * surface row (GAME_SEA_TOP_TILE_Y) uses the R-based variant; deeper
+	 * rows stay as the simpler tile 3 fill. */
+	if (tileY == GAME_SEA_TOP_TILE_Y) {
+		UBYTE rState = cpcRStateForWorldColumn(worldColumn);
+		return (UBYTE)(3 + (rState & 3));
+	}
 	return 3;
 }
 
@@ -4748,10 +4710,53 @@ static UBYTE cpcLandSkillLevel = 1;
  * the single sequential RNG while allowing the Amiga ring renderer and
  * collision code to query columns out of order. Terrain, targets and live
  * flak all read different bits from this same per-column state. */
-#define CPC_RANDOM_INITIAL_STATE 0x2f6b
-#define CPC_LAND_PROCEDURAL_WORLD_START 106
+/* Sprint 14.97 PRI 7: CPC seed verified from WinAPE snapshot logging.
+ *
+ * CPC source (asm:209-210) defines currtime=9, l8859=0 → 16-bit state 0x0009.
+ * But WinAPE snapshot logging showed CPC's actual first land-column currtime
+ * is 0x3A51, not reachable from 0x0009. currtime is overwritten somewhere
+ * during game/sea initialization before land generation starts.
+ *
+ * The genrandomhl recurrence (state = state * 1509 + 0x29) was verified
+ * correct: 187/188 consecutive values match perfectly.
+ *
+ * Amiga's table stores state AFTER each genrandomhl call. CPC's first logged
+ * column has currtime=0x3A51 = seed * 1509 + 0x29, so seed = 0x2F08.
+ * With this seed, all 188 logged columns match exactly. */
+#define CPC_RANDOM_INITIAL_STATE 0x2F08
+/* Sprint 14.97 PRI 8: updated from 106 to 102 to match the shortened
+ * COAST_RISE segment (now 100-101 instead of 100-105). Procedural land
+ * now starts 4 columns earlier, and the RNG state for each column is
+ * looked up by the correct absolute world column. */
+#define CPC_LAND_PROCEDURAL_WORLD_START 102
 static UWORD cpcRandomStateByColumn[GAME_LEVEL_WIDTH_TILES];
 static UBYTE cpcRandomSequenceReady = 0;
+
+/* Sprint 14.97 PRI 5: Z80 R register state per generated column. R is a 7-bit
+ * refresh counter (0-127) that increments once per M1 (opcode fetch) cycle.
+ * CPC reads it at specific decision points:
+ *   grass variant:    `ld a,r; and 3; add #20`           → tile 32-35 (R & 3)
+ *   hill down:        `ld a,r; rra; and 3; add #1c`       → tile 28-31 ((R>>1)&3)
+ *   hill up:           `ld a,(l8859); rra; and 3; add #18` → tile 24-27 (l8859>>1 & 3) — uses genrandomhl, NOT R
+ *   target type:       `ld a,r; rra; and #0c; rra; rra; ld (l884b),a` → (R>>3)&3
+ *   town building:     `ld a,r; rra; rra; and #07`        → (R>>2)&7
+ *   sea tile:          `ld a,r; and #03; add 3`            → tile 3-6 (R & 3)
+ *   flak gate:         `ld a,r; and #0f`                  → (R & 0x0f)
+ * Previously the Amiga mixed genrandomhl bits as a substitute for R, which
+ * preserved determinism but broke CPC's correlation: R and l8859 advance
+ * independently, so CPC can produce the same grass variant on two columns
+ * with very different terrain heights, which a shared-state model can't.
+ * Modeled as a linear counter with a fixed increment per column — R is
+ * inherently a linear counter, not a PRNG, so this is the correct shape.
+ * The increment (0x53 = 83) approximates the average M1 cycles executed
+ * between genrandomhl calls in the CPC's column generation routine; it
+ * wraps at 128 (R's 7-bit range), giving a pseudo-random-looking
+ * distribution after just a few columns. Exact bit-identical reproduction
+ * would require Z80 instruction counting or an instrumented CPC run. */
+static UBYTE cpcRStateByColumn[GAME_LEVEL_WIDTH_TILES];
+#define CPC_R_INITIAL 0x00
+#define CPC_R_INCREMENT 0x53
+#define CPC_R_MASK 0x7f
 
 /* CPC clouds are streamed multi-column tile blocks, not moving sprites.
  * Store only the chosen top row and block column for each world column;
@@ -4845,11 +4850,17 @@ static void generateCpcCloudTable(void) {
 
 static void resetCpcRandomSequence(void) {
 	UWORD state = CPC_RANDOM_INITIAL_STATE;
+	UBYTE rState = CPC_R_INITIAL;
 	for (UWORD column = 0; column < GAME_LEVEL_WIDTH_TILES; column++) {
 		/* CPC calls genrandomhl before generating the newly revealed column.
 		 * Entry N therefore stores states[N + 1], never the initial seed. */
 		state = (UWORD)(state * 1509U + 0x0029U);
 		cpcRandomStateByColumn[column] = state;
+		/* Sprint 14.97 PRI 5: R advances independently of genrandomhl.
+		 * Modeled as a linear 7-bit counter with a fixed increment per
+		 * column, wrapping at 128. */
+		rState = (UBYTE)((rState + CPC_R_INCREMENT) & CPC_R_MASK);
+		cpcRStateByColumn[column] = rState;
 	}
 	cpcRandomSequenceReady = 1;
 	generateCpcCloudTable();
@@ -4864,6 +4875,20 @@ static UWORD cpcRandomStateForWorldColumn(LONG worldColumn) {
 	if (worldColumn >= GAME_LEVEL_WIDTH_TILES)
 		worldColumn = GAME_LEVEL_WIDTH_TILES - 1;
 	return cpcRandomStateByColumn[worldColumn];
+}
+
+/* Sprint 14.97 PRI 5: Z80 R register value for the given world column. Used
+ * for grass variant (R&3), hill-down variant ((R>>1)&3), target type
+ * ((R>>3)&3), town building ((R>>2)&7), sea tile (R&3), and flak gate
+ * (R&0x0f) — all CPC decisions that read R, not l8859/genrandomhl. */
+static UBYTE cpcRStateForWorldColumn(LONG worldColumn) {
+	if (!cpcRandomSequenceReady)
+		resetCpcRandomSequence();
+	if (worldColumn < 0)
+		worldColumn = 0;
+	if (worldColumn >= GAME_LEVEL_WIDTH_TILES)
+		worldColumn = GAME_LEVEL_WIDTH_TILES - 1;
+	return cpcRStateByColumn[worldColumn];
 }
 
 static UBYTE cpcCloudTileAtColumnRow(LONG worldColumn, WORD tileY) {
@@ -4888,14 +4913,13 @@ static UBYTE cpcCloudTileAtColumnRow(LONG worldColumn, WORD tileY) {
 
 /*
  * CPC chooses the ground-target variant from the Z80 R refresh register.
- * The Amiga has no equivalent stable source, so derive the target
- * deterministically from mixed, otherwise-unused bits of the same
- * per-column CPC RNG state. This deliberately avoids reusing terrainMode's
- * l8859 bits and creating an artificial mode/type correlation.
+ * Sprint 14.97 PRI 5: now uses the modeled R state (cpcRStateForWorldColumn)
+ * instead of mixing genrandomhl bits. CPC's insertenemylandtile
+ * (asm:5606-5619): `ld a,r; rra; and #0c; rra; rra; ld (l884b),a` gives
+ * target type = (R >> 3) & 3.
  */
-static UBYTE cpcTargetTypeForState(UWORD state) {
-	UWORD mixed = (UWORD)(state ^ (state >> 5) ^ (state << 7));
-	return (UBYTE)((mixed >> 3) & 3);
+static UBYTE cpcTargetTypeForRState(UBYTE rState) {
+	return (UBYTE)((rState >> 3) & 3);
 }
 
 static void generateCpcLandHeightTable(void) {
@@ -4905,19 +4929,17 @@ static void generateCpcLandHeightTable(void) {
 	UBYTE pendingTankRear = 0;
 	for (UWORD i = 0; i < CPC_LAND_PROCEDURAL_LENGTH; i++) {
 		UBYTE surface;
-		UWORD rng = cpcRandomStateForWorldColumn(CPC_LAND_PROCEDURAL_WORLD_START + i);
+		LONG worldColumn = CPC_LAND_PROCEDURAL_WORLD_START + i;
+		UWORD rng = cpcRandomStateForWorldColumn(worldColumn);
 		UBYTE r = (UBYTE)(rng >> 8);
+		UBYTE rState = cpcRStateForWorldColumn(worldColumn);
 		UBYTE mode = (UBYTE)((r >> 2) & 3);
 		cpcLandTargetTable[i] = CPC_LAND_TARGET_NONE;
-		/* Flat grass tile (32-35) - matches whenever a hill step doesn't
-		 * actually happen this column (mode 0, mode 3, or a hill mode that's
-		 * already pinned at its limit). CPC picks this genuinely at random
-		 * (`ld a,r; and 3; add #20`) - unlike the hill-phase choice below,
-		 * this wasn't an intentional Amiga-side deviation, just an earlier
-		 * placeholder (a worldColumn-derived fixed pattern) worth matching
-		 * properly now that the surface tile is being stored directly
-		 * anyway. */
-		UBYTE grassTile = (UBYTE)(32 + ((rng >> 4) & 3));
+		/* Sprint 14.97 PRI 5: CPC picks the flat grass variant from R:
+		 * `ld a,r; and 3; add #20` → tile 32 + (R & 3). Previously used
+		 * genrandomhl bits ((rng >> 4) & 3), which broke R's independence
+		 * from l8859. */
+		UBYTE grassTile = (UBYTE)(32 + (rState & 3));
 		surface = grassTile;
 
 		if (pendingTankRear) {
@@ -4925,16 +4947,21 @@ static void generateCpcLandHeightTable(void) {
 			pendingTankRear = 0;
 		} else if (mode == 1 && height < CPC_LAND_PROCEDURAL_BASELINE) {
 			height++;
-			surface = (UBYTE)(28 + ((rng >> 5) & 3)); /* CPC HILL DOWN */
+			/* Sprint 14.97 PRI 5: CPC hill down uses R:
+			 * `ld a,r; rra; and 3; add #1c` → tile 28 + ((R >> 1) & 3).
+			 * Previously used genrandomhl bits. */
+			surface = (UBYTE)(28 + ((rState >> 1) & 3));
 		} else if (mode == 2 && height > floorRow) {
 			height--;
-			/* CPC uses `l8859; rra; and 3`: state bits 9-10. */
-			surface = (UBYTE)(24 + ((r >> 1) & 3)); /* CPC HILL UP */
+			/* CPC hill up uses l8859 (genrandomhl state), NOT R:
+			 * `ld a,(l8859); rra; and 3; add #18` → tile 24 + ((l8859 >> 1) & 3). */
+			surface = (UBYTE)(24 + ((r >> 1) & 3));
 		} else if (mode == 3) {
 			if (previousWasTarget) {
 				previousWasTarget = 0;
 			} else {
-				UBYTE type = cpcTargetTypeForState(rng);
+				/* Sprint 14.97 PRI 5: CPC target type from R: (R >> 3) & 3. */
+				UBYTE type = cpcTargetTypeForRState(rState);
 				if (type == 3 && i + 1 < CPC_LAND_PROCEDURAL_LENGTH) {
 					cpcLandTargetTable[i] = CPC_LAND_TARGET_TANK_FRONT;
 					pendingTankRear = 1;
@@ -4994,13 +5021,24 @@ static UBYTE townBlockLocalColumnForColumn[CPC_TOWN_PROCEDURAL_LENGTH];
 static UBYTE townBlockTableReady = 0;
 
 static void generateCpcTownBlockTable(void) {
-	UWORD rng = 0x3c91;
+	/* Sprint 14.97 PRI 5: CPC selects town buildings from R:
+	 * `ld a,r; rra; rra; and #07` → blockId = (R >> 2) & 7.
+	 * Previously used a separate local LCG (seed 0x3c91, * 25173 + 13849),
+	 * which was Amiga-specific and had no correlation to CPC's R-driven
+	 * sequence. Now uses the same modeled R state as all other R-based
+	 * decisions, keyed by the world column of each town position. */
 	memset(townBlockForColumn, CPC_TOWN_BLOCK_NONE, sizeof(townBlockForColumn));
+
+	/* Town segment starts at column 411 in the current route. The R state
+	 * for each town column is looked up by absolute world column, matching
+	 * how CPC's R would have advanced by the time the town section's column
+	 * generation runs. */
+	const LONG townWorldStart = 411;
 
 	UWORD i = CPC_TOWN_PROCEDURAL_START_MARGIN;
 	while (i < CPC_TOWN_PROCEDURAL_LENGTH) {
-		rng = (UWORD)(rng * 25173 + 13849);
-		UBYTE blockId = (UBYTE)((rng >> 8) & 7);
+		UBYTE rState = cpcRStateForWorldColumn(townWorldStart + i);
+		UBYTE blockId = (UBYTE)((rState >> 2) & 7);
 		UBYTE width = harCpcTownBlockWidths[blockId];
 		UWORD remaining = (UWORD)(CPC_TOWN_PROCEDURAL_LENGTH - i);
 		/* CPC completes spriteblockptr before it tests the town countdown.
@@ -5034,6 +5072,9 @@ static UBYTE terrainYForWorldColumn(LONG worldColumn, const LevelSegmentDef* seg
 
 	switch (terrainKind) {
 		case HAR_TERRAIN_COAST_RISE:
+			/* Sprint 14.97 PRI 8: CPC does a 1+1 coast transition:
+			 * one solid tile at row 15, one hill-up at row 14. Was 6
+			 * columns (100-105) which was noticeably longer than CPC. */
 			if (localColumn == 0)
 				return 15;
 			return 14;
@@ -5042,6 +5083,12 @@ static UBYTE terrainYForWorldColumn(LONG worldColumn, const LevelSegmentDef* seg
 		case HAR_TERRAIN_TOWN:
 			return 14;
 		case HAR_TERRAIN_COAST_FALL:
+			/* Sprint 14.97 PRI 6: CPC's setcloudcolourtosea (asm:5790-5804)
+			 * draws a 3x2 solid land block (tile 1) at rows 14-15 as the
+			 * transition from town to pier, then immediately streams
+			 * pendata (JHIJHIJHIJHI). Replaces the old 6-column
+			 * approximation. First 3 columns: solid land at row 14
+			 * (row 15 is sea fill below). After that: sea (255). */
 			if (localColumn < 3)
 				return 14;
 			return 255;
@@ -5050,12 +5097,19 @@ static UBYTE terrainYForWorldColumn(LONG worldColumn, const LevelSegmentDef* seg
 				localColumn = CPC_LAND_PROCEDURAL_LENGTH - 1;
 			return cpcLandProceduralProfile((UWORD)localColumn);
 		}
-		case HAR_TERRAIN_CPC_DESCEND_TO_TOWN:
-			if (localColumn < 2)
-				return 12;
-			if (localColumn < 5)
-				return 13;
-			return 14;
+		case HAR_TERRAIN_CPC_DESCEND_TO_TOWN: {
+			/* Sprint 14.97 PRI 3: CPC continues from the last generated
+			 * land height and steps one row down per column until reaching
+			 * 14, rather than a fixed 10-column script. The descend length
+			 * adapts to how high the terrain was when land ended - skill 5
+			 * with row 7 terrain needs 7 descend columns, not the same 3
+			 * that skill 1 with row 11 terrain does. */
+			UBYTE lastLandHeight = cpcLandProceduralProfile(CPC_LAND_PROCEDURAL_LENGTH - 1);
+			UBYTE descendTo = (UBYTE)(lastLandHeight + localColumn);
+			if (descendTo > CPC_LAND_PROCEDURAL_BASELINE)
+				descendTo = CPC_LAND_PROCEDURAL_BASELINE;
+			return descendTo;
+		}
 		default:
 			return 255;
 	}
@@ -5679,6 +5733,13 @@ static void buildWorldTileColumn(LONG worldColumn, RenderColumn* outColumn) {
 			continue;
 		if (object->id == HAR_OBJ_ENEMY_SHIP && isShipCellDestroyed(worldColumn, row))
 			continue;
+		/* In the CPC+ path enemyshipsprite supplies the destructible
+		 * object-map cells behind the promoted ASIC gunship. It is not a
+		 * second visible black vessel. Keep those cells in
+		 * objectCellForWorldColumnTile() for collision/damage, but leave
+		 * the sky/sea baseline intact in the render column. */
+		if (object->id == HAR_OBJ_ENEMY_SHIP)
+			continue;
 		outColumn->tile[row] = object->tile;
 		claimed[row] = 2; /* explicit object: protected from town overwrite */
 	}
@@ -6101,7 +6162,7 @@ static USHORT scrollLocalByteOffset(UWORD scrollX) {
 }
 
 static UBYTE useFixedTakeoffWorldWindow(const GameState* game) {
-	return game->takeoffState != TAKEOFF_STATE_AIRBORNE;
+	return game->takeoffState == TAKEOFF_STATE_ROLLING_IN || game->takeoffState == TAKEOFF_STATE_READY;
 }
 
 static USHORT displayByteOffsetForGameState(const GameState* game) {
@@ -6596,22 +6657,45 @@ static UWORD runtimeFlakLastColumn = 0xffff;
  * clearly denser in town" observation. Flagged as an approximation, same as
  * the row-offset range and per-column probabilities it replaces. -1 means
  * "not yet seeded" (fresh session). */
-#define FLAK_COUNTDOWN_LAND_MIN 6
-#define FLAK_COUNTDOWN_LAND_SPAN 10
-#define FLAK_COUNTDOWN_TOWN_MIN 2
-#define FLAK_COUNTDOWN_TOWN_SPAN 6
-static WORD flakCountdown = -1;
+/* Sprint 14.97 PRI 2: CPC's launchflakattack state machine (asm:6033-6095),
+ * translated directly. CPC maintains three state variables that evolve
+ * column-by-column:
+ *   l884b: target type from last insertenemylandtile ((R>>3)&3), or 4 after
+ *          a reset. Bit 1 of (l884b+1) triggers a reset when l884b is 1 or 2.
+ *   l884c: flak threshold. Set to (terrainHeight-3) on reset, or 10 in town.
+ *   l8864: 4-stage countdown counter. Starts at 4 on reset, decrements each
+ *          land column. When 0, only town can spawn flak.
+ * Flak spawns when h <= threshold, where h = (l8859 >> 4) & 0x0F (upper
+ * nibble of genrandomhl's high byte, range 0-15) — an ABSOLUTE row, not an
+ * offset above terrain. The cell at (column, h) must be sky. */
+static UBYTE cpcFlakL884b = 0;
+static UBYTE cpcFlakL884c = 0;
+static UBYTE cpcFlakL8864 = 0;
 
-static WORD seedFlakCountdown(UBYTE isTown, UWORD columnRandom) {
-	if (isTown)
-		return (WORD)(FLAK_COUNTDOWN_TOWN_MIN + (columnRandom % FLAK_COUNTDOWN_TOWN_SPAN));
-	return (WORD)(FLAK_COUNTDOWN_LAND_MIN + (columnRandom % FLAK_COUNTDOWN_LAND_SPAN));
+/* Returns the raw l884b value (0-3) if a target was placed at this column,
+ * or 0xFF if no target was placed (l884b unchanged from previous column).
+ * TANK_REAR doesn't update l884b (it's the second half of a tank, not a
+ * fresh insertenemylandtile call). */
+static UBYTE cpcFlakL884bForWorldColumn(LONG worldColumn) {
+	const LevelSegmentDef* segment = levelSegmentForWorldColumn(worldColumn);
+	if (!segment || segment->terrainKind != HAR_TERRAIN_CPC_RANDOM_LAND)
+		return 0xFF;
+	LONG localColumn = worldColumn - segment->startColumn;
+	if (localColumn < 0 || localColumn >= CPC_LAND_PROCEDURAL_LENGTH)
+		return 0xFF;
+	UBYTE target = cpcLandProceduralTarget((UWORD)localColumn);
+	if (target == CPC_LAND_TARGET_NONE || target == CPC_LAND_TARGET_TANK_REAR)
+		return 0xFF;
+	/* Map Amiga enum back to CPC raw l884b: RADAR(1)→0, LAUNCHER(2)→1, GUN(3)→2, TANK_FRONT(4)→3 */
+	return (UBYTE)(target - CPC_LAND_TARGET_RADAR);
 }
 
 static void resetRuntimeFlak(void) {
 	runtimeFlakCount = 0;
 	runtimeFlakLastColumn = 0xffff;
-	flakCountdown = -1;
+	cpcFlakL884b = 0;
+	cpcFlakL884c = 0;
+	cpcFlakL8864 = 0;
 }
 
 static void resetPowerup(GameState* game) {
@@ -6652,60 +6736,82 @@ static void trySpawnFlak(GameState* game, UBYTE** worldBuffers) {
 	runtimeFlakLastColumn = checkColumn;
 	pruneRuntimeFlakBehindColumn((LONG)(game->scrollX >> 3) - GAME_MAP_WIDTH * 2);
 
+	if (game->gameOver || game->crashTimer)
+		return;
+
 	const LevelSegmentDef* segment = levelSegmentForWorldColumn((LONG)checkColumn);
 	UBYTE stage = stageForWorldColumn((LONG)checkColumn, segment);
 	UBYTE terrainKind = segment ? segment->terrainKind : terrainKindForStage(stage);
+	UBYTE isLand = terrainKind == HAR_TERRAIN_CPC_RANDOM_LAND;
 	UBYTE isTown = terrainKind == HAR_TERRAIN_TOWN;
-	if (terrainKind != HAR_TERRAIN_CPC_RANDOM_LAND && !isTown)
+	if (!isLand && !isTown)
 		return;
 
-	UBYTE terrainY = terrainYForWorldColumn((LONG)checkColumn, segment, terrainKind);
-	if (terrainY == 255 || terrainY < 2)
-		return;
+	/* Update l884b from this column's target placement (insertenemylandtile
+	 * only runs in land, not town). 0xFF means no target this column —
+	 * l884b keeps its previous value. */
+	UBYTE newL884b = cpcFlakL884bForWorldColumn((LONG)checkColumn);
+	if (newL884b != 0xFF)
+		cpcFlakL884b = newL884b;
 
-	UWORD columnRandom = cpcRandomStateForWorldColumn((LONG)checkColumn);
-
-	if (flakCountdown < 0)
-		flakCountdown = seedFlakCountdown(isTown, columnRandom);
-	if (flakCountdown > 0) {
-		flakCountdown--;
-		return;
+	/* Reset block (asm:6038-6050): fires when bit 1 of (l884b+1) is set,
+	 * i.e. l884b is 1 or 2 (launcher or gun). Sets l8864=4, l884b=4 (so it
+	 * won't reset again until next target), l884c=terrainHeight-3. */
+	if (cpcFlakL884b != 4) {
+		UBYTE testVal = (UBYTE)(cpcFlakL884b + 1);
+		if (testVal & 2) {
+			cpcFlakL8864 = 4;
+			cpcFlakL884b = 4;
+			UBYTE terrainY = terrainYForWorldColumn((LONG)checkColumn, segment, terrainKind);
+			cpcFlakL884c = (UBYTE)(terrainY >= 3 ? terrainY - 3 : 0);
+		}
 	}
-	/* Countdown reached zero this column - attempt exactly one placement,
-	 * then reseed for the next burst regardless of whether this one
-	 * actually landed on a valid sky cell (avoids retrying every single
-	 * column forever in a spot where the roll keeps missing). */
-	flakCountdown = seedFlakCountdown(isTown, columnRandom);
 
-	UBYTE maxOffset = (UBYTE)(terrainY - 1);
-	if (maxOffset > CPC_LAND_FLAK_MAX_ROW_OFFSET)
-		maxOffset = CPC_LAND_FLAK_MAX_ROW_OFFSET;
-	if (maxOffset < CPC_LAND_FLAK_MIN_ROW_OFFSET)
-		return;
-	UBYTE span = (UBYTE)(maxOffset - CPC_LAND_FLAK_MIN_ROW_OFFSET + 1);
-	UBYTE offset = (UBYTE)(CPC_LAND_FLAK_MIN_ROW_OFFSET + ((columnRandom >> 4) % span));
-	WORD flakRow = (WORD)(terrainY - offset);
-	if (flakRow < 0 || flakRow >= GAME_OBJECT_MAP_HEIGHT_TILES)
+	/* Stage dispatch (asm:6052-6064). */
+	UBYTE threshold;
+	if (cpcFlakL8864 != 0) {
+		if (isLand) {
+			cpcFlakL8864--;
+			threshold = cpcFlakL884c;
+		} else if (isTown) {
+			threshold = 10;
+		} else {
+			return;
+		}
+	} else {
+		/* l8864 == 0: only town can spawn flak */
+		if (isTown) {
+			threshold = 10;
+		} else {
+			return;
+		}
+	}
+
+	/* h = upper nibble of l8859 (genrandomhl high byte), range 0-15.
+	 * This is an ABSOLUTE tile row, not an offset above terrain.
+	 * asm:6066-6070: ld a,(l8859); rlca*4; and #0f */
+	UWORD rng = cpcRandomStateForWorldColumn((LONG)checkColumn);
+	UBYTE l8859 = (UBYTE)(rng >> 8);
+	UBYTE h = (UBYTE)((l8859 >> 4) & 0x0f);
+
+	/* Spawn check: if threshold < h, no flak (asm:6078-6079: cp h; ret c). */
+	if (h > threshold)
 		return;
 
+	/* Cell at (column, h) must be sky (asm:6071-6076: getskytilemapid; dec a;
+	 * ret nz — only sky (ID 1) passes). */
+	WORD flakRow = (WORD)h;
+	if (flakRow >= GAME_OBJECT_MAP_HEIGHT_TILES)
+		return;
 	ObjectCell existingCell;
 	if (!objectCellForWorldColumnTile((LONG)checkColumn, flakRow, &existingCell) || existingCell.id != HAR_OBJ_SKY)
 		return;
 
-	UBYTE tile = (UBYTE)((offset & 1) ? 58 : 57);
+	/* Flak sprite: 57 or 58 based on R bit 0 (asm:6082-6087). */
+	UBYTE rState = cpcRStateForWorldColumn((LONG)checkColumn);
+	UBYTE tile = (UBYTE)((rState & 1) ? 58 : 57);
 	if (addRuntimeFlak((LONG)checkColumn, flakRow, tile)) {
-		/* Single-tile redraw instead of the whole column (see
-		 * dirtyRedrawWorldTile()'s own comment) - flak never coincides with
-		 * a carrier/gunship column (those only exist over sea-stage
-		 * columns, flak only over land/town), so there's no wide-object
-		 * overlay to worry about missing here. */
 		dirtyRedrawWorldTile(worldBuffers, (LONG)checkColumn, flakRow, tile);
-		/* Real CPC plays doflaknoise() exactly once, at the instant flak is
-		 * created (launchflakattack, :6033-6095) - not every frame it merely
-		 * exists or gets looked at. Played after the redraw so "sound" and
-		 * "visibly appeared" happen together. Sprint 14.95 Part 2 correction:
-		 * was SFX_MENU (menu blip - wrong cue); now uses the dedicated
-		 * flak-pop sample matching CPC's doflaknoise(). */
 		playSfx(SFX_FLAK_POP);
 	}
 }
@@ -6858,7 +6964,7 @@ static UBYTE stageAllowsPowerup(const GameState* game) {
 	const LevelSegmentDef* segment = levelSegmentForWorldColumn(worldColumn);
 	UBYTE stage = stageForWorldColumn(worldColumn, segment);
 	/* CPC: cp 2 / ret c ; cp 8 / ret nc  ->  stages 2..7 inclusive. */
-	return stage >= HAR_STAGE_ENEMY_SHIP_FIRED_MISSILE && stage <= HAR_STAGE_SECOND_SHIP_MISSILE;
+	return stage >= HAR_STAGE_ENEMY_SHIP_FIRED_MISSILE && stage < HAR_STAGE_START_PIER;
 }
 
 static UBYTE playerHighEnoughForPowerup(const GameState* game) {
@@ -6869,9 +6975,8 @@ static UBYTE playerHighEnoughForPowerup(const GameState* game) {
 	return (UBYTE)(game->playerY >> 3) < floor;
 }
 
-static void spawnPowerup(GameState* game, UBYTE type) {
+static void spawnPowerup(GameState* game, UBYTE type, UBYTE startRow) {
 	PowerupState* p = &game->powerup;
-	UBYTE startRow = (UBYTE)(frameCounter & POWERUP_SPAWN_MAX_ROW);
 	p->active = 1;
 	p->type = type;
 	p->worldX = (LONG)game->scrollX + (POWERUP_SPAWN_COLUMN << 3);
@@ -6933,7 +7038,10 @@ static void trySpawnPowerup(GameState* game) {
 	if (type == POWERUP_NONE)
 		return;  /* CPC's 6th slot: enemy plane spawns instead - leave to updateEnemyPlane */
 
-	spawnPowerup(game, type);
+	/* CPC uses currtime&3 after the right-edge column's RNG update. */
+	LONG spawnWorldColumn = (LONG)(game->scrollX >> 3) + POWERUP_SPAWN_COLUMN;
+	UBYTE startRow = (UBYTE)(cpcRandomStateForWorldColumn(spawnWorldColumn) & POWERUP_SPAWN_MAX_ROW);
+	spawnPowerup(game, type, startRow);
 }
 
 static void destroyPowerup(GameState* game, UBYTE withExplosion) {
@@ -6950,10 +7058,10 @@ static void activatePowerup(GameState* game, UBYTE type) {
 			game->armour = 100;
 			break;
 		case POWERUP_ROCKETS:
-			game->rockets = MAX_ROCKETS;
+			game->rockets = POWERUP_ROCKET_REFILL;
 			break;
 		case POWERUP_BOMBS:
-			game->bombs = MAX_BOMBS;
+			game->bombs = POWERUP_BOMB_REFILL;
 			break;
 		case POWERUP_WINGMAN:
 			/* Deferred - no wingman subsystem yet. Treat as health so the
@@ -6975,7 +7083,7 @@ static void activatePowerup(GameState* game, UBYTE type) {
  * flying into it - which is why updateGameCollisions() also has a powerup
  * branch. */
 static UBYTE powerupHitsSolidWorld(const GameState* game, const PowerupState* p) {
-	WORD probeX = (WORD)((p->worldX - (LONG)game->scrollX) + (POWERUP_SPRITE_WIDTH / 2));
+	WORD probeX = (WORD)((p->worldX - (LONG)game->scrollX) + (POWERUP_COLLISION_WIDTH / 2));
 	WORD probeY = (WORD)(p->y + POWERUP_SPRITE_HEIGHT);
 	ObjectCell cell;
 	LONG worldColumn;
@@ -6988,15 +7096,13 @@ static UBYTE powerupHitsSolidWorld(const GameState* game, const PowerupState* p)
 		return 0;
 	if (cell.id == HAR_OBJ_FLAK)
 		return 0;
-	if (cell.id == HAR_OBJ_OWN_FRIGATE)
-		return 0;
 	/* Terrain, town block, ground target, enemy ship, smoke = solid. */
 	return 1;
 }
 
 static UBYTE powerupHitsPlayer(const GameState* game, const PowerupState* p) {
 	WORD screenX = (WORD)(p->worldX - (LONG)game->scrollX);
-	return rectsOverlap(screenX, p->y, POWERUP_SPRITE_WIDTH, POWERUP_SPRITE_HEIGHT,
+	return rectsOverlap(screenX, p->y, POWERUP_COLLISION_WIDTH, POWERUP_SPRITE_HEIGHT,
 		game->playerX, game->playerY, PLAYER_SPRITE_WIDTH, PLAYER_SPRITE_HEIGHT);
 }
 
@@ -7012,12 +7118,11 @@ static UBYTE updatePowerup(GameState* game) {
 		return 1;
 	}
 
-	/* CPC: powerup falls one tile every ~6 tile-scrolls. With Amiga's
-	 * per-frame scroll (1..4 px), 12 frames is the smoothed equivalent of
-	 * CPC's per-tile-scroll cadence at the default speed level. */
-	p->fallCounter++;
-	if (p->fallCounter >= POWERUP_FALL_DELAY_FRAMES) {
-		p->fallCounter = 0;
+	/* Half the observed CPC-style port speed, distributed smoothly:
+	 * 2/3 px per frame = 8 px over 12 frames. */
+	p->fallCounter = (UBYTE)(p->fallCounter + POWERUP_FALL_PHASE_ADD);
+	if (p->fallCounter >= POWERUP_FALL_PHASE_PIXEL) {
+		p->fallCounter = (UBYTE)(p->fallCounter - POWERUP_FALL_PHASE_PIXEL);
 		p->y++;
 	}
 
@@ -7044,7 +7149,15 @@ static UBYTE playerObjectMapCollision(const GameState* game, LONG* hitWorldColum
 	if (game->respawnSafeTimer > 0 || game->crashTimer || game->gameOver)
 		return PLAYER_OBJECT_COLLISION_SAFE;
 
-	if (playerOnNativeCarrierDeckPixels(game))
+	/* The scripted lift starts on the deck and moves only vertically. It is
+	 * the one intentional carrier overlap; normal collision rules take over
+	 * as soon as TAKEOFF_CLEAR_Y is reached. */
+	if (game->takeoffState == TAKEOFF_STATE_LIFTING)
+		return PLAYER_OBJECT_COLLISION_SAFE;
+
+	/* Only the mission-end carrier is a valid landing/refuel surface.
+	 * Re-contact with the start carrier after liftoff is fatal. */
+	if (game->missionComplete && playerOnNativeCarrierDeckPixels(game))
 		return PLAYER_OBJECT_COLLISION_SAFE;
 
 	for (UBYTE index = 0; index < sizeof(probeX) / sizeof(probeX[0]); index++) {
@@ -7053,8 +7166,6 @@ static UBYTE playerObjectMapCollision(const GameState* game, LONG* hitWorldColum
 		WORD tileY;
 		WORD screenX = (WORD)(game->playerX + probeX[index]);
 		WORD screenY = (WORD)(game->playerY + probeY[index]);
-		if (index == 2 && playerProbeOnOwnFrigate(game, screenX, screenY))
-			continue;
 		if (!objectCellForWorldPoint(game, screenX, screenY, &cell, &worldColumn, &tileY))
 			continue;
 		/* CPC clouds use object ID 0 so they can occupy a visual sky cell,
@@ -7068,8 +7179,8 @@ static UBYTE playerObjectMapCollision(const GameState* game, LONG* hitWorldColum
 			*hitTileY = tileY;
 			return PLAYER_OBJECT_COLLISION_FLAK;
 		}
-		if (cell.id == HAR_OBJ_OWN_FRIGATE)
-			continue;
+		/* The deck-safe case returned above. Any other contact with the
+		 * carrier is a real collision, matching CPC's object-map checks. */
 		return PLAYER_OBJECT_COLLISION_FATAL;
 	}
 
@@ -7248,7 +7359,7 @@ static UBYTE updateEnemyMissile(GameState* game, UBYTE scrollPixels) {
 		if (game->enemyMissile.active && game->powerup.active) {
 			WORD powerupScreenX = (WORD)(game->powerup.worldX - (LONG)game->scrollX);
 			if (rectsOverlap(game->enemyMissile.x, game->enemyMissile.y, ENEMY_MISSILE_SPRITE_WIDTH, ENEMY_MISSILE_SPRITE_HEIGHT,
-					powerupScreenX, game->powerup.y, POWERUP_SPRITE_WIDTH, POWERUP_SPRITE_HEIGHT)) {
+					powerupScreenX, game->powerup.y, POWERUP_COLLISION_WIDTH, POWERUP_SPRITE_HEIGHT)) {
 				game->enemyMissile.active = 0;
 				game->enemyMissileFromShip = 0;
 				destroyPowerup(game, 1);
@@ -7412,7 +7523,7 @@ static UBYTE updateGameCollisions(GameState* game, UBYTE** worldBuffers,
 
 	if (replenishPlayerFromFrigate(game))
 		*hudChanged = 1;
-	if (playerOnNativeCarrierDeckPixels(game) && game->speedLevel <= 3) {
+	if (game->missionComplete && playerOnNativeCarrierDeckPixels(game) && game->speedLevel <= 3) {
 		WORD deckPlayerY = (WORD)(CARRIER_DECK_PIXEL_Y - PLAYER_SPRITE_HEIGHT);
 		if (game->playerY != deckPlayerY) {
 			game->playerY = deckPlayerY;
@@ -7548,7 +7659,7 @@ static UBYTE updateGameCollisions(GameState* game, UBYTE** worldBuffers,
 		WORD powerupScreenX = (WORD)(game->powerup.worldX - (LONG)game->scrollX);
 		if (game->rocketShot.active &&
 			rectsOverlap(game->rocketShot.x, game->rocketShot.y, 16, WEAPON_SPRITE_HEIGHT,
-				powerupScreenX, game->powerup.y, POWERUP_SPRITE_WIDTH, POWERUP_SPRITE_HEIGHT)) {
+				powerupScreenX, game->powerup.y, POWERUP_COLLISION_WIDTH, POWERUP_SPRITE_HEIGHT)) {
 			game->rocketShot.active = 0;
 			destroyPowerup(game, 1);
 			startWorldImpact(game, game->rocketShot.x, game->rocketShot.y);
@@ -7556,7 +7667,7 @@ static UBYTE updateGameCollisions(GameState* game, UBYTE** worldBuffers,
 		}
 		if (game->powerup.active && game->bombShot.active &&
 			rectsOverlap(game->bombShot.x, game->bombShot.y, 16, WEAPON_SPRITE_HEIGHT,
-				powerupScreenX, game->powerup.y, POWERUP_SPRITE_WIDTH, POWERUP_SPRITE_HEIGHT)) {
+				powerupScreenX, game->powerup.y, POWERUP_COLLISION_WIDTH, POWERUP_SPRITE_HEIGHT)) {
 			game->bombShot.active = 0;
 			destroyPowerup(game, 1);
 			startWorldImpact(game, game->bombShot.x, game->bombShot.y);
@@ -7975,10 +8086,10 @@ int main(void) {
 				} else if (game.takeoffState == TAKEOFF_STATE_READY) {
 					setTakeoffDeckPosition(&game);
 					if (Pressed(input.up, previousInput.up)) {
-						game.takeoffState = TAKEOFF_STATE_AIRBORNE;
+						game.takeoffState = TAKEOFF_STATE_LIFTING;
 						game.scrollX = 0;
 						game.playerX = TAKEOFF_PLAYER_DECK_X;
-						game.playerY = TAKEOFF_PLAYER_DECK_Y;
+						game.playerY = TAKEOFF_PLAYER_DECK_Y - PLAYER_MOVE_SPEED_PIXELS;
 						updatePlayerSprite(playerSprite, playerAttachSprite, &game);
 						startEngineSound(scrollPixelsForSpeedLevel(game.speedLevel));
 						pendingGameScrollCopperUpdate = 1;
@@ -8015,30 +8126,41 @@ int main(void) {
 					game.scrollX = nextScrollX > GAME_SCROLL_MAX_PIXELS ? GAME_SCROLL_MAX_PIXELS : nextScrollX;
 				}
 
-				WORD targetPlayerX = playerTargetXForSpeedLevel(game.speedLevel);
-				if (game.playerX < targetPlayerX && game.playerX < PLAYER_MAX_X) {
-					game.playerX += PLAYER_MOVE_SPEED_PIXELS;
-					if (game.playerX > targetPlayerX)
-						game.playerX = targetPlayerX;
-					if (game.playerX > PLAYER_MAX_X)
-						game.playerX = PLAYER_MAX_X;
-				} else if (game.playerX > targetPlayerX && game.playerX > PLAYER_MIN_X) {
-					game.playerX -= PLAYER_MOVE_SPEED_PIXELS;
-					if (game.playerX < targetPlayerX)
-						game.playerX = targetPlayerX;
-					if (game.playerX < PLAYER_MIN_X)
-						game.playerX = PLAYER_MIN_X;
-				}
-
-				if (input.up && game.playerY > PLAYER_MIN_Y) {
+				if (game.takeoffState == TAKEOFF_STATE_LIFTING) {
+					/* CPC begins with a vertical climb from the rear deck.
+					 * Do not apply the normal speed-based X anchor until the
+					 * Harrier has cleared the carrier superstructure. */
 					game.playerY -= PLAYER_MOVE_SPEED_PIXELS;
-					if (game.playerY < PLAYER_MIN_Y)
-						game.playerY = PLAYER_MIN_Y;
-				}
-				if (input.down && game.playerY < PLAYER_MAX_Y) {
-					game.playerY += PLAYER_MOVE_SPEED_PIXELS;
-					if (game.playerY > PLAYER_MAX_Y)
-						game.playerY = PLAYER_MAX_Y;
+					if (game.playerY <= TAKEOFF_CLEAR_Y) {
+						game.playerY = TAKEOFF_CLEAR_Y;
+						game.takeoffState = TAKEOFF_STATE_AIRBORNE;
+					}
+				} else {
+					WORD targetPlayerX = playerTargetXForSpeedLevel(game.speedLevel);
+					if (game.playerX < targetPlayerX && game.playerX < PLAYER_MAX_X) {
+						game.playerX += PLAYER_MOVE_SPEED_PIXELS;
+						if (game.playerX > targetPlayerX)
+							game.playerX = targetPlayerX;
+						if (game.playerX > PLAYER_MAX_X)
+							game.playerX = PLAYER_MAX_X;
+					} else if (game.playerX > targetPlayerX && game.playerX > PLAYER_MIN_X) {
+						game.playerX -= PLAYER_MOVE_SPEED_PIXELS;
+						if (game.playerX < targetPlayerX)
+							game.playerX = targetPlayerX;
+						if (game.playerX < PLAYER_MIN_X)
+							game.playerX = PLAYER_MIN_X;
+					}
+
+					if (input.up && game.playerY > PLAYER_MIN_Y) {
+						game.playerY -= PLAYER_MOVE_SPEED_PIXELS;
+						if (game.playerY < PLAYER_MIN_Y)
+							game.playerY = PLAYER_MIN_Y;
+					}
+					if (input.down && game.playerY < PLAYER_MAX_Y) {
+						game.playerY += PLAYER_MOVE_SPEED_PIXELS;
+						if (game.playerY > PLAYER_MAX_Y)
+							game.playerY = PLAYER_MAX_Y;
+					}
 				}
 				if (game.scrollX > GAME_SCROLL_MAX_PIXELS)
 					game.scrollX = GAME_SCROLL_MAX_PIXELS;
