@@ -5069,29 +5069,18 @@ static void resetCpcRandomSequence(void) {
 	UBYTE landLastMode = 1;      /* l8861's compiled-in initial value (asm:218) */
 	UBYTE landJustInserted = 0;  /* forces flat the column right after any target */
 	UBYTE landPendingTankRear = 0;
-	/* Sprint 14.104: deliberate Amiga-only smoothing rule, NOT present in the
-	 * CPC disassembly - no such check exists anywhere in l9134/l9167/l9181's
-	 * mode dispatch. Added because a real captured CPC trace showed a lower
-	 * immediate climb-then-descend (or vice versa) reversal rate than this
-	 * port's own generator (17.2% vs 25.3% of all height changes, one sample
-	 * each), and because the user's own direct visual comparison of both
-	 * versions confirms real CPC's terrain reads as smoother regardless of
-	 * what any single-sample statistic says - that observation is the actual
-	 * target here, not a specific number. First cut required only 1 non-slope
-	 * column between opposite-direction slopes; land_log.csv then showed a
-	 * "climb, 1 flat, descend" shape still occurring in ~16% of all height
-	 * changes, matching a follow-up "steep little dump" report exactly.
-	 * Extended to require LAND_REVERSAL_MIN_GAP non-slope columns instead of
-	 * just 1. landLastSlopeDirection persists across flat/target columns
-	 * (only a NEW slope of either direction overwrites it) and
-	 * landFlatRunSinceSlope counts how many non-slope columns have passed
-	 * since - so this blocks a reversal until enough of a breather has
-	 * actually elapsed, not just one column. Deliberately not present in the
-	 * real assembly; matching the perceived CPC experience over literal
-	 * bit-for-bit reproduction was an explicit choice here. */
-	#define LAND_REVERSAL_MIN_GAP 2
-	WORD landLastSlopeDirection = 0; /* -1=last real slope was a climb, +1=descend */
-	UBYTE landFlatRunSinceSlope = LAND_REVERSAL_MIN_GAP; /* no slope yet - don't gate the very first one */
+	/* Sprint 14.104 introduced a deliberate Amiga-only reversal-smoothing
+	 * rule here (blocking a climb/descend that would immediately undo the
+	 * previous column's slope), adopted after a captured CPC trace showed a
+	 * lower reversal rate than this port's generator and a direct visual
+	 * comparison confirmed real CPC reads smoother. Sprint 14.105 found and
+	 * fixed the actual cause instead - descend was drawing at the wrong
+	 * (post-step) height row, one row lower than the real asm:5500-5525
+	 * draws it (see drawHeight's own comment below) - and confirmed visually
+	 * that this alone resolved the "steep little dump" look. The smoothing
+	 * rule was a workaround for that timing bug, not a real CPC difference;
+	 * removed now that the actual bug is fixed, restoring the generator to
+	 * an unmodified reproduction of l9134/l9167/l9181's real mode dispatch. */
 
 	for (UWORD column = 0; column < GAME_LEVEL_WIDTH_TILES; column++) {
 		/* CPC calls genrandomhl before generating the newly revealed column,
@@ -5106,6 +5095,23 @@ static void resetCpcRandomSequence(void) {
 			UWORD i = (UWORD)landLocalColumn;
 			UBYTE surface;
 			UBYTE transition = CPC_LAND_FLAT;
+			/* Sprint 14.105: landHeight is l885d, the *persisted* state read
+			 * by the next column's climb/descend comparisons - it is NOT
+			 * always the same row this column actually draws at. Verified
+			 * directly against asm:5500-5525 (l916a, descend/mode 1): H (the
+			 * row l914e draws to) is loaded from l885d *before* the height
+			 * is updated and is never touched again - only `a`, which gets
+			 * stored back to l885d, changes. So descend draws at the OLD
+			 * height and only the *next* column sees the incremented one.
+			 * Climb (asm:5527-5559, l9181/mode 2) is different: it does
+			 * `dec h` explicitly, so it draws at the NEW height immediately.
+			 * This port previously drew both modes at the post-step height,
+			 * which for descend put the tile one row lower than the real
+			 * game does - exactly the "steep little dump" a direct visual
+			 * comparison caught. drawHeight defaults to landHeight (correct
+			 * for every other case) and is only set to the OLD value in the
+			 * descend branch below. */
+			UBYTE drawHeight = landHeight;
 			cpcLandTargetTable[i] = CPC_LAND_TARGET_NONE;
 
 			if (landPendingTankRear) {
@@ -5126,6 +5132,7 @@ static void resetCpcRandomSequence(void) {
 				 * transition column - draws fixed join tiles, not mode
 				 * dispatch. */
 				landHeight = CPC_LAND_PROCEDURAL_BASELINE;
+				drawHeight = landHeight;
 				surface = (UBYTE)(32 + (rState & 3));
 				rCost = CPC_R_COST_FLAT;
 			} else {
@@ -5134,22 +5141,16 @@ static void resetCpcRandomSequence(void) {
 					mode = 0;
 				landJustInserted = 0;
 
-				/* Reversal-smoothing rule - see landLastSlopeDirection's own
-				 * comment above for why this exists and what it isn't. Mode
-				 * 1 requests descend (+1), mode 2 requests climb (-1); if
-				 * that's the opposite of the last real slope's direction and
-				 * fewer than LAND_REVERSAL_MIN_GAP non-slope columns have
-				 * passed since, force flat instead of undoing it too soon. */
-				if (mode == 1 && landLastSlopeDirection == -1 && landFlatRunSinceSlope < LAND_REVERSAL_MIN_GAP)
-					mode = 0;
-				else if (mode == 2 && landLastSlopeDirection == 1 && landFlatRunSinceSlope < LAND_REVERSAL_MIN_GAP)
-					mode = 0;
-
 				if (mode == 1) {
 					/* Descend toward baseline. Blocked at the baseline must
 					 * draw flat, not a sloped tile with no actual height
 					 * change - otherwise the tile geometry contradicts
-					 * itself (a slope where the ground didn't move). */
+					 * itself (a slope where the ground didn't move).
+					 * drawHeight needs no update here - it still holds the
+					 * value landHeight had before this branch ran, which is
+					 * exactly the OLD height asm:5500-5525 draws at; only
+					 * landHeight itself (the persisted l885d equivalent)
+					 * advances, for the next column to read. */
 					if (landHeight < CPC_LAND_PROCEDURAL_BASELINE) {
 						landHeight++;
 						surface = (UBYTE)(28 + ((rState >> 1) & 3));
@@ -5161,9 +5162,14 @@ static void resetCpcRandomSequence(void) {
 					}
 				} else if (mode == 2) {
 					/* Climb toward the skill's minimum row - same
-					 * blocked-must-be-flat rule as mode 1 above. */
+					 * blocked-must-be-flat rule as mode 1 above. Unlike
+					 * descend, climb's asm (l9181) does `dec h` explicitly,
+					 * drawing the new height immediately - drawHeight must
+					 * be refreshed here since its default (captured before
+					 * this branch ran) is still the old value. */
 					if (landHeight > landFloorRow) {
 						landHeight--;
+						drawHeight = landHeight;
 						surface = (UBYTE)(24 + ((l8859 >> 1) & 3));
 						rCost = CPC_R_COST_HILL;
 						transition = CPC_LAND_CLIMB;
@@ -5195,18 +5201,9 @@ static void resetCpcRandomSequence(void) {
 					rCost = CPC_R_COST_FLAT;
 				}
 				landLastMode = mode;
-				if (transition == CPC_LAND_CLIMB) {
-					landLastSlopeDirection = -1;
-					landFlatRunSinceSlope = 0;
-				} else if (transition == CPC_LAND_DESCEND) {
-					landLastSlopeDirection = 1;
-					landFlatRunSinceSlope = 0;
-				} else if (landFlatRunSinceSlope < 255) {
-					landFlatRunSinceSlope++;
-				}
 			}
 
-			cpcLandHeightTable[i] = landHeight;
+			cpcLandHeightTable[i] = drawHeight;
 			cpcLandSurfaceTable[i] = surface;
 			cpcLandTransitionTable[i] = transition;
 		}
@@ -5257,20 +5254,29 @@ static void resetCpcRandomSequence(void) {
 	 * abrupt, especially uphills" report, to rule in/out the height algorithm
 	 * itself (this check) before suspecting the converted tile graphics or
 	 * their vertical anchor (which this can't detect - only a genuinely
-	 * mismatched tile ID for the transition type). Climbs (height decreasing)
-	 * must land in the 24-27 tile group; descends (height increasing) in
-	 * 28-31; flat columns must never use either group. None of these should
-	 * ever fire - if one does, the generator's mode/tile pairing has an
-	 * actual bug, not just a presentation issue. */
-	for (UWORD i = 1; i < CPC_LAND_PROCEDURAL_LENGTH; i++) {
-		WORD delta = (WORD)cpcLandHeightTable[i] - (WORD)cpcLandHeightTable[i - 1];
+	 * mismatched tile ID for the transition type). Climbs must land in the
+	 * 24-27 tile group; descends in 28-31; flat/target columns must never
+	 * use either group. None of these should ever fire - if one does, the
+	 * generator's mode/tile pairing has an actual bug, not just a
+	 * presentation issue.
+	 *
+	 * Sprint 14.105: this now checks cpcLandTransitionTable[i] directly
+	 * instead of re-deriving the transition from a height delta. Once
+	 * descend was fixed to draw at the OLD height (matching asm:5500-5525 -
+	 * see drawHeight's own comment above), the *visible* height change for a
+	 * descend column shows up one column later than the transition that
+	 * caused it, so a delta-based check here would misfire on every real
+	 * descend. The explicit transition table isn't affected by that timing
+	 * shift - it's set at the same index as the tile choice either way. */
+	for (UWORD i = 0; i < CPC_LAND_PROCEDURAL_LENGTH; i++) {
+		UBYTE transition = cpcLandTransitionTable[i];
 		UBYTE tile = cpcLandSurfaceTable[i];
 		const char* problem = 0;
-		if (delta == -1 && (tile < 24 || tile > 27))
+		if (transition == CPC_LAND_CLIMB && (tile < 24 || tile > 27))
 			problem = "LAND: climb uses wrong tile @ ";
-		else if (delta == 1 && (tile < 28 || tile > 31))
+		else if (transition == CPC_LAND_DESCEND && (tile < 28 || tile > 31))
 			problem = "LAND: descend uses wrong tile @ ";
-		else if (delta == 0 && tile >= 24 && tile <= 31)
+		else if ((transition == CPC_LAND_FLAT || transition == CPC_LAND_TARGET) && tile >= 24 && tile <= 31)
 			problem = "LAND: flat column uses slope tile @ ";
 		if (problem) {
 			char line[80];
