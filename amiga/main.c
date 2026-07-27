@@ -307,11 +307,17 @@
 /* Was "Redefine keys" (a stub - "COMES IN SPRINT 3" notice, no real
  * functionality). Repurposed for the CPC-authenticity lives toggle since the
  * menu screen is already pixel-tight to its 200px height (gauges reach the
- * bottom edge) - there's no room for a 5th row without reflowing the whole
- * screen. Redefine keys remains a real backlog item for whenever there's a
- * free slot or a redesigned menu layout. */
+ * bottom edge). Redefine keys remains a real backlog item for whenever
+ * there's a free slot or a redesigned menu layout. */
 #define MENU_ITEM_LIVES 2
-#define MENU_ITEM_COUNT 3
+/* Sprint 15.1: real Off/CPU/PLAYER 2 wingman control setting, replacing the
+ * old static "Wingman: Off" status line in drawMenuRightSettings() (which
+ * never did anything). Uses the row the right-hand status column already
+ * reserves at y=152 (see itemY[] and drawMenuRightSettings()'s own 4-row
+ * layout below) - the left column just wasn't using it yet, so this doesn't
+ * reflow anything. */
+#define MENU_ITEM_WINGMAN 3
+#define MENU_ITEM_COUNT 4
 #define MENU_CONTENT_X_OFFSET (-12)
 /* Menu review: "Input: Joystick/Keyboard" used to be a 4th selectable item
  * here, but ReadInput() always reads joystick/keyboard/mouse simultaneously
@@ -602,6 +608,17 @@ typedef struct TargetLock {
 	UBYTE targetType;
 } TargetLock;
 
+/* Sprint 15.1: CPC's menu-time wingmanon setting (0=Off, 1=CPU, 2=PLAYER 2).
+ * Menu-selectable and persisted into GameState only for now - no wingman
+ * actually flies yet. Later Wingman sprints (WingmanState, Bob rendering,
+ * CPU formation/AI, a second joystick port for PLAYER 2) read this to decide
+ * whether/how a wingman subsystem runs. */
+typedef enum WingmanControl {
+	WINGMAN_CONTROL_OFF = 0,
+	WINGMAN_CONTROL_CPU = 1,
+	WINGMAN_CONTROL_PLAYER2 = 2
+} WingmanControl;
+
 typedef struct GameState {
 	UWORD scrollX;
 	WORD playerX;
@@ -641,6 +658,7 @@ typedef struct GameState {
 	UWORD hitsCount;
 	TargetLock targetLock;
 	PowerupState powerup;
+	UBYTE wingmanControl;
 } GameState;
 
 typedef struct ObjectCell {
@@ -3160,7 +3178,7 @@ static void drawUnsignedPaddedStyled(UBYTE* bitmap, short x, short y, ULONG valu
 }
 
 static short menuItemY(short item) {
-	static const short itemY[MENU_ITEM_COUNT] = { 116, 128, 140 };
+	static const short itemY[MENU_ITEM_COUNT] = { 116, 128, 140, 152 };
 	return itemY[item];
 }
 
@@ -3170,7 +3188,7 @@ static void copyMenuText(char* dest, const char* src) {
 	*dest = 0;
 }
 
-static void menuItemText(short item, short skillLevel, short livesSetting, char* text) {
+static void menuItemText(short item, short skillLevel, short livesSetting, short wingmanControl, char* text) {
 	switch (item) {
 		case MENU_ITEM_START:
 			copyMenuText(text, HAR_TEXT_START_GAME);
@@ -3182,6 +3200,19 @@ static void menuItemText(short item, short skillLevel, short livesSetting, char*
 		case MENU_ITEM_LIVES:
 			copyMenuText(text, "Lives: 1");
 			text[7] = (char)('0' + livesSetting);
+			break;
+		case MENU_ITEM_WINGMAN:
+			switch (wingmanControl) {
+				case WINGMAN_CONTROL_CPU:
+					copyMenuText(text, "Wingman: CPU");
+					break;
+				case WINGMAN_CONTROL_PLAYER2:
+					copyMenuText(text, "Wingman: Player 2");
+					break;
+				default:
+					copyMenuText(text, "Wingman: Off");
+					break;
+			}
 			break;
 		default:
 			text[0] = 0;
@@ -3196,15 +3227,15 @@ static void drawMenuOption(UBYTE* bitmap, short selected, short y, const char* t
 	drawTextStyled(bitmap, 58 + MENU_CONTENT_X_OFFSET, y, text, FONT_STYLE_CPC_BLUE);
 }
 
-static void drawMenuItem(UBYTE* bitmap, short item, short selected, short skillLevel, short livesSetting) {
+static void drawMenuItem(UBYTE* bitmap, short item, short selected, short skillLevel, short livesSetting, short wingmanControl) {
 	char text[24];
-	menuItemText(item, skillLevel, livesSetting, text);
+	menuItemText(item, skillLevel, livesSetting, wingmanControl, text);
 	drawMenuOption(bitmap, selected, menuItemY(item), text);
 }
 
-static void drawMenuItems(UBYTE* bitmap, short selected, short skillLevel, short livesSetting) {
+static void drawMenuItems(UBYTE* bitmap, short selected, short skillLevel, short livesSetting, short wingmanControl) {
 	for (short item = 0; item < MENU_ITEM_COUNT; item++)
-		drawMenuItem(bitmap, item, selected == item, skillLevel, livesSetting);
+		drawMenuItem(bitmap, item, selected == item, skillLevel, livesSetting, wingmanControl);
 }
 
 /* Menu review: these read as selectable settings (same MENU_COLOR_CYAN as
@@ -3217,13 +3248,13 @@ static void drawMenuItems(UBYTE* bitmap, short selected, short skillLevel, short
  * options. "Controls: Off" (previously another non-functional text-only
  * token, same issue as the old Input toggle) replaced with "Input: All",
  * matching what ReadInput() actually does - always read every source at
- * once. No room for a 5th status line here (HUD_TOP(168) sits right below
- * the last row at y=152), so this replaces rather than adds a line. */
+ * once. The former 4th line here ("Wingman: Off") is gone - Sprint 15.1
+ * turned it into the real selectable MENU_ITEM_WINGMAN in the left column
+ * instead of leaving it as dead status text. */
 static void drawMenuRightSettings(UBYTE* bitmap) {
 	drawTextStyled(bitmap, 184 + MENU_CONTENT_X_OFFSET, 116, "Rocket range: 10", FONT_STYLE_CPC_BLUE);
 	drawTextStyled(bitmap, 184 + MENU_CONTENT_X_OFFSET, 128, "Input: All", FONT_STYLE_CPC_BLUE);
 	drawTextStyled(bitmap, 184 + MENU_CONTENT_X_OFFSET, 140, "Maverick: Left+Fire", FONT_STYLE_CPC_BLUE);
-	drawTextStyled(bitmap, 184 + MENU_CONTENT_X_OFFSET, 152, "Wingman: Off", FONT_STYLE_CPC_BLUE);
 }
 
 
@@ -3810,13 +3841,13 @@ static void drawMenuDemoHud(UBYTE* bitmap, short livesSetting, ULONG highScore) 
 	drawHudBuffer(bitmap + HUD_TOP * SCREEN_PLANES * SCREEN_ROW_BYTES, &demoGame, highScore, MENU_HUD_STATE_INDEX);
 }
 
-static void drawMenuScreen(UBYTE* bitmap, short selected, short skillLevel, short livesSetting, ULONG highScore) {
+static void drawMenuScreen(UBYTE* bitmap, short selected, short skillLevel, short livesSetting, short wingmanControl, ULONG highScore) {
 	fillScreen(bitmap, MENU_COLOR_PANEL);
 
 	drawMenuNotice(bitmap, "", MENU_COLOR_WHITE);
 	drawTextCenteredStyled(bitmap, 28, HAR_TEXT_TITLE, FONT_STYLE_CPC_GREEN);
 	drawMenuHighScore(bitmap);
-	drawMenuItems(bitmap, selected, skillLevel, livesSetting);
+	drawMenuItems(bitmap, selected, skillLevel, livesSetting, wingmanControl);
 	drawMenuRightSettings(bitmap);
 	drawMenuDemoHud(bitmap, livesSetting, highScore);
 }
@@ -4149,12 +4180,12 @@ static void drawTelemetryStatsScreen(UBYTE* bitmap) {
 	drawTelemetryUnsignedPadded(bitmap, 295, 164, s->hitchRenderX, 3, MENU_COLOR_YELLOW);
 }
 
-static void updateMenuSelection(UBYTE* bitmap, short oldSelected, short newSelected, short skillLevel, short livesSetting) {
+static void updateMenuSelection(UBYTE* bitmap, short oldSelected, short newSelected, short skillLevel, short livesSetting, short wingmanControl) {
 	if (oldSelected == newSelected)
 		return;
 
-	drawMenuItem(bitmap, oldSelected, 0, skillLevel, livesSetting);
-	drawMenuItem(bitmap, newSelected, 1, skillLevel, livesSetting);
+	drawMenuItem(bitmap, oldSelected, 0, skillLevel, livesSetting, wingmanControl);
+	drawMenuItem(bitmap, newSelected, 1, skillLevel, livesSetting, wingmanControl);
 	drawMenuNotice(bitmap, "", MENU_COLOR_WHITE);
 }
 
@@ -8145,7 +8176,8 @@ static void startGameSession(GameState* game,
 	UBYTE* hudDirty,
 	ULONG highScore,
 	UBYTE skillLevel,
-	UBYTE livesSetting) {
+	UBYTE livesSetting,
+	UBYTE wingmanControl) {
 	stopAllSfx();
 	/* Must be set before initGameState() below, not after: initGameState()
 	 * calls resetCpcRandomSequence(), which now generates the land height/
@@ -8169,6 +8201,7 @@ static void startGameSession(GameState* game,
 	 * regardless of skill; ammoForSkill() gives the real CPC's
 	 * skill-scaled starting ammo instead. */
 	ammoForSkill(skillLevel, &game->bombs, &game->rockets);
+	game->wingmanControl = wingmanControl;
 	*activeWorldBuffer = 0;
 	initRingWorldBuffer(worldBuffers[0], 0);
 
@@ -8326,6 +8359,7 @@ int main(void) {
 	short selected = MENU_ITEM_START;
 	short skillLevel = 1;
 	short livesSetting = PLAYER_START_LIVES;
+	short wingmanControl = WINGMAN_CONTROL_OFF;
 	short inGameScene = 0;
 	GameState game;
 	ULONG highScore = 0;
@@ -8345,7 +8379,7 @@ int main(void) {
 
 	ReadInput(&input);
 	previousInput = input;
-	drawMenuScreen(screenBuffer, selected, skillLevel, livesSetting, highScore);
+	drawMenuScreen(screenBuffer, selected, skillLevel, livesSetting, wingmanControl, highScore);
 	drawTelemetryMenuIndicator(screenBuffer);
 	drawInputDebugIfEnabled(screenBuffer, &input, 102, MENU_COLOR_PANEL);
 	lastInputMask = InputMask(&input);
@@ -8414,7 +8448,7 @@ int main(void) {
 					if (telemetryEnabled)
 						telemetryReset();
 					playSfx(SFX_MENU);
-					drawMenuScreen(screenBuffer, selected, skillLevel, livesSetting, highScore);
+					drawMenuScreen(screenBuffer, selected, skillLevel, livesSetting, wingmanControl, highScore);
 					drawTelemetryMenuIndicator(screenBuffer);
 					drawInputDebugIfEnabled(screenBuffer, &input, 102, MENU_COLOR_PANEL);
 				} else {
@@ -8427,7 +8461,7 @@ int main(void) {
 					selected = (selected + MENU_ITEM_COUNT - 1) % MENU_ITEM_COUNT;
 				else
 					selected = (selected + 1) % MENU_ITEM_COUNT;
-				updateMenuSelection(screenBuffer, oldSelected, selected, skillLevel, livesSetting);
+				updateMenuSelection(screenBuffer, oldSelected, selected, skillLevel, livesSetting, wingmanControl);
 				playSfx(SFX_MENU);
 				drawInputDebugIfEnabled(screenBuffer, &input, 102, MENU_COLOR_PANEL);
 			}
@@ -8439,7 +8473,7 @@ int main(void) {
 						enemySprite, enemyMissileSprite, powerupSprite, nullSprite,
 						&pendingGameScrollCopperUpdate, &pendingPlayerSpriteUpdate,
 						&pendingWeaponSpriteUpdate, &pendingEnemySpriteUpdate, &pendingEnemyMissileSpriteUpdate, &pendingPowerupSpriteUpdate,
-						&hudDirty, highScore, (UBYTE)skillLevel, (UBYTE)livesSetting);
+						&hudDirty, highScore, (UBYTE)skillLevel, (UBYTE)livesSetting, (UBYTE)wingmanControl);
 					if (telemetryEnabled)
 						telemetryReset();
 					lastInputMask = inputMask;
@@ -8449,7 +8483,7 @@ int main(void) {
 					if (skillLevel > 5)
 						skillLevel = 1;
 					playSfx(SFX_MENU);
-					drawMenuScreen(screenBuffer, selected, skillLevel, livesSetting, highScore);
+					drawMenuScreen(screenBuffer, selected, skillLevel, livesSetting, wingmanControl, highScore);
 					drawTelemetryMenuIndicator(screenBuffer);
 					drawInputDebugIfEnabled(screenBuffer, &input, 102, MENU_COLOR_PANEL);
 				} else if (selected == MENU_ITEM_LIVES) {
@@ -8457,7 +8491,18 @@ int main(void) {
 					 * CPC-authentic 1 life (see Sprint 14.91). */
 					livesSetting = (livesSetting == 3) ? 1 : 3;
 					playSfx(SFX_MENU);
-					drawMenuScreen(screenBuffer, selected, skillLevel, livesSetting, highScore);
+					drawMenuScreen(screenBuffer, selected, skillLevel, livesSetting, wingmanControl, highScore);
+					drawTelemetryMenuIndicator(screenBuffer);
+					drawInputDebugIfEnabled(screenBuffer, &input, 102, MENU_COLOR_PANEL);
+				} else if (selected == MENU_ITEM_WINGMAN) {
+					/* Cycles Off -> CPU -> Player 2 -> Off. Sprint 15.1 scope:
+					 * only the setting itself; no wingman subsystem reacts to
+					 * it yet (see WingmanControl's own comment). */
+					wingmanControl++;
+					if (wingmanControl > WINGMAN_CONTROL_PLAYER2)
+						wingmanControl = WINGMAN_CONTROL_OFF;
+					playSfx(SFX_MENU);
+					drawMenuScreen(screenBuffer, selected, skillLevel, livesSetting, wingmanControl, highScore);
 					drawTelemetryMenuIndicator(screenBuffer);
 					drawInputDebugIfEnabled(screenBuffer, &input, 102, MENU_COLOR_PANEL);
 				}
@@ -8477,7 +8522,7 @@ int main(void) {
 				pendingEnemySpriteUpdate = 0;
 				pendingEnemyMissileSpriteUpdate = 0;
 				telemetryStatsPaused = 0;
-				drawMenuScreen(screenBuffer, selected, skillLevel, livesSetting, highScore);
+				drawMenuScreen(screenBuffer, selected, skillLevel, livesSetting, wingmanControl, highScore);
 				drawTelemetryMenuIndicator(screenBuffer);
 				buildDisplayCopper(copper, screenBuffer, menuPalette, nullSprite);
 				custom->copjmp1 = 0x7fff;
@@ -8692,7 +8737,7 @@ int main(void) {
 						enemySprite, enemyMissileSprite, powerupSprite, nullSprite,
 						&pendingGameScrollCopperUpdate, &pendingPlayerSpriteUpdate,
 						&pendingWeaponSpriteUpdate, &pendingEnemySpriteUpdate, &pendingEnemyMissileSpriteUpdate, &pendingPowerupSpriteUpdate,
-						&hudDirty, highScore, (UBYTE)skillLevel, (UBYTE)livesSetting);
+						&hudDirty, highScore, (UBYTE)skillLevel, (UBYTE)livesSetting, (UBYTE)wingmanControl);
 					if (telemetryEnabled)
 						telemetryReset();
 					lastInputMask = inputMask;

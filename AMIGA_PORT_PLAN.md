@@ -3285,3 +3285,51 @@ A screenshot plus a precise observation ("tile seems to be set one tile too low 
 **Sprint 14.104's reversal-smoothing rule removed entirely** (`landLastSlopeDirection`, `landFlatRunSinceSlope`, `LAND_REVERSAL_MIN_GAP`, and the mode-forcing check) after the user confirmed visually that the draw-timing fix alone resolved the "steep little dump" look - the smoothing rule was compensating for this bug's symptom, not a real CPC behavioural difference. The generator is now an unmodified reproduction of `l9134`/`l9167`/`l9181`'s actual mode dispatch again, with no invented Amiga-only rules.
 
 Verified: clean rebuild, headless autoplay pass with no crash/hang, all HUD-corruption guard counters at 0 throughout.
+
+## Sprint 15 - Wingman: Roadmap
+
+Full ASM-level review (Norwegian "Lederboks" review) of every `wingman*` routine in `HarrierAttackSourceNew2_alt_CRTC_CART16.asm` established that the real CPC wingman is a near-complete second Harrier: its own position/state machine (`wingmantakeoff`, 13 meaningful values incl. death/wreck), own rocket and bomb (infinite bombs - he's a powerup, no ammo stock), object-map collision (id 20 real CPC-side; kept as `HAR_OBJ_WINGMAN=20` on the Amiga port already), enemy-plane interception, ground-target bombing runs sharing the same `enemylandlocationlock` the Maverick system uses, carrier takeoff/landing (including a hard rule that a slow Player-2 human gets left behind and must be recovered as a powerup), and either CPU or human ("PLAYER 2") control selected from the menu (`wingmanon: defb 0`).
+
+**Important source finding, kept as a standing caveat for every sprint below**: the CPC main loop's normal per-frame wingman calls (`erasewingmanwakescrolling`, `drawwingmanplane`) are commented out in this build; only the weapon-update calls and `controlwingmanfunc` (only reached from the landing loop) run live. The state machine, formation math, AI, and weapon logic are all real and fully readable in the disassembly, but whether normal-flight wingman rendering ever actually ran in the shipped CPC+ build is unconfirmed. Decision (per direction given this session): treat the documented states/rules as the intended design and build the Amiga port to that intent, not to the possibly-disabled shipped behaviour - revisit only if a real CPC capture surfaces showing wingman genuinely never appears in flight.
+
+**Hardware constraint that shapes the whole rendering approach**: all 8 Amiga hardware sprite channels are already committed - `copSetSprites()`/`buildGameHudCopper()` wire ch0+1 (player, attached pair), ch2 (bomb/impact), ch3 (enemy plane), ch4 (enemy missile), ch5 (rocket), ch6 (powerup), ch7 (null/reserved terminator). There is no free channel for an attached wingman pair without taking something else away. Wingman is therefore a masked blitter Bob, not a hardware sprite - this codebase has no blitter-Bob compositor yet, so building one is itself part of the work, not a reuse of an existing system.
+
+**Design decisions confirmed for this milestone** (mirroring the CPC data faithfully rather than reinventing it):
+- `WingmanControl` (`Off`/`CPU`/`Player 2`) is a distinct setting from the wingman's own flight-mode state - matches the CPC's own separation of `wingmanon` (who's driving) from `wingmantakeoff` (what the plane is doing).
+- The 13 raw `wingmantakeoff` values become a named `WingmanMode` enum, not magic numbers, once the state machine sprint is built.
+- Enemy missiles need an explicit target identity (`EnemyTarget`: player vs. wingman) before interception can be complete - today's enemy missile only ever aims at the player.
+- Ground-target bombing must reuse the existing single `TargetLock`/`enemylandlocationlock`-equivalent, not a second independent search.
+- Player 2 uses physical joystick port 1 (`JOY0DAT`, `$DFF00A`) via a port-parametrised `readJoystickPort(port, state)`, not duplicated per-port functions; player 1 keeps port 2 (`JOY1DAT`/`$DFF00C`, already `Joy1Dat()`) untouched.
+- Each `WeaponState` (wingman rocket, wingman bomb) gets its own explicit struct instance, not a reused/re-pointed shared block the way CPC's IY-indirection does it - clearer and safer to debug with the memory this port has available.
+- Friendly fire (can the player's own weapons hit the wingman?) is explicitly flagged as unverified in the CPC source and must not be assumed either way before a targeted ASM check.
+
+**Sprint sequence** (deliberately finer-grained than the reviewed Fase 1-5, so each one is independently buildable/testable and commit-sized):
+
+| Sprint | Scope | Depends on |
+|---|---|---|
+| 15.1 | Real `Wingman: Off/CPU/Player 2` menu setting, persisted into `GameState.wingmanControl`. No wingman subsystem reacts yet. | - |
+| 15.2 | Generic masked blitter-Bob compositor (new subsystem - alloc/draw/erase against the ring world buffer, independent of any specific object) + wingman flight-graphics conversion from the CPC asset data. | 15.1 |
+| 15.3 | `WingmanState` added to `GameState`; carrier takeoff timing (spawn once player has passed/launched) and stable CPU formation flight (3-tile offset, above/below choice, 9-direction movement) rendered via the Bob compositor; registers `HAR_OBJ_WINGMAN` in the object map. No obstacle avoidance, no weapons, no landing yet - a wingman that just flies in formation and can be seen. | 15.2 |
+| 15.4 | Formation obstacle avoidance via `checkwingmanradar`'s real rule (probe the object map in the desired direction; sky/air/flak pass, terrain/buildings/ships/frigate block; pick an alternate of 8 directions via the same R-based approach used elsewhere, matching CPC rather than an AABB/screen-edge shortcut). | 15.3 |
+| 15.5 | Joystick port generalisation (`readJoystickPort(port, state)`, port 0 wired for Player 2) + manual Player 2 control: direction, takeoff-on-up, fire/bomb buttons, left+fire Maverick-select parity with player 1. Mouse interpretation on port 1 disabled while Player 2 is active. | 15.1, 15.3 |
+| 15.6 | Wingman collision against the object map (safe: air/sky/flak/powerup/own id; enemy plane destroys both; other solids destroy wingman only) and death -> `WINGMAN_DESTROYED`/`WINGMAN_WRECK`. Enemy missile target-selection extended (`EnemyTarget`) so enemy missiles can actually choose the wingman. Friendly-fire question resolved via a targeted ASM check before deciding either way. | 15.3 |
+| 15.7 | Wingman weapons: own `WeaponState` rocket and bomb (infinite bomb supply, matching the "he's a powerup" CPC comment), wired for both CPU-fire and Player-2-fire. | 15.5, 15.6 |
+| 15.8 | CPU interception AI: leave formation toward an enemy plane, close on its height/lead point, fire, return to formation. | 15.4, 15.7 |
+| 15.9 | CPU ground-attack AI: eligibility check against the shared target lock (CPU-only, normal-flight-only, one-shot-per-target, R-gated ~1-in-4 selection matching CPC), scrolling waypoint approach, bomb release, return to formation. | 15.4, 15.7 |
+| 15.10 | Wingman powerup revival (`POWERUP_WINGMAN` forced spawn after death, already reserved in the enum but currently downgraded to a health pickup - see `amiga/main.c` around the Sprint 14.96 powerup comments) restores `WingmanState` to formation instead. | 15.6 |
+| 15.11 | Landing: CPU dual-waypoint approach with alternate deck slot if player 1 blocks it; manual Player-2 landing (Y=deck height, X within the landing zone); mission-end wait loop holds until both planes are down or wingman is dead, matching CPC's landing-loop behaviour. | 15.5, 15.6 |
+| 15.12 | A500 worst-case profiling pass (Bob compositor + AI + both weapons + both planes' collision, all live at once) and finishing pass over the whole feature. | all above |
+
+Each sprint gets its own dated write-up below once implemented, following this document's usual Status/Why/Tasks/Done-checks structure.
+
+## Sprint 15.1 - Real Wingman Off/CPU/Player 2 Menu Setting
+
+First slice of the Sprint 15 roadmap above: give the menu's wingman line a real, persisted, cyclable value, with nothing downstream reacting to it yet - the same "foundation before behaviour" approach the skill/lives settings already went through.
+
+**Menu changes** (`amiga/main.c`): the old `drawMenuRightSettings()` status line ("Wingman: Off", a static label that never did anything - same category of issue the Sprint 14.91-era "Input"/"Controls" toggles had before being cleaned up) is removed. In its place, a new selectable left-column item, `MENU_ITEM_WINGMAN` (index 3, `MENU_ITEM_COUNT` now 4), reuses the row at y=152 that the right-hand status column already occupied - the left column simply hadn't used that row yet, so this needed no layout reflow. `menuItemY()`'s `itemY[]` table extended to `{116, 128, 140, 152}` to match.
+
+**New `WingmanControl` enum** (`WINGMAN_CONTROL_OFF/_CPU/_PLAYER2`, declared next to `TargetLock`/`GameState`) and a new `GameState.wingmanControl` field. `main()` gained a `wingmanControl` local exactly mirroring how `skillLevel`/`livesSetting` already flow from menu input through `drawMenuScreen()`/`updateMenuSelection()`/`menuItemText()` down into `startGameSession()`, which now takes a `wingmanControl` parameter and stores it into `game->wingmanControl` right alongside where `skillLevel`/`livesSetting` are applied post-`initGameState()`. Selecting the item and pressing fire/select cycles Off -> CPU -> Player 2 -> Off, identical in structure to the existing Skill/Lives selection branches.
+
+**Deliberately not done yet** (scoped to later sprints per the roadmap above): no `WingmanState`, no rendering, no joystick-port generalisation, no help text describing Player 2's controls (would be misleading to show before port 1 reading actually exists) - this sprint is the menu/data plumbing only.
+
+Verified: clean rebuild (no new warnings beyond the pre-existing benign LTO ones). Visual check via a live WinUAE screenshot confirms the new "WINGMAN: OFF" row renders correctly in the left column beneath "LIVES: 3", and the right-hand status column now correctly shows only its original 3 lines (Rocket range/Input/Maverick) with no leftover duplicate.
