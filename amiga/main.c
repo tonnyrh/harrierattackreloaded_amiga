@@ -187,6 +187,16 @@
 #define PLAYER_CRASH_FRAMES 64
 #define PLAYER_CRASH_PART_COUNT 3
 #define PLAYER_OBJECT_COLLISION_SAFE 0
+
+/* Sprint 15.3: CPC's wingman formation offset is "3 tiles left, 3 tiles
+ * above or below" the player. WINGMAN_MOVE_FRAME_INTERVAL throttles the
+ * wingman's one-tile (8px) row steps to roughly match the player's own
+ * PLAYER_MOVE_SPEED_PIXELS(2)/frame - 8px every 4 frames is 100px/s either
+ * way, so neither plane looks like it's cheating past the other vertically. */
+#define WINGMAN_FORMATION_COLUMNS_BEHIND 3
+#define WINGMAN_FORMATION_ROWS_OFFSET 3
+#define WINGMAN_MOVE_FRAME_INTERVAL 4
+#define WINGMAN_MAX_ROW ((GAME_WORLD_HEIGHT / GAME_TILE_HEIGHT) - 1)
 #define PLAYER_OBJECT_COLLISION_FATAL 1
 #define PLAYER_OBJECT_COLLISION_FLAK 2
 #define PLAYER_FRIGATE_STATUS_CLEAR 0
@@ -619,6 +629,58 @@ typedef enum WingmanControl {
 	WINGMAN_CONTROL_PLAYER2 = 2
 } WingmanControl;
 
+/* Sprint 15.2/15.3: named form of CPC's raw wingmantakeoff state values (see
+ * the Sprint 15 roadmap in AMIGA_PORT_PLAN.md for the full ASM-side mapping).
+ * Raw CPC value 4 ("documented as landed, but the code normally resets it to
+ * 0") is deliberately not represented - CPC itself never leaves it set. Only
+ * WINGMAN_ON_DECK and WINGMAN_FORMATION are driven by real behaviour this
+ * sprint; the rest are declared now so later sprints (obstacle avoidance,
+ * interception, ground-attack, landing) don't need to renumber anything. */
+typedef enum WingmanMode {
+	WINGMAN_ON_DECK = 0,
+	WINGMAN_FORMATION = 1,
+	WINGMAN_LANDING_APPROACH = 2,
+	WINGMAN_LANDING_DECK = 3,
+	WINGMAN_INTERCEPT_APPROACH = 4,
+	WINGMAN_INTERCEPT_TRACK = 5,
+	WINGMAN_INTERCEPT_FIRE = 6,
+	WINGMAN_WAYPOINT = 7,
+	WINGMAN_WAYPOINT_REACHED = 8,
+	WINGMAN_BOMB_APPROACH = 9,
+	WINGMAN_BOMB_DROP = 10,
+	WINGMAN_DESTROYED = 11,
+	WINGMAN_WRECK = 12
+} WingmanMode;
+
+/* Sprint 15.3: the wingman's own flight state. Deliberately holds only what
+ * CPU formation flight needs so far - weapons (own WeaponState rocket/bomb,
+ * per the roadmap's "explicit struct instances, not a reused/re-pointed
+ * shared block" decision) and AI/landing fields arrive with the sprints that
+ * actually use them, not ahead of time.
+ *
+ * Movement is deliberately tile-grid-locked (row steps by one 8px
+ * GAME_TILE_HEIGHT at a time, footprint is exactly 2 tile columns wide) -
+ * this is not a simplification of CPC's behaviour, it *is* CPC's behaviour
+ * ("Flyet beveger seg en CPC-tile per oppdatering" - the wingman moves one
+ * CPC tile per update). It also means the Bob compositor below never needs
+ * sub-byte pixel shifting: every draw/erase is a whole-tile operation using
+ * the exact same tile-column addressing the terrain ring buffer already
+ * uses, which is both simpler and safer than inventing pixel-smooth motion
+ * a real CPC wingman never had. */
+typedef struct WingmanState {
+	UBYTE active;               /* 1 once launched (CPU only so far), until destroyed/landed */
+	UBYTE mode;                 /* WingmanMode */
+	UBYTE formationBelow;       /* 0 = trails above the player, 1 = below - CPC switches to
+	                             * below whenever an above target would go off the top of
+	                             * the screen (see updateWingmanFormationTarget()) */
+	WORD row;                   /* current tile-row, 0..(GAME_WORLD_HEIGHT/GAME_TILE_HEIGHT)-1 */
+	UBYTE moveTimer;             /* throttles row movement to roughly the player's own vertical speed */
+	UBYTE footprintValid;        /* 1 if footprintWorldColumnLeft/footprintRow holds a
+	                              * previously-drawn position that may still need erasing */
+	LONG footprintWorldColumnLeft;
+	WORD footprintRow;
+} WingmanState;
+
 typedef struct GameState {
 	UWORD scrollX;
 	WORD playerX;
@@ -659,6 +721,7 @@ typedef struct GameState {
 	TargetLock targetLock;
 	PowerupState powerup;
 	UBYTE wingmanControl;
+	WingmanState wingman;
 } GameState;
 
 typedef struct ObjectCell {
@@ -3392,6 +3455,7 @@ static void initGameState(GameState* game) {
 	memset(&game->enemyPlane, 0, sizeof(game->enemyPlane));
 	memset(&game->enemyMissile, 0, sizeof(game->enemyMissile));
 	memset(game->crashPart, 0, sizeof(game->crashPart));
+	memset(&game->wingman, 0, sizeof(game->wingman));
 	game->enemyRespawnTimer = 0;
 	game->enemySpawnIndex = 0;
 	game->enemyTriggerIndex = 0;
@@ -4241,6 +4305,62 @@ static void drawGameScrollTileMasked(UBYTE* bitmap, short tileX, short tileY, co
 		for (short plane = 0; plane < GAME_WORLD_DISPLAY_PLANES; plane++)
 			dest[plane * GAME_WORLD_ROW_BYTES] = (UBYTE)((dest[plane * GAME_WORLD_ROW_BYTES] & ~mask) | (src[plane] & mask));
 	}
+}
+
+/* Sprint 15.2: the wingman Bob compositor's own masked tile pair, built once
+ * at runtime (mirrors how buildAttachedSpriteFromCpcPlusHalves() already
+ * converts the player Harrier's raw promoted pen data live in C rather than
+ * ahead-of-time in Python - see AMIGA_PORT_PLAN.md's Sprint 15 roadmap for
+ * why this stays out of the asset pipeline). Source data is
+ * harCpcWingmanFlyingLeftPixels/RightPixels (amiga/assets/cpc_promoted_assets.h,
+ * already extracted/promoted/compiled in, just never consumed until now) -
+ * raw CPC pen indices 0-15, stored 16 columns wide but only columns 0-7 of
+ * each row are real (same convention buildAttachedSpriteFromCpcPlusHalves()
+ * already relies on for the player sprite). Reuses
+ * harCpcPlusPenToGameColor[] (amiga/assets/cpc_promoted_sprite_tiles.h) -
+ * the same CPC-Plus-pen-to-playfield-colour table the carrier/gunship art
+ * already trusts - so the wingman's grey ramp lands on the same
+ * black/dark/mid/light/white playfield colours as everything else, not a
+ * second guessed mapping. Output format matches drawGameScrollTileMasked()'s
+ * input exactly: 8 rows x (4 colour-plane bytes + 1 opacity-mask byte). */
+#define WINGMAN_BOB_TILE_BYTES (GAME_TILE_HEIGHT * (GAME_WORLD_DISPLAY_PLANES + 1))
+static UBYTE wingmanBobTileLeft[WINGMAN_BOB_TILE_BYTES];
+static UBYTE wingmanBobTileRight[WINGMAN_BOB_TILE_BYTES];
+static UBYTE wingmanBobTilesBuilt = 0;
+
+static void buildWingmanBobTileHalf(UBYTE* tile, const UBYTE* sourcePixels) {
+	for (UBYTE row = 0; row < GAME_TILE_HEIGHT; row++) {
+		UBYTE planes[GAME_WORLD_DISPLAY_PLANES];
+		UBYTE mask = 0;
+		for (UBYTE plane = 0; plane < GAME_WORLD_DISPLAY_PLANES; plane++)
+			planes[plane] = 0;
+		for (UBYTE col = 0; col < GAME_TILE_WIDTH; col++) {
+			/* Source rows are 16 pens wide; only columns 0-7 are real pixel
+			 * data (see buildAttachedSpriteFromCpcPlusHalves()). */
+			UBYTE pen = sourcePixels[row * 16 + col];
+			if (!pen)
+				continue;
+			UBYTE bit = (UBYTE)(0x80 >> col);
+			mask |= bit;
+			UBYTE color = harCpcPlusPenToGameColor[pen];
+			for (UBYTE plane = 0; plane < GAME_WORLD_DISPLAY_PLANES; plane++) {
+				if (color & (1 << plane))
+					planes[plane] |= bit;
+			}
+		}
+		UBYTE* dest = tile + row * (GAME_WORLD_DISPLAY_PLANES + 1);
+		for (UBYTE plane = 0; plane < GAME_WORLD_DISPLAY_PLANES; plane++)
+			dest[plane] = planes[plane];
+		dest[GAME_WORLD_DISPLAY_PLANES] = mask;
+	}
+}
+
+static void buildWingmanBobTilesIfNeeded(void) {
+	if (wingmanBobTilesBuilt)
+		return;
+	buildWingmanBobTileHalf(wingmanBobTileLeft, harCpcWingmanFlyingLeftPixels);
+	buildWingmanBobTileHalf(wingmanBobTileRight, harCpcWingmanFlyingRightPixels);
+	wingmanBobTilesBuilt = 1;
 }
 
 static void drawGameTileMap(UBYTE* bitmap, const UBYTE* map) {
@@ -6528,6 +6648,103 @@ static void dirtyRedrawWorldTile(UBYTE** worldBuffers, LONG worldColumn, WORD ti
 	}
 }
 
+/* Sprint 15.2/15.3: generic masked-Bob-over-ring-buffer compositor. Not
+ * wingman-specific by construction (draws whatever masked tile it's given at
+ * whatever column/row it's given) even though the wingman is its only caller
+ * so far - see AMIGA_PORT_PLAN.md's Sprint 15 roadmap for why this needed to
+ * be a new subsystem (all 8 hardware sprite channels are already committed,
+ * and nothing in this codebase drew a moving masked object into the
+ * scrolling world buffer before).
+ *
+ * Design note on why this is "redraw the old footprint from truth" rather
+ * than the classic Amiga "save background pixels, blit, later restore those
+ * exact saved pixels" Bob technique: research into this ring buffer found
+ * that already-visible, already-drawn columns can be rewritten at any time,
+ * off-schedule, by dirtyRedrawWorldColumn()/dirtyRedrawWorldTile() (weapon
+ * impacts, flak spawns/clears, ship/town-block hits - see those functions'
+ * own call sites). A cached "saved background" snapshot can go stale the
+ * instant one of those fires under the Bob's footprint, and restoring it
+ * would silently undo a real gameplay change (e.g. paint over a crater or a
+ * newly-cleared flak tile). Re-deriving the erased column from
+ * renderRingWorldColumn() - the same authoritative per-column rebuild the
+ * ring buffer already uses for everything else - sidesteps that entirely:
+ * there is no snapshot to go stale. The tradeoff is a full column rebuild on
+ * every move rather than a raw pixel restore, which is fine here because
+ * movement is tile-grid-locked (see WingmanState's own comment) - erases
+ * only happen on an actual tile-row/column change, not every frame. */
+static void wingmanBobEraseFootprint(UBYTE* bitmap, LONG worldColumnLeft) {
+	renderRingWorldColumn(bitmap, worldColumnLeft);
+	renderRingWorldColumn(bitmap, worldColumnLeft + 1);
+}
+
+static void wingmanBobDrawColumnMasked(UBYTE* bitmap, LONG worldColumn, WORD tileRow, const UBYTE* tile) {
+	UWORD tileX = ringWorldTileXForColumn(worldColumn);
+	drawGameScrollTileMasked(bitmap, (short)tileX, (short)tileRow, tile);
+	if (tileX < GAME_WORLD_BUFFER_MARGIN_TILES + GAME_FETCH_BYTES) {
+		UWORD duplicateTileX = (UWORD)(tileX + GAME_WORLD_SCROLL_PAGE_BYTES);
+		drawGameScrollTileMasked(bitmap, (short)duplicateTileX, (short)tileRow, tile);
+	}
+}
+
+/* CPC rule: the wingman's above/below formation choice flips to below
+ * whenever an above-player target would land off the top of the screen
+ * ("Hvis onsket posisjon kommer utenfor toppen av skjermen, byttes det til
+ * formasjon under spilleren"). Checked every frame (not just at spawn) so a
+ * player climbing back up doesn't leave the wingman permanently stuck below. */
+static WORD updateWingmanFormationTargetRow(GameState* game) {
+	WORD playerRow = (WORD)(game->playerY / GAME_TILE_HEIGHT);
+	if (!game->wingman.formationBelow && playerRow < WINGMAN_FORMATION_ROWS_OFFSET)
+		game->wingman.formationBelow = 1;
+	WORD targetRow = game->wingman.formationBelow
+		? (WORD)(playerRow + WINGMAN_FORMATION_ROWS_OFFSET)
+		: (WORD)(playerRow - WINGMAN_FORMATION_ROWS_OFFSET);
+	if (targetRow < 0)
+		targetRow = 0;
+	if (targetRow > WINGMAN_MAX_ROW)
+		targetRow = WINGMAN_MAX_ROW;
+	return targetRow;
+}
+
+static void updateWingmanBob(UBYTE* bitmap, GameState* game) {
+	WingmanState* wingman = &game->wingman;
+	if (!wingman->active) {
+		if (wingman->footprintValid) {
+			wingmanBobEraseFootprint(bitmap, wingman->footprintWorldColumnLeft);
+			wingman->footprintValid = 0;
+		}
+		return;
+	}
+
+	if (wingman->mode != WINGMAN_FORMATION)
+		return;
+
+	buildWingmanBobTilesIfNeeded();
+
+	WORD targetRow = updateWingmanFormationTargetRow(game);
+	if (wingman->row != targetRow) {
+		wingman->moveTimer++;
+		if (wingman->moveTimer >= WINGMAN_MOVE_FRAME_INTERVAL) {
+			wingman->moveTimer = 0;
+			wingman->row += (wingman->row < targetRow) ? 1 : -1;
+		}
+	} else {
+		wingman->moveTimer = 0;
+	}
+
+	LONG worldColumnLeft = (LONG)((game->scrollX + game->playerX -
+		WINGMAN_FORMATION_COLUMNS_BEHIND * GAME_TILE_WIDTH) >> 3);
+
+	if (wingman->footprintValid &&
+		(wingman->footprintWorldColumnLeft != worldColumnLeft || wingman->footprintRow != wingman->row))
+		wingmanBobEraseFootprint(bitmap, wingman->footprintWorldColumnLeft);
+
+	wingmanBobDrawColumnMasked(bitmap, worldColumnLeft, (WORD)wingman->row, wingmanBobTileLeft);
+	wingmanBobDrawColumnMasked(bitmap, worldColumnLeft + 1, (WORD)wingman->row, wingmanBobTileRight);
+	wingman->footprintWorldColumnLeft = worldColumnLeft;
+	wingman->footprintRow = (WORD)wingman->row;
+	wingman->footprintValid = 1;
+}
+
 /* Menu review: addCpcHitSmokeAtColumnRow() marks smoke at the exact hit
  * cell always, plus the cell ONE ROW ABOVE only if that one turned out to
  * be empty sky - callers redrawing "the hit column" via
@@ -8610,6 +8827,21 @@ int main(void) {
 					if (game.playerY <= TAKEOFF_CLEAR_Y) {
 						game.playerY = TAKEOFF_CLEAR_Y;
 						game.takeoffState = TAKEOFF_STATE_AIRBORNE;
+						/* Sprint 15.3: CPC's CPU wingman waits for the player
+						 * to take off, then joins formation - approximated
+						 * here as "launches the same frame the player clears
+						 * the deck" rather than a separate on-deck taxi/climb
+						 * animation, since the carrier's baked deck art
+						 * already shows a static landed wingman (see
+						 * amiga/assets/cpc_promoted_sprite_tiles.h) that
+						 * simply scrolls away like the rest of the carrier -
+						 * there is nothing to animate before this point. */
+						if (game.wingmanControl == WINGMAN_CONTROL_CPU && !game.wingman.active) {
+							game.wingman.active = 1;
+							game.wingman.mode = WINGMAN_FORMATION;
+							game.wingman.row = updateWingmanFormationTargetRow(&game);
+							game.wingman.footprintValid = 0;
+						}
 					}
 				} else if (game.landingState == LANDING_STATE_HOVER) {
 					/* CPC landinghoverloop releases the speed-derived X
@@ -8766,6 +8998,7 @@ int main(void) {
 				pendingPowerupSpriteUpdate = 0;
 			}
 			serviceRingWorldStream(worldBuffers[0], &game);
+			updateWingmanBob(worldBuffers[0], &game);
 			telemetryUpdate(&game, activeWorldBuffer);
 #if HAR_DEBUG_PERF_LOG
 			perfLogFrame(&game, activeWorldBuffer);
