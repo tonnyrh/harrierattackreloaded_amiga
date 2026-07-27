@@ -6731,8 +6731,24 @@ static void updateWingmanBob(UBYTE* bitmap, GameState* game) {
 		wingman->moveTimer = 0;
 	}
 
-	LONG worldColumnLeft = (LONG)((game->scrollX + game->playerX -
-		WINGMAN_FORMATION_COLUMNS_BEHIND * GAME_TILE_WIDTH) >> 3);
+	/* Sprint 15.2/15.3 fix: must use the ring buffer's own screen<->world
+	 * mapping (scrollLeftWorldColumnForScroll(), the same function
+	 * serviceRingWorldStream() trusts for "what world column is at the
+	 * screen's left edge"), not an independent (scrollX+screenX)>>3
+	 * formula. The display's actual coarse/fine scroll split
+	 * (scrollPointerPixelX()) rounds to 16px boundaries with a "-16 when
+	 * already aligned" special case that a naive >>3 doesn't reproduce -
+	 * the mismatch was small (well under one tile) but enough for this
+	 * formula and the real display offset to round to different tiles for
+	 * a frame or two around each boundary, then re-agree - visible as the
+	 * wingman flickering back and forth by one tile every couple of
+	 * frames ("vibrating"). Confirmed via a temporary per-frame CSV log
+	 * comparing this value against scrollLocalByteOffset(): the old
+	 * formula's screen-relative tile position oscillated 8/9/8/9... every
+	 * few frames instead of holding steady. */
+	UWORD leftWorldColumn = scrollLeftWorldColumnForScroll(game->scrollX);
+	WORD screenOffsetPixels = (WORD)(game->playerX - WINGMAN_FORMATION_COLUMNS_BEHIND * GAME_TILE_WIDTH);
+	LONG worldColumnLeft = (LONG)leftWorldColumn + (LONG)(screenOffsetPixels >> 3);
 
 	if (wingman->footprintValid &&
 		(wingman->footprintWorldColumnLeft != worldColumnLeft || wingman->footprintRow != wingman->row))
