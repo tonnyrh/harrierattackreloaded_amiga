@@ -658,15 +658,21 @@ typedef enum WingmanMode {
  * shared block" decision) and AI/landing fields arrive with the sprints that
  * actually use them, not ahead of time.
  *
- * Movement is deliberately tile-grid-locked (row steps by one 8px
- * GAME_TILE_HEIGHT at a time, footprint is exactly 2 tile columns wide) -
- * this is not a simplification of CPC's behaviour, it *is* CPC's behaviour
- * ("Flyet beveger seg en CPC-tile per oppdatering" - the wingman moves one
- * CPC tile per update). It also means the Bob compositor below never needs
- * sub-byte pixel shifting: every draw/erase is a whole-tile operation using
- * the exact same tile-column addressing the terrain ring buffer already
- * uses, which is both simpler and safer than inventing pixel-smooth motion
- * a real CPC wingman never had. */
+ * Vertical movement is tile-grid-locked (row steps by one 8px
+ * GAME_TILE_HEIGHT at a time) - matching CPC's own "Flyet beveger seg en
+ * CPC-tile per oppdatering" (the wingman moves one CPC tile per update).
+ * Horizontal position is NOT tile-locked: the formation offset is measured
+ * in real pixels (worldPixelLeft & 7), and buildWingmanBobShiftedTiles()
+ * rebuilds the masked Bob image shifted by that sub-tile amount every frame
+ * so the wingman keeps pace with the Amiga's smooth per-pixel fine scroll
+ * instead of visibly hopping a whole tile at a time horizontally - the
+ * tile-locked *row* stepping is the CPC-faithful part; the sub-pixel
+ * *column* rendering is a deliberate Amiga-side smoothing on top of it,
+ * since jumping 8px at a time reads as far choppier here than it ever would
+ * on CPC's own display. footprintColumnCount/footprintPixelOffset record
+ * exactly what was drawn last frame (2 columns when pixel-aligned, 3 when
+ * a shift spills into a third cell) so the eraser clears precisely that
+ * footprint, not a stale tile-aligned guess. */
 typedef struct WingmanState {
 	UBYTE active;               /* 1 once launched (CPU only so far), until destroyed/landed */
 	UBYTE mode;                 /* WingmanMode */
@@ -679,6 +685,8 @@ typedef struct WingmanState {
 	                              * previously-drawn position that may still need erasing */
 	LONG footprintWorldColumnLeft;
 	WORD footprintRow;
+	UBYTE footprintColumnCount;  /* 2 or 3 - see buildWingmanBobShiftedTiles() */
+	UBYTE footprintPixelOffset;  /* worldPixelLeft & 7 at the last draw, for change detection */
 } WingmanState;
 
 typedef struct GameState {
@@ -4324,43 +4332,36 @@ static void drawGameScrollTileMasked(UBYTE* bitmap, short tileX, short tileY, co
  * second guessed mapping. Output format matches drawGameScrollTileMasked()'s
  * input exactly: 8 rows x (4 colour-plane bytes + 1 opacity-mask byte). */
 #define WINGMAN_BOB_TILE_BYTES (GAME_TILE_HEIGHT * (GAME_WORLD_DISPLAY_PLANES + 1))
-static UBYTE wingmanBobTileLeft[WINGMAN_BOB_TILE_BYTES];
-static UBYTE wingmanBobTileRight[WINGMAN_BOB_TILE_BYTES];
-static UBYTE wingmanBobTilesBuilt = 0;
+#define WINGMAN_BOB_MAX_COLUMNS 3
+static UBYTE wingmanBobShiftedTiles[WINGMAN_BOB_MAX_COLUMNS][WINGMAN_BOB_TILE_BYTES];
 
-static void buildWingmanBobTileHalf(UBYTE* tile, const UBYTE* sourcePixels) {
+/* Build the 16px CPC+ aircraft across two or three 8px playfield cells.
+ * pixelOffset is worldPixelX&7. Rebuilding these tiny masks lets the Bob
+ * compensate for Amiga fine scrolling instead of jumping a whole tile every
+ * time the formation point crosses a column boundary. */
+static UBYTE buildWingmanBobShiftedTiles(UBYTE pixelOffset) {
+	memset(wingmanBobShiftedTiles, 0, sizeof(wingmanBobShiftedTiles));
 	for (UBYTE row = 0; row < GAME_TILE_HEIGHT; row++) {
-		UBYTE planes[GAME_WORLD_DISPLAY_PLANES];
-		UBYTE mask = 0;
-		for (UBYTE plane = 0; plane < GAME_WORLD_DISPLAY_PLANES; plane++)
-			planes[plane] = 0;
-		for (UBYTE col = 0; col < GAME_TILE_WIDTH; col++) {
-			/* Source rows are 16 pens wide; only columns 0-7 are real pixel
-			 * data (see buildAttachedSpriteFromCpcPlusHalves()). */
-			UBYTE pen = sourcePixels[row * 16 + col];
+		for (UBYTE sourceX = 0; sourceX < 16; sourceX++) {
+			const UBYTE* source = sourceX < 8 ?
+				harCpcWingmanFlyingLeftPixels : harCpcWingmanFlyingRightPixels;
+			UBYTE pen = source[row * 16 + (sourceX & 7)];
 			if (!pen)
 				continue;
-			UBYTE bit = (UBYTE)(0x80 >> col);
-			mask |= bit;
+			UBYTE shiftedX = (UBYTE)(pixelOffset + sourceX);
+			UBYTE column = (UBYTE)(shiftedX >> 3);
+			UBYTE bit = (UBYTE)(0x80 >> (shiftedX & 7));
+			UBYTE* dest = wingmanBobShiftedTiles[column] +
+				row * (GAME_WORLD_DISPLAY_PLANES + 1);
 			UBYTE color = harCpcPlusPenToGameColor[pen];
 			for (UBYTE plane = 0; plane < GAME_WORLD_DISPLAY_PLANES; plane++) {
 				if (color & (1 << plane))
-					planes[plane] |= bit;
+					dest[plane] |= bit;
 			}
+			dest[GAME_WORLD_DISPLAY_PLANES] |= bit;
 		}
-		UBYTE* dest = tile + row * (GAME_WORLD_DISPLAY_PLANES + 1);
-		for (UBYTE plane = 0; plane < GAME_WORLD_DISPLAY_PLANES; plane++)
-			dest[plane] = planes[plane];
-		dest[GAME_WORLD_DISPLAY_PLANES] = mask;
 	}
-}
-
-static void buildWingmanBobTilesIfNeeded(void) {
-	if (wingmanBobTilesBuilt)
-		return;
-	buildWingmanBobTileHalf(wingmanBobTileLeft, harCpcWingmanFlyingLeftPixels);
-	buildWingmanBobTileHalf(wingmanBobTileRight, harCpcWingmanFlyingRightPixels);
-	wingmanBobTilesBuilt = 1;
+	return pixelOffset ? 3 : 2;
 }
 
 static void drawGameTileMap(UBYTE* bitmap, const UBYTE* map) {
@@ -6665,16 +6666,30 @@ static void dirtyRedrawWorldTile(UBYTE** worldBuffers, LONG worldColumn, WORD ti
  * own call sites). A cached "saved background" snapshot can go stale the
  * instant one of those fires under the Bob's footprint, and restoring it
  * would silently undo a real gameplay change (e.g. paint over a crater or a
- * newly-cleared flak tile). Re-deriving the erased column from
- * renderRingWorldColumn() - the same authoritative per-column rebuild the
- * ring buffer already uses for everything else - sidesteps that entirely:
- * there is no snapshot to go stale. The tradeoff is a full column rebuild on
- * every move rather than a raw pixel restore, which is fine here because
- * movement is tile-grid-locked (see WingmanState's own comment) - erases
- * only happen on an actual tile-row/column change, not every frame. */
-static void wingmanBobEraseFootprint(UBYTE* bitmap, LONG worldColumnLeft) {
-	renderRingWorldColumn(bitmap, worldColumnLeft);
-	renderRingWorldColumn(bitmap, worldColumnLeft + 1);
+ * newly-cleared flak tile). Re-deriving the erased cells from
+ * buildWorldTileColumn() sidesteps that entirely - there is no snapshot to
+ * go stale. Only the single occupied tileRow is rebuilt (not the full
+ * renderRingWorldColumn() column-plus-overlay pass) because since Sprint
+ * 15.3's follow-up smoothing, the wingman's horizontal position is pixel-,
+ * not tile-, precise (see WingmanState's own comment), so an erase can now
+ * happen every frame instead of only on a tile-column change - a full
+ * 25-row-plus-overlay rebuild at that rate would be far too expensive.
+ * Known limitation: this skips drawDirectColumnRangeObjects()'s carrier/
+ * gunship/town-block overlay pass, so erasing while the wingman crosses
+ * directly over one of those would briefly show the plain terrain tile
+ * underneath instead of the overlay - a narrow, cosmetic edge case, not
+ * fixed here. */
+static void wingmanBobEraseFootprint(UBYTE* bitmap, LONG worldColumnLeft, WORD tileRow, UBYTE columnCount) {
+	for (UBYTE column = 0; column < columnCount; column++) {
+		RenderColumn rebuilt;
+		LONG worldColumn = worldColumnLeft + column;
+		buildWorldTileColumn(worldColumn, &rebuilt);
+		UWORD tileX = ringWorldTileXForColumn(worldColumn);
+		drawGameScrollTile(bitmap, (short)tileX, (short)tileRow, rebuilt.tile[tileRow]);
+		if (tileX < GAME_WORLD_BUFFER_MARGIN_TILES + GAME_FETCH_BYTES)
+			drawGameScrollTile(bitmap, (short)(tileX + GAME_WORLD_SCROLL_PAGE_BYTES),
+				(short)tileRow, rebuilt.tile[tileRow]);
+	}
 }
 
 static void wingmanBobDrawColumnMasked(UBYTE* bitmap, LONG worldColumn, WORD tileRow, const UBYTE* tile) {
@@ -6705,11 +6720,39 @@ static WORD updateWingmanFormationTargetRow(GameState* game) {
 	return targetRow;
 }
 
+static UBYTE wingmanCellIsPassable(LONG worldColumn, WORD tileRow) {
+	ObjectCell cell;
+	if (!objectCellForWorldColumnTile(worldColumn, tileRow, &cell))
+		return 0;
+	return cell.id == HAR_OBJ_SKY || cell.id == HAR_OBJ_CLOUD || cell.id == HAR_OBJ_FLAK;
+}
+
+/* CPC checkwingmanradar accepts only sky/cloud/flak and looks several cells
+ * ahead. Use the same rule for the full 16px footprint plus four forward
+ * cells so a rising hill is avoided before either half enters it. */
+static UBYTE wingmanFormationRowIsSafe(LONG worldColumnLeft, WORD tileRow) {
+	if (tileRow < 1 || tileRow >= GAME_OBJECT_MAP_HEIGHT_TILES)
+		return 0;
+	for (UBYTE column = 0; column < 6; column++) {
+		if (!wingmanCellIsPassable(worldColumnLeft + column, tileRow))
+			return 0;
+	}
+	return 1;
+}
+
+static WORD wingmanSafeTargetRow(LONG worldColumnLeft, WORD requestedRow) {
+	WORD row = requestedRow;
+	while (row > 1 && !wingmanFormationRowIsSafe(worldColumnLeft, row))
+		row--;
+	return wingmanFormationRowIsSafe(worldColumnLeft, row) ? row : 1;
+}
+
 static void updateWingmanBob(UBYTE* bitmap, GameState* game) {
 	WingmanState* wingman = &game->wingman;
 	if (!wingman->active) {
 		if (wingman->footprintValid) {
-			wingmanBobEraseFootprint(bitmap, wingman->footprintWorldColumnLeft);
+			wingmanBobEraseFootprint(bitmap, wingman->footprintWorldColumnLeft,
+				wingman->footprintRow, wingman->footprintColumnCount);
 			wingman->footprintValid = 0;
 		}
 		return;
@@ -6718,46 +6761,42 @@ static void updateWingmanBob(UBYTE* bitmap, GameState* game) {
 	if (wingman->mode != WINGMAN_FORMATION)
 		return;
 
-	buildWingmanBobTilesIfNeeded();
+	WORD screenOffsetPixels = (WORD)(game->playerX -
+		WINGMAN_FORMATION_COLUMNS_BEHIND * GAME_TILE_WIDTH);
+	LONG worldPixelLeft = (LONG)game->scrollX + screenOffsetPixels;
+	LONG worldColumnLeft = worldPixelLeft >> 3;
+	UBYTE pixelOffset = (UBYTE)(worldPixelLeft & 7);
 
-	WORD targetRow = updateWingmanFormationTargetRow(game);
+	WORD targetRow = wingmanSafeTargetRow(worldColumnLeft,
+		updateWingmanFormationTargetRow(game));
 	if (wingman->row != targetRow) {
 		wingman->moveTimer++;
 		if (wingman->moveTimer >= WINGMAN_MOVE_FRAME_INTERVAL) {
 			wingman->moveTimer = 0;
-			wingman->row += (wingman->row < targetRow) ? 1 : -1;
+			WORD candidate = (WORD)(wingman->row + ((wingman->row < targetRow) ? 1 : -1));
+			wingman->row = wingmanFormationRowIsSafe(worldColumnLeft, candidate) ?
+				candidate : wingmanSafeTargetRow(worldColumnLeft, candidate);
 		}
 	} else {
 		wingman->moveTimer = 0;
 	}
 
-	/* Sprint 15.2/15.3 fix: must use the ring buffer's own screen<->world
-	 * mapping (scrollLeftWorldColumnForScroll(), the same function
-	 * serviceRingWorldStream() trusts for "what world column is at the
-	 * screen's left edge"), not an independent (scrollX+screenX)>>3
-	 * formula. The display's actual coarse/fine scroll split
-	 * (scrollPointerPixelX()) rounds to 16px boundaries with a "-16 when
-	 * already aligned" special case that a naive >>3 doesn't reproduce -
-	 * the mismatch was small (well under one tile) but enough for this
-	 * formula and the real display offset to round to different tiles for
-	 * a frame or two around each boundary, then re-agree - visible as the
-	 * wingman flickering back and forth by one tile every couple of
-	 * frames ("vibrating"). Confirmed via a temporary per-frame CSV log
-	 * comparing this value against scrollLocalByteOffset(): the old
-	 * formula's screen-relative tile position oscillated 8/9/8/9... every
-	 * few frames instead of holding steady. */
-	UWORD leftWorldColumn = scrollLeftWorldColumnForScroll(game->scrollX);
-	WORD screenOffsetPixels = (WORD)(game->playerX - WINGMAN_FORMATION_COLUMNS_BEHIND * GAME_TILE_WIDTH);
-	LONG worldColumnLeft = (LONG)leftWorldColumn + (LONG)(screenOffsetPixels >> 3);
+	UBYTE columnCount = buildWingmanBobShiftedTiles(pixelOffset);
 
 	if (wingman->footprintValid &&
-		(wingman->footprintWorldColumnLeft != worldColumnLeft || wingman->footprintRow != wingman->row))
-		wingmanBobEraseFootprint(bitmap, wingman->footprintWorldColumnLeft);
+		(wingman->footprintWorldColumnLeft != worldColumnLeft ||
+		 wingman->footprintRow != wingman->row ||
+		 wingman->footprintPixelOffset != pixelOffset))
+		wingmanBobEraseFootprint(bitmap, wingman->footprintWorldColumnLeft,
+			wingman->footprintRow, wingman->footprintColumnCount);
 
-	wingmanBobDrawColumnMasked(bitmap, worldColumnLeft, (WORD)wingman->row, wingmanBobTileLeft);
-	wingmanBobDrawColumnMasked(bitmap, worldColumnLeft + 1, (WORD)wingman->row, wingmanBobTileRight);
+	for (UBYTE column = 0; column < columnCount; column++)
+		wingmanBobDrawColumnMasked(bitmap, worldColumnLeft + column,
+			(WORD)wingman->row, wingmanBobShiftedTiles[column]);
 	wingman->footprintWorldColumnLeft = worldColumnLeft;
 	wingman->footprintRow = (WORD)wingman->row;
+	wingman->footprintColumnCount = columnCount;
+	wingman->footprintPixelOffset = pixelOffset;
 	wingman->footprintValid = 1;
 }
 
@@ -8853,9 +8892,13 @@ int main(void) {
 						 * simply scrolls away like the rest of the carrier -
 						 * there is nothing to animate before this point. */
 						if (game.wingmanControl == WINGMAN_CONTROL_CPU && !game.wingman.active) {
+							WORD spawnScreenOffsetPixels = (WORD)(game.playerX -
+								WINGMAN_FORMATION_COLUMNS_BEHIND * GAME_TILE_WIDTH);
+							LONG spawnWorldColumnLeft = ((LONG)game.scrollX + spawnScreenOffsetPixels) >> 3;
 							game.wingman.active = 1;
 							game.wingman.mode = WINGMAN_FORMATION;
-							game.wingman.row = updateWingmanFormationTargetRow(&game);
+							game.wingman.row = wingmanSafeTargetRow(spawnWorldColumnLeft,
+								updateWingmanFormationTargetRow(&game));
 							game.wingman.footprintValid = 0;
 						}
 					}
