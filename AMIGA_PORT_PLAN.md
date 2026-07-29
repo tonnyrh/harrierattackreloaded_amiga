@@ -3425,3 +3425,203 @@ Direct follow-up to 15.5's deferred flutter finding. Since the flutter is an inh
 **Verification**: clean rebuild after rewiring every `main()` call site that referenced the now-renamed/removed `bombSprite`/`powerupSprite`/`pendingPowerupSpriteUpdate` identifiers (a dangling call to the just-deleted `updateWingmanBob()` was also caught and replaced this pass). Two full headless autoplay runs (`Wingman: CPU` forced on, plus a temporary periodic bomb/rocket-fire input hook to exercise the new Bob paths) completed cleanly with **identical** frame-by-frame stats both times (deterministic sim, no timing regression) - fuel/armour/ammo tracked expected wear, `hudGuardHits`/`hudGuard2Hits`/`hudRegHits` (the HUD memory-corruption canaries from the Sprint 14.91.4 investigation) stayed at zero across every sample, and `maxVblDelta` stayed at a steady 3 vblanks post-startup (no stalls/hangs). Both runs exited cleanly back to the AmigaDOS shell rather than a Guru Meditation. Zoomed screenshots (10x nearest-neighbour crops, per this project's screenshot-analysis method) confirmed the player and wingman both render correctly as two distinct, slightly-offset grey jet silhouettes in tight 3-tile formation throughout the flight - at normal screenshot resolution the two overlap closely enough to first read as a single blob, which cost some extra verification time but is correct tight-formation flying, not a rendering bug. All temporary test flags (`HAR_HEADLESS_AUTOPLAY`, `HAR_DEBUG_PERF_LOG`, the forced `Wingman: CPU` default, the periodic fire-input hook) reverted before the final rebuild.
 
 **Deliberately not covered by this pass** (unchanged from before, still backlog): wingman death/collision states, `EnemyTarget` friendly-fire selection, wingman bombing-run trigger (`checkwingmandobombingrun`), Player 2 human control (original roadmap 15.5/15.6 scope) - all remain future sprints.
+
+## Sprint 15.7.4 - Wingman flying contrast adaptation
+
+The palette pipeline, compiled palette bytes, Copper writes, attached-sprite
+packing and CPC source pixels were re-audited after the flying Wingman looked
+almost white while the landed Wingman on the carrier looked correct. All were
+byte/pixel exact to the documented design. A runtime-faithful composed preview
+then reproduced the same bird-like white result: this was not a missing half or
+palette-register regression, but the exact six-step CPC grey ramp rendered as
+sharp 16x8 Amiga pixels instead of WinAPE's softened presentation.
+
+Only the flying Wingman's pen indices are therefore translated while building
+sprite 6+7. Two brightness-compression tests still produced white/green pixels.
+The actual cause was then isolated to OCS attached-sprite bit significance:
+the even sprite supplies the upper colour-bit pair and the odd attached sprite
+the lower pair, opposite to the logical ordering assumed by the local mapped
+builder. The isolated Wingman table now swaps those bit pairs
+(`1..6 -> 4,8,12,1,5,9`) so hardware selects the intended CPC grey palette
+entries 1..6. Source assets and the shared `COLOR17-31` CPC+ palette remain
+unchanged, so the player, enemy sprites, rockets and every other palette
+consumer are unaffected.
+
+The CPC graphics viewer was corrected at the same time: CPC Plus sprite cards
+now use `sprite_colours` rather than the screen/tile palette, and composed
+Flying Harrier/Wingman cards show the same 8+8-pixel assembly used at runtime.
+
+## Sprint 15.8.0 - Incremental main menu
+
+Main-menu navigation no longer redraws the complete 320x256 bitmap. Up/down
+only erase and redraw the old and new menu rows. Enter/Fire and left/right now
+share one setting-adjustment path that redraws only the selected row; changing
+Lives additionally uses the existing HUD delta renderer to update only its
+live value. Left decrements and right increments Skill and Wingman with
+wraparound; Lives toggles between 1 and 3 in either direction. Start Game
+remains an Enter/Fire action. Shift+D is excluded from right-navigation so the
+telemetry shortcut cannot also change a menu value.
+
+## Sprint 15.8.1 - Dedicated flying Wingman greys
+
+The attached-pair remapping experiments were removed after WinUAE showed that
+the flying Wingman still resolved predominantly to white. Wingman now uses
+normal two-bit sprite channel 6 with three deliberate grey levels; channel 7
+is hidden while its body is active. Gameplay Copper colours 29-31 are set to
+`$333/$777/$bbb`. This range is safe because the attached player artwork uses
+only CPC pens through 12 (COLOR28), while normal sprites 6/7 are the only
+consumers of COLOR29-31. Player, weapons, playfield graphics and the carrier's
+baked landed Wingman remain unchanged.
+
+## Sprint 15.9.0 - CPC post-landing mission loop
+
+Implemented the continuation after a successful carrier landing from CPC
+`landinghoverloop` / `beginlandingapproach`:
+
+- touchdown awards the CPC's literal `&00c8` (200) score;
+- `LANDED` remains visible for a short hold;
+- difficulty increases by one, capped at level 5;
+- fuel, armour and skill-scaled rockets/bombs are replenished and flak damage
+  is reset through the normal session initialisation;
+- level progress, transient actors, destroyed targets and terrain generation
+  reset for the next mission;
+- accumulated score, hit count, remaining lives and Wingman selection survive;
+- the next mission resumes on the carrier at CPC's `newlevelloop/checkliftoff`
+  equivalent, ready for the player to press Up, without replaying the initial
+  carrier-entry animation.
+
+CPC waits for an enabled Wingman to finish landing before advancing. The Amiga
+port does not yet implement Wingman landing waypoints, so player touchdown is
+the completion gate until that dedicated parity work exists.
+# Sprint 15.10.0
+
+- Bombens flygende mini-BOB er nå en tydelig 4x4 figur i stedet for tre
+  isolerte piksler.
+- Bomben får en kort skrå fremdriftsfase og bindes deretter til
+  verdenskoordinaten, slik at den følger scrollingen mens den faller.
+- Maverick har fått en CPC-ekvivalent nærhetsdetonator ved målsenteret, slik
+  at Amiga-portens firepikselsteg ikke kan oscillere rundt et bakkemål.
+# Sprint 15.11.0
+
+- Ammo-/powerup-drop tegnes nå på sin faktiske piksel-Y i stedet for
+  `y / 8`; eksisterende 2/3-piksel-fall og pickup-regler er uendret.
+- Piksel-BOB-en gjenoppretter de berørte bakgrunnsradene fra kartdata og
+  tegnes bare på nytt når posisjonen faktisk endres.
+- Neste vurderte spritefrigjøring er spillerens rakett: sammenlign en liten
+  CPU-maskert piksel-BOB med dagens hardware-sprite. Bombens flygefase er
+  allerede piksel-BOB. Impact/eksplosjon forblir tile-BOB inntil videre.
+# Sprint 15.12.0
+
+- Spillerens vanlige rakett og Maverick tegnes nå som en pikselpresis,
+  CPU-maskert 8x8 BOB med CPC-retningsgrafikken.
+- Hardware-sprite kanal 5 er skjult under normal spilling og dermed ledig
+  for en senere spritefordeling; den lånes foreløpig fortsatt av én
+  Harrier-del under krasjanimasjonen.
+- Rakettens fysikk, målstyring, kollisjon og skade er ikke endret.
+# Sprint 15.13.0
+
+- Wingmans rakett bruker nå samme pikselpresise CPU-maskerte BOB-rutine som
+  spillerens rakett.
+- Spiller og Wingman har separate footprints per skjermbuffer, slik at
+  erase aldri gjenoppretter bakgrunn lagret av den andre raketten.
+- Hardware-sprite kanal 2 er nå også skjult og ledig under normal spilling;
+  den lånes fortsatt av krasjanimasjonen.
+# Sprint 15.14.0
+
+- CPU-Wingmans normale formasjon følger nå CPC-ens toveis
+  `wingmanbelowplayer`-regel.
+- Utrygg øvre formasjonsplass bytter til under spilleren; utrygg nedre
+  plass bytter tilbake over når øvre plass er fri.
+- Gjeldende side beholdes mens den er trygg, og eksisterende gradvise
+  radbevegelse brukes gjennom byttet uten teleportering.
+- Intercept, bombing og retur-waypoints er fortsatt separate tilstander.
+# Sprint 15.15.0
+
+- Rettet CPC-tolkningen av skill-basert ammunisjon:
+  `numberofbombs`/`numberofrockets` er skudd per HUD-enhet, ikke direkte
+  beholdning.
+- Skill 1 starter med 60 bomber og 30 raketter, tilsvarende 15 fulle
+  gauge-enheter.
+- HUD bruker skill-nivåets fulle beholdning som maksimum.
+- Landing og ammo-drops fyller opp til samme skill-baserte kapasitet.
+# Sprint 15.16.0
+
+- CPU-Wingman bruker CPC-ens delte bakkemållås og vurderer hvert nytt mål
+  én gang med `R & 3` (omtrent ett av fire mål).
+- Ved valg forlater Wingman formasjonen, flyr fire tiles over målet,
+  slipper sin egen bombe og returnerer gradvis til formasjonen.
+- Wingman-bomben har separat `WeaponState` og separat piksel-BOB-footprint,
+  bruker ikke spillerens bombelager og kan ikke overskrive spillerbombens
+  bakgrunn.
+- Treff ødelegger det låste bakkemålet via de eksisterende CPC-rutinene for
+  smoke, score og dirty redraw.
+# Sprint 15.16.1
+
+- Wingman-radaren ser nå alle faktiske tile-kolonner i brede, prosedyregenererte
+  bybygninger, ikke bare en eventuell ankerkolonne.
+- Under bakkeangrep valideres neste horisontale steg før X flyttes.
+
+# Sprint 15.17.0
+
+- Wingmans CPC-logikk og terrengradar er fortsatt tilebasert.
+- Hardware-spritens Y-posisjon følger den godkjente raden pikselpresist med
+  2 piksler per frame, i stedet for synlige hopp på 8 piksler.
+- Wingman-rakett og bombe opprettes fra den interpolerte, synlige posisjonen.
+
+# Sprint 15.17.1
+
+- Wingmans rakettavfyring sammenligner nå fiendens høyde med Wingmans faktiske
+  interpolerte skjermposisjon, ikke den tilebaserte målraden foran spriten.
+
+# Sprint 15.18.0
+
+- CPU-Wingman avbryter kamp og starter landing når slutt-carrieren går over i
+  hoverfasen.
+- Wingman flyr pikselpresist til et samlepunkt over den ledige dekksenden og
+  går deretter vertikalt ned på dekket.
+- Venstre eller høyre dekksplass velges ut fra hvor spilleren befinner seg.
+- Oppdraget fullføres først når både spilleren og en aktiv Wingman er landet,
+  slik CPC-landingsløkken gjør.
+
+# Sprint 15.19.0
+
+- CPC `checkenemyhit` er kontrollert på nytt: bygningscellen som treffes blir
+  røyk 52, med røyk 51 én rad over bare når raden er himmel. Krater 97 brukes
+  kun ved direkte treff i land.
+- Bygningskolonnen bygges nå komplett på nytt etter bombetreff, slik at den
+  brede bygningskompositoren respekterer røyken.
+- Bombens kollisjonspunkt følger den faktiske 6x3-grafikken og ligger ikke
+  lenger flere piksler under bomben.
+- Landing krever nå at Harrierens underside er ved dekknivå; den gamle vide
+  toleransen som ga `LANDED` i luften er fjernet.
+- Carrier-assets finnes både med og uten parkert Wingman. Når CPU-Wingman tar
+  av, tegnes carrieren om uten den innbakte flygrafikken.
+- Bombens aktive mini-BOB er endret fra rund 4x4 til en slank 6x3 CPC-lignende
+  silhuett; fysikk og skade er uendret.
+
+# Sprint 15.20.0
+
+- Fiendeflyet bruker nå den ledige hardware-spritekanal 2 og en isolert
+  rød/oransje/gul `COLOR17-19`-palett. Disse registrene brukes ikke av
+  spillerens faktiske CPC-penner, så Harrier og Wingman påvirkes ikke.
+- Menyens gamle negative X-forskyvning er fjernet og de lengste valgene er
+  forkortet til `Wingman: P2` og `Maverick: L+Fire`; alle kolonner holder seg
+  innenfor 320 piksler.
+- CPC-tributescrollen er gjenskapt som en Amiga-ticker som flyttes én piksel
+  hver andre frame. Teksten kan redigeres direkte i `menuTickerText` i
+  `amiga/main.c`.
+
+# Sprint 15.20.1
+
+- Tickerteksten er hentet ordrett fra CPC-kilden:
+  `Harrier Attack Reloaded - CPSoft 27.07.2025`.
+- Menyblippet stjeler ikke lenger Paula-kanal 3 mens firekanals MOD-musikk
+  spiller; menyen fortsetter visuelt uten et hørbart opphold i musikken.
+- CPC-skipmissilets `HL=&0d24` er beholdt, men X beregnes fra skipets faktiske
+  verdenskolonne og gjeldende piksel-scroll. Dermed starter missilet ved båten
+  også under fine-scroll og ved høyere scrollhastighet.
+- CPC-koden bekrefter at by–hav-overgangen med en 3x2 solid landblokk før
+  `pendata`-piren er tilsiktet og beholdes uendret.
+  Wingman holder posisjonen og klatrer til nærmeste sikre rad dersom ruten
+  foran er blokkert.
+- Toveis over/under-formasjon bruker dermed også korrekt bygningsgeometri.

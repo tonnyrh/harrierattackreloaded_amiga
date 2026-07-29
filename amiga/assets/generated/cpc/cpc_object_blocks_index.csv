@@ -1,17 +1,17 @@
 asset_id,label,source_line,kind,byte_count,layout,risk
-enemy_ship_scroll_columns,enemyshipsprite,5395,composite.column_major,13,"{""height"":3}",
-end_frigate_scroll_columns,endfrigatesprite,5912,composite.column_major,40,"{""height"":3}",
-enemy_land_targets,enemylandsprites,5676,records.2x2_terminated,20,"{""record_width"":2,""record_height"":2}",
-solid_land_fill,solidlandspriteblock,5683,raw.drawspriteblock3_fill,11,"{""width"":11}",drawspriteblock3 command stream is stored raw; visual preview is heuristic until the CPC routine is fully decoded.
-write_frigate_tilemap_1,writefrigatetilemap1,2914,objectmap.row,12,"{""width"":12}",
-write_frigate_tilemap_2,writefrigatetilemap2,2915,objectmap.row,12,"{""width"":12}",
-write_frigate_tilemap_3,writefrigatetilemap3,2916,objectmap.row,12,"{""width"":12}",
-pier_pen_data,pendata,5788,raw.ascii_tile_stream,13,"{""terminator"":255}",ASCII stream is stored raw; likely pier/deck pen/tile data and needs manual promotion.
-town_block_0,blk0,5778,raw.drawspriteblock3_column_stream,6,"{""column_height"":5}",drawspriteblock3 stream is column-major; each screen-edge update consumes one vertical column.
-town_block_1,blk1,5779,raw.drawspriteblock3_column_stream,11,"{""column_height"":5}",drawspriteblock3 stream is column-major; each screen-edge update consumes one vertical column.
-town_block_2,blk2,5780,raw.drawspriteblock3_column_stream,11,"{""column_height"":5}",drawspriteblock3 stream is column-major; each screen-edge update consumes one vertical column.
-town_block_3,blk3,5781,raw.drawspriteblock3_column_stream,26,"{""column_height"":5}",drawspriteblock3 stream is column-major; each screen-edge update consumes one vertical column.
-town_block_4,blk4,5782,raw.drawspriteblock3_column_stream,26,"{""column_height"":5}",drawspriteblock3 stream is column-major; each screen-edge update consumes one vertical column.
-town_block_5,blk5,5783,raw.drawspriteblock3_column_stream,11,"{""column_height"":5}",drawspriteblock3 stream is column-major; each screen-edge update consumes one vertical column.
-town_block_6,blk6,5784,raw.drawspriteblock3_column_stream,11,"{""column_height"":5}",drawspriteblock3 stream is column-major; each screen-edge update consumes one vertical column.
-town_block_7,blk7,5785,raw.drawspriteblock3_column_stream,21,"{""column_height"":5}",drawspriteblock3 stream is column-major; each screen-edge update consumes one vertical column.
+enemy_ship_scroll_columns,enemyshipsprite,5424,composite.column_major,13,"{""height"":3}",
+end_frigate_scroll_columns,endfrigatesprite,6012,composite.column_major,40,"{""height"":3}",
+enemy_land_targets,enemylandsprites,5757,records.2x2_terminated,20,"{""record_width"":2,""record_height"":2}",
+solid_land_fill,solidlandspriteblock,5764,raw.drawspriteblock3_fill,11,"{""width"":11}",drawspriteblock3 command stream is stored raw; visual preview is heuristic until the CPC routine is fully decoded.
+write_frigate_tilemap_1,writefrigatetilemap1,2920,objectmap.row,12,"{""width"":12}",
+write_frigate_tilemap_2,writefrigatetilemap2,2921,objectmap.row,12,"{""width"":12}",
+write_frigate_tilemap_3,writefrigatetilemap3,2922,objectmap.row,12,"{""width"":12}",
+pier_pen_data,pendata,5888,raw.ascii_tile_stream,13,"{""terminator"":255}",ASCII stream is stored raw; likely pier/deck pen/tile data and needs manual promotion.
+town_block_0,blk0,5878,raw.drawspriteblock3_column_stream,6,"{""column_height"":5}",drawspriteblock3 stream is column-major; each screen-edge update consumes one vertical column.
+town_block_1,blk1,5879,raw.drawspriteblock3_column_stream,11,"{""column_height"":5}",drawspriteblock3 stream is column-major; each screen-edge update consumes one vertical column.
+town_block_2,blk2,5880,raw.drawspriteblock3_column_stream,11,"{""column_height"":5}",drawspriteblock3 stream is column-major; each screen-edge update consumes one vertical column.
+town_block_3,blk3,5881,raw.drawspriteblock3_column_stream,26,"{""column_height"":5}",drawspriteblock3 stream is column-major; each screen-edge update consumes one vertical column.
+town_block_4,blk4,5882,raw.drawspriteblock3_column_stream,26,"{""column_height"":5}",drawspriteblock3 stream is column-major; each screen-edge update consumes one vertical column.
+town_block_5,blk5,5883,raw.drawspriteblock3_column_stream,11,"{""column_height"":5}",drawspriteblock3 stream is column-major; each screen-edge update consumes one vertical column.
+town_block_6,blk6,5884,raw.drawspriteblock3_column_stream,11,"{""column_height"":5}",drawspriteblock3 stream is column-major; each screen-edge update consumes one vertical column.
+town_block_7,blk7,5885,raw.drawspriteblock3_column_stream,21,"{""column_height"":5}",drawspriteblock3 stream is column-major; each screen-edge update consumes one vertical column.

@@ -42,11 +42,26 @@ def read_json(path: Path) -> list[dict]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def render_pixels(path: Path, pixels: list[list[int]], scale: int, transparent_pen: int | None = None) -> None:
+def render_pixels(
+    path: Path,
+    pixels: list[list[int]],
+    scale: int,
+    transparent_pen: int | None = None,
+    palette: list[tuple[int, int, int]] | None = None,
+) -> None:
     width = max((len(row) for row in pixels), default=1) * scale
     height = max(len(pixels), 1) * scale
     dest = cpc.blank_pixels(width, height, (24, 24, 32))
-    cpc.blit_scaled(dest, width, 0, 0, pixels, scale, transparent_pen=transparent_pen)
+    cpc.blit_scaled(
+        dest,
+        width,
+        0,
+        0,
+        pixels,
+        scale,
+        transparent_pen=transparent_pen,
+        palette=palette,
+    )
     cpc.write_bmp(path, width, height, dest)
 
 
@@ -124,7 +139,12 @@ def html_card(kind: str, title: str, image: Path, meta: dict, search_text: str) 
     """
 
 
-def build_gallery(source_root: Path, out_dir: Path, scale: int) -> Path:
+def build_gallery(
+    source_root: Path,
+    out_dir: Path,
+    scale: int,
+    sprite_palette: list[tuple[int, int, int]],
+) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     image_dir = out_dir / "items"
     if image_dir.exists():
@@ -160,7 +180,13 @@ def build_gallery(source_root: Path, out_dir: Path, scale: int) -> Path:
     for sprite in sprites:
         filename = f"sprite_{safe_name(sprite.asset_id)}.bmp"
         rel = Path("items") / filename
-        render_pixels(image_dir / filename, cpc.plus_sprite_pixels(sprite), scale, transparent_pen=0)
+        render_pixels(
+            image_dir / filename,
+            cpc.plus_sprite_pixels(sprite),
+            scale,
+            transparent_pen=0,
+            palette=sprite_palette,
+        )
         cards.append(
             html_card(
                 "sprite",
@@ -175,6 +201,58 @@ def build_gallery(source_root: Path, out_dir: Path, scale: int) -> Path:
                     "comments": sprite.comments,
                 },
                 f"sprite {sprite.asset_id} {sprite.friendly_name} {sprite.category} {sprite.label} {' '.join(sprite.comments)}",
+            )
+        )
+
+    # Runtime-faithful 16x8 compositions. Each CPC Plus half stores its
+    # visible eight pixels in columns 0-7; the Amiga attached-sprite builder
+    # combines those two visible halves in exactly this order.
+    sprite_by_id = {sprite.asset_id: sprite for sprite in sprites}
+    composed_pairs = (
+        ("flying_harrier", "Flying Harrier composed", "sprite_pixel_data1", "sprite_pixel_data2"),
+        (
+            "wingman_flying",
+            "Wingman flying composed",
+            "sprite_pixel_data_wingmanflying1",
+            "sprite_pixel_data_wingmanflying2",
+        ),
+        (
+            "wingman_landed",
+            "Wingman landed composed",
+            "sprite_pixel_data_wingmanlanded1",
+            "sprite_pixel_data_wingmanlanded2",
+        ),
+    )
+    for pair_id, title, left_id, right_id in composed_pairs:
+        left = sprite_by_id.get(left_id)
+        right = sprite_by_id.get(right_id)
+        if left is None or right is None:
+            continue
+        left_pixels = cpc.plus_sprite_pixels(left)
+        right_pixels = cpc.plus_sprite_pixels(right)
+        height = min(len(left_pixels), len(right_pixels))
+        pixels = [left_pixels[y][:8] + right_pixels[y][:8] for y in range(height)]
+        filename = f"sprite_composed_{pair_id}.bmp"
+        rel = Path("items") / filename
+        render_pixels(
+            image_dir / filename,
+            pixels,
+            scale,
+            transparent_pen=0,
+            palette=sprite_palette,
+        )
+        cards.append(
+            html_card(
+                "sprite",
+                f"Sprite: {title}",
+                rel,
+                {
+                    "category": "runtime composition",
+                    "asset ids": f"{left_id} + {right_id}",
+                    "size": f"16x{height}",
+                    "palette": "CPC Plus sprite_colours",
+                },
+                f"sprite composed {pair_id} {title} {left_id} {right_id}",
             )
         )
 
@@ -308,7 +386,8 @@ def main() -> None:
     # reads at render time.
     cpc.RGB_PALETTE[:] = cpc.load_real_rgb_palette(args.main_source)
 
-    index = build_gallery(args.source_root, args.out, max(1, args.scale))
+    sprite_palette = cpc.load_real_sprite_rgb_palette(args.main_source)
+    index = build_gallery(args.source_root, args.out, max(1, args.scale), sprite_palette)
     print(f"Wrote {index}")
     if args.open:
         import os

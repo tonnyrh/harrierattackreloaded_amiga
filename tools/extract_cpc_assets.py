@@ -84,6 +84,40 @@ def load_real_rgb_palette(main_source: Path) -> list[tuple[int, int, int]]:
         return list(FALLBACK_RGB_PALETTE)
 
 
+def load_real_sprite_rgb_palette(main_source: Path) -> list[tuple[int, int, int]]:
+    """Build the CPC Plus hardware-sprite palette from ``sprite_colours``.
+
+    CPC screen tiles and CPC Plus sprites do not share a palette.  Keeping
+    this separate prevents the audit gallery from showing misleading green
+    or yellow pixels in the grey Wingman merely because a sprite pen happens
+    to have the same number as a screen pen.
+    """
+    try:
+        import sys as _sys
+
+        tools_dir = str(Path(__file__).resolve().parent)
+        if tools_dir not in _sys.path:
+            _sys.path.insert(0, tools_dir)
+        from cpc_game_tiles_to_amiga import extract_palette_words
+
+        lines = main_source.read_text(encoding="utf-8", errors="ignore").splitlines()
+        grb_words = extract_palette_words(lines, "sprite_colours", 15)
+        if len(grb_words) < 15:
+            return list(FALLBACK_RGB_PALETTE)
+        palette = [(0, 0, 0)]
+        palette.extend(
+            (
+                ((value >> 4) & 0xF) * 17,
+                ((value >> 8) & 0xF) * 17,
+                (value & 0xF) * 17,
+            )
+            for value in grb_words
+        )
+        return palette
+    except Exception:
+        return list(FALLBACK_RGB_PALETTE)
+
+
 LABEL_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:")
 DB_RE = re.compile(r"\b(?:db|defb)\b(.+)$", re.IGNORECASE)
 DW_RE = re.compile(r"\b(?:dw|defw)\b(.+)$", re.IGNORECASE)
@@ -696,13 +730,14 @@ def blit_scaled(
     pixels: list[list[int]],
     scale: int,
     transparent_pen: int | None = None,
+    palette: list[tuple[int, int, int]] | None = None,
 ) -> None:
     dest_height = len(dest) // dest_width
     for y, row in enumerate(pixels):
         for x, pen in enumerate(row):
             if transparent_pen is not None and pen == transparent_pen:
                 continue
-            color = RGB_PALETTE[pen & 0x0F]
+            color = (palette or RGB_PALETTE)[pen & 0x0F]
             for sy in range(scale):
                 py = y0 + y * scale + sy
                 if py < 0 or py >= dest_height:

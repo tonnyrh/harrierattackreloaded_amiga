@@ -157,6 +157,14 @@ def main() -> None:
     w, h, px = piece("sprite_pixel_data12")  # front
     carrier.blit(px, w, h, 80, 16, 1)
 
+    # Build the reversed carrier body before adding the separate aircraft.
+    # CPC reverses the final carrier, but the parked/landing Harrier remains
+    # oriented in the player's landing direction; it is not part of the
+    # reversed endfrigatesprite.
+    carrier_without_wingman = carrier.mirrored().mirrored()
+    carrier_reversed = carrier.mirrored()
+    carrier_reversed_without_wingman = carrier_reversed.mirrored().mirrored()
+
     # CPC movefrigateonscreen places the separate grey landed wingman on the
     # forward deck (sprites 14/15 loaded from wingmanlanded1/2). These are
     # direct CPC Plus pen-index sprites, not Mode 0/1 packed graphics. Their
@@ -166,6 +174,8 @@ def main() -> None:
     _, h_right, right = piece("sprite_pixel_data_wingmanlanded2")
     second_harrier = [left[y][:8] + right[y][:8] for y in range(min(h_left, h_right))]
     carrier.blit(second_harrier, 16, len(second_harrier), 73, 8, 1)
+    # Mirror only its deck position (73 -> 96-73-16 = 7), not its pixels.
+    carrier_reversed.blit(second_harrier, 16, len(second_harrier), 7, 8, 1)
 
     # Gunship canvas: left/right side by side, matches
     # drawPromotedCpcGunshipRangeAt()'s (x+0)/(x+16) offsets exactly.
@@ -215,7 +225,9 @@ def main() -> None:
         lines.append("")
 
     emit_canvas("Carrier", carrier)
-    emit_canvas("CarrierReversed", carrier.mirrored())
+    emit_canvas("CarrierReversed", carrier_reversed)
+    emit_canvas("CarrierWithoutWingman", carrier_without_wingman)
+    emit_canvas("CarrierReversedWithoutWingman", carrier_reversed_without_wingman)
     emit_canvas("Gunship", gunship)
 
     lines.append("#endif")
