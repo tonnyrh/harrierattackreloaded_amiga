@@ -3625,3 +3625,79 @@ the completion gate until that dedicated parity work exists.
   Wingman holder posisjonen og klatrer til nærmeste sikre rad dersom ruten
   foran er blokkert.
 - Toveis over/under-formasjon bruker dermed også korrekt bygningsgeometri.
+
+# Sprint 15.21.3
+
+- Når Wingman tok av ble tidligere både start- og slutt-carrieren tegnet på
+  nytt gjennom ringbufferens modulo-adresser. Slutt-carrieren kunne derfor
+  midlertidig dukke opp bak den første fiendefregatten. Bare start-carrieren
+  oppdateres nå.
+- Fiendeflyet bruker spritekanal 2+3 som et attached par og beholder CPC+
+  pennverdiene i stedet for å reduseres til den feilaktige hvite
+  trefarge-spriten.
+
+# Sprint 15.22.0
+
+- Fiendefly velger spiller eller en aktiv CPU-Wingman som mål én gang ved
+  spawn, tilsvarende CPC `missiletargetwingman`.
+- Flyets høydeforfølgelse, avfyringsavstand og heat-seekerens løp bruker det
+  valgte målets faktiske skjermposisjon. Valg av Wingman tvinger CPC-lik
+  intercept.
+- Wingman kan nå ødelegges av heat-seeker, kollisjon med fiendefly og
+  spillerens egne raketter/bomber. Wingmans aktive våpen ryddes og
+  eksplosjonen vises på hans faktiske pikselposisjon.
+- Wingman markeres som ødelagt for den separate, senere sprinten som skal
+  aktivere CPCs Wingman-powerup og gjenoppliving.
+
+# Sprint 15.23.0
+
+- Fire brukerlagde `FlakGun`-varianter og fire `GroundTargetHit`-varianter
+  fra `.tmp` er konvertert til 11025 Hz signed 8-bit Paula-samples, begrenset
+  til 700 ms for stock A500-minne.
+- Hvert nytt flakskudd velger deterministisk pseudo-tilfeldig én av fire
+  flaklyder fra kolonne, høyde og CPC-randomtilstand.
+- Rakett-, bombe- og Wingman-bombetreff på bakkemål, bygning, land eller
+  fiendeskip velger tilsvarende én av fire bakketrefflyder.
+- Disse bakketreffene bruker stille oppstart av eksplosjonsgrafikken, slik at
+  den gamle generiske impact-lyden ikke umiddelbart overskriver den valgte
+  varianten på samme Paula-kanal.
+
+## Sprint 15.24.0 - Shift+D debug hub
+
+Runnable result: Shift+D on the main menu opens a dedicated debug hub instead
+of directly toggling telemetry.
+
+- Options page toggles telemetry and infinite lives, bombs, rockets and fuel.
+- Graphics browser steps left/right through all 102 converted game tiles and
+  all 20 promoted CPC sprite components, using the real game palette.
+- Sound browser steps left/right through every `SFX_COUNT` entry; Fire plays
+  the selected embedded Paula sample. Menu MOD playback is stopped only while
+  this page owns the audio channels and restarts when returning to the hub.
+- Escape or Shift+D returns from a browser to the hub, then from the hub to
+  the normal main menu. A selectable `BACK TO MAIN MENU` row is also present.
+- Infinite ammo prevents the corresponding launch decrement, infinite fuel
+  overrides distance consumption, and infinite lives respawns through both
+  direct-eject and completed-crash paths without reaching Game Over.
+- Debug screens are ordinary static planar displays, isolated from the
+  menu-ticker Copper pointers and gameplay world/HUD buffers.
+
+## Sprint 15.25.0 - Dynamic Paula SFX voices
+
+Runnable result: gameplay keeps the synthesized Harrier engine on Paula
+channel 3 while channels 0-2 form a shared hardware voice pool. When the
+engine stops, channel 3 automatically joins that pool.
+
+- Effects carry explicit ambient, weapon, impact or player-critical priority.
+- A free voice is preferred. If all voices are occupied, only a lower-priority
+  effect may be stolen; flak can no longer cut off player damage or a major
+  impact merely because both used the same fixed channel.
+- Object screen X selects a preferred Paula side. Channels 0/3 are left and
+  1/2 are right; centred effects favour the right pair while the engine owns
+  left channel 3, keeping the overall mix less lopsided.
+- Retrigger guards are per effect rather than per channel, which remains
+  correct when successive instances are allocated to different voices.
+- Fire, bomb, impact, player-hit, four flak and four ground-hit samples were
+  freshly generated as short dry AudioGen effects and converted through the
+  anti-aliased signed-8-bit Paula pipeline.
+- Sample DMA length and software lifetime are derived from each embedded
+  asset's actual byte count rather than hand-maintained partial lengths.

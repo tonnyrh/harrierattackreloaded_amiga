@@ -1,5 +1,18 @@
 # CPC music export
 
+`raf_game_over.mod` is the four-channel Game Over song. The shared MOD
+replayer runs it once at 120% tempo when the last life is lost. It does not
+loop, and also stops before Retry or return to the main menu.
+
+`carrier_landing_fanfare.mod` is the successful carrier-landing fanfare. The
+shared MOD replayer starts it once, at normal tempo, when landing is confirmed
+on the carrier deck. It does not loop.
+
+Both one-shot fanfares use all four Paula channels: lead brass, low brass,
+snare/final harmony, and cymbal/final harmony. Their percussion samples are
+one-shot MOD instruments, while the brass instruments use their declared
+sustain loops; the shared replayer preserves that distinction.
+
 `harrier_menu.mod` is a standard 4-channel, 31-instrument ProTracker MOD
 (`M.K.`). It contains the CPC menu tune, **I Vow to Thee, My Country**.
 

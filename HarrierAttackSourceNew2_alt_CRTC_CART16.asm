@@ -33,7 +33,7 @@
 
 ifndef ISCART
   ; TEST OUR OWN ROUTINES IN THE MAIN PROGRAM
-  include "AMSTRADFONT3.asm"
+  read "AMSTRADFONT3.asm"
 endif
 
   cartbank_addr       equ &C100
@@ -1249,9 +1249,6 @@ checkenemyfighterapproach:
   call checkplayerplanemovement
   ld a,status_enemyplanehit
   ld (enemyplanestatus),a
-  ifdef LOGGEN
-  jp doexplosionnoise
-  endif
   ld a,1:deathstatus2              ; PLAYER KILLED
   ld (playerstatus),a
   jp doexplosionnoise
@@ -1267,9 +1264,6 @@ checkenemyfighterapproach:
   call checkplayerplanemovement
   xor a
   ld (enemymissilestatus),a
-  ifdef LOGGEN
-  jp doexplosionnoise
-  endif
   ld a,1:deathstatus3                  ; PLAYER KILLED
   ld (playerstatus),a                  ; HIT
   jp doexplosionnoise
@@ -4489,7 +4483,7 @@ scrollscenery:;setupscreen:
   ld (enemyshiptimer),hl
   
   call genrandomhl             ; GENERATE RANDOMISED LAND HEIGHT + ENEMIES
-  call docountdowntoenemyship
+  call docountdowntoenemyship             
   call drawrandomcloudsprite
 
   ; DRAW FRESH EDGE OF TILEMAP
@@ -4515,11 +4509,7 @@ scrollscenery:;setupscreen:
     cp 255                     ; DRAW TILES THAT HAVE 255 SET AS OBJECT
   jr nz,drawfreshskytiles
   
-  ifdef LOGGEN
-  call log_column_end
-  endif
-  
-  ld a,(scrollsceneryafterdeath) ; CONTINUE TO SCROLL SCENERY 7 TILES AFTER WE CRASH
+  ld a,(scrollsceneryafterdeath) ; CONTINUE TO SCROLL SCENERY 7 TILES AFTER WE CRASH 
   or a
   ret z
   dec a
@@ -5345,35 +5335,16 @@ countdownlanding   equ 270
 
 drawseatiles:
 ;  ret
-  ifdef LOGGEN
-  push af
-  ld a,r
-  ld (rEntryLog),a
-  pop af
-  endif
   push hl
   ld hl,&0f27 ; Y X LOCATION (RIGHT MOST TILE)
   ld c,2      ; OBJECT TILE ID
   ld a,r      ; RANDOMISE SEA TILE BASED ON R REGISTER
-  ifdef LOGGEN
-  ld (rExitLog),a
-  endif
   and #03     ; ADD 3 BASE TILES TO NUMBER WE GET
   add 3
-  call drawspritecheckifsky3a
+  call drawspritecheckifsky3a       
   pop hl
   ld a,countdownclouds;80;&50
   ld (cloudseapalettechangecount),a ; COUNTDOWN TO CLOUDS - MUST BE PAST SEA AS USES SAME PEN
-  ifdef LOGGEN
-  push af
-  ld a,LOG_TYPE_SEA
-  ld (recordTypeLog),a
-  xor a
-  ld (pathLog),a
-  ld (contextLog),a
-  call log_write8
-  pop af
-  endif
 ret
 
 ; DATA?
@@ -5452,22 +5423,12 @@ startoffalklandisland:
 l9134:
   dec a
   jp nz,l9206
-  ifdef LOGGEN
-  push af
-  ld a,r
-  ld (rEntryLog),a
-  pop af
-  endif
   ld a,(l8859)
   rra
   rra
   and #03
   ld (l8860),a
   jr nz,l9167
-  ifdef LOGGEN
-  ld a,LOG_PATH_MODE0_FLAT
-  ld (pathLog),a
-  endif
 
 drawflatterrain:
   ; DRAW FLAT TERRAIN TILE
@@ -5506,19 +5467,7 @@ l9167:
   ld l,a
   ld a,h
   cp #0e
-  jr nz,l916a_notblocked
-  ifdef LOGGEN
-  ld a,LOG_PATH_HILL_DOWN_BLOCKED
-  ld (pathLog),a
-  endif
-  jr drawflatterrain
-  l916a_notblocked:
-  ifdef LOGGEN
-  push af
-  ld a,LOG_PATH_HILL_DOWN_OK
-  ld (pathLog),a
-  pop af
-  endif
+  jr z,drawflatterrain
   inc a
   ld (l885d),a
   ld a,l
@@ -5540,38 +5489,20 @@ l9181:
   add 7
   cp h
   ld a,h
-  jr nz,l9181_notblocked
-  ifdef LOGGEN
-  ld a,LOG_PATH_HILL_UP_BLOCKED
-  ld (pathLog),a
-  endif
-  jr drawflatterrain
-  l9181_notblocked:
-  ifdef LOGGEN
-  push af
-  ld a,LOG_PATH_HILL_UP_OK
-  ld (pathLog),a
-  pop af
-  endif
+  jr z,drawflatterrain
   dec a
   dec h
   ld (l885d),a
   ld a,l
   jr l914e
-
+  
 checkinsertenemylandtile:
   ld a,(l8861)
   and 1
   jr z,insertenemylandtile
   xor a
   ld (l8860),a
-  ifdef LOGGEN
-  ld a,LOG_PATH_TARGET_GATE_CLOSED
-  ld (pathLog),a
-  jp drawflatterrain
-  else
   jr drawflatterrain
-  endif
 
 
 ; ONLY UPDATE MISSILE LOCK IF WE ARE NOT CURRENTLY FIRING MISSILE
@@ -5679,12 +5610,6 @@ insertenemylandtile:
   rra
   rra
   ld (l884b),a
-  ifdef LOGGEN
-  push af
-  add LOG_PATH_TARGET_RADAR              ; a (0-3) -> pathId (5-8)
-  ld (pathLog),a
-  pop af
-  endif
   add l
   ld l,a
   ld h,0
@@ -5721,12 +5646,6 @@ endif
   jp l914e
 
 l91e3:
-  ifdef LOGGEN
-  push af
-  ld a,r
-  ld (rExitLog),a
-  pop af
-  endif
   ld a,(l8860)
   ld (l8861),a
   ld a,(leveldifficulty)
@@ -5800,29 +5719,10 @@ buildportstanley:
   ld de,countdownbuildtown           ; COUNTDOWN TIMER TO BUILD TOWN
   sbc hl,de
   jp nc,setcloudcolourtosea
-  ifdef LOGGEN
-  push af
-  ld a,r
-  ld (rEntryLog),a
-  pop af
-  endif
   ld a,r                             ; RANDOMISE BUILDING ON R REGISTER
-  ifdef LOGGEN
-  ld (rExitLog),a
-  endif
   rra
   rra
   and #07
-  ifdef LOGGEN
-  push af
-  ld (pathLog),a                     ; blockId (0-7)
-  ld a,LOG_TYPE_TOWN
-  ld (recordTypeLog),a
-  xor a
-  ld (contextLog),a
-  call log_write8
-  pop af
-  endif
   add a
   ld hl,townspritestable
   add l
@@ -6131,12 +6031,6 @@ cloudspriteblock2:
   defb &54,&56,&00,&ff
 
 launchflakattack:
-  ifdef LOGGEN
-  push af
-  ld a,r
-  ld (rEntryLog),a
-  pop af
-  endif
   ld a,(playerstatus) ; ARE WE STILL ALIVE?
   or a
   ret nz
@@ -6191,17 +6085,6 @@ launchflakattack:
   ret nz
   ld b,57                         ; FLAK SPRITE
   ld a,r
-  ifdef LOGGEN
-  push af
-  ld (rExitLog),a
-  ld a,LOG_TYPE_FLAK
-  ld (recordTypeLog),a
-  xor a
-  ld (pathLog),a
-  ld (contextLog),a
-  call log_write8
-  pop af
-  endif
   bit 0,a
   jr z,drawflaksprite
   inc b                           ; RANDOMLY CHOOSE SECOND FLAK SPRITE
@@ -6318,12 +6201,9 @@ launchheatseekingmissile:
 
   ; MISSILE HIT PLAYER 1 HARRIER
   call checkplayerplanemovement
-  ifdef LOGGEN
-  jr killenemymissile
-  endif
   ld a,1:deathstatus1
   ld (playerstatus),a
-
+  
   killenemymissile:
   call doexplosionnoise
   disableenemymissile:
@@ -7643,15 +7523,8 @@ ret
 ; COLLISION DETECTION
 
 checkplayeragainstobjectmap:
-  ifdef LOGGEN
-  ; Diagnostic-cartridge cheat (Sprint 14.101): never die, so a run can
-  ; reach and stay in the land section long enough to fill the R-path
-  ; calibration log. Not part of the real game - LOGGEN-only.
-  xor a
-  ret
-  endif
   or a    ; CP 0  - CLOUD OBJECT
-  ret z
+  ret z   
   dec a   ; CP 1  - SKY OBJECT
   ret z
   cp 19   ; CP 20 - WINGMAN
@@ -8252,14 +8125,6 @@ ownmissilehitwingman:
 ; 10 = AIRCRAFT MISSILE
 
 planehitbyobject:
-  ifdef LOGGEN
-  ; Diagnostic-cartridge cheat (Sprint 14.101): never die - see
-  ; checkplayeragainstobjectmap. Covers the other call sites into this
-  ; shared function (bomb/missile-vs-object checks) that don't go through
-  ; checkplayeragainstobjectmap's own early-out.
-  xor a
-  ret
-  endif
   ld a,1:deathstatus4               ; KILLED
   ld (playerstatus),a
   call doexplosionnoise
@@ -9745,134 +9610,7 @@ ret
 defb "CHRIS4"
 
 endofdata:
-
-; ============================================================================
-; LOGGEN: R-path M1 calibration logger (Sprint 14.101/14.102)
-; Build with:  rasm.exe -DLOGGEN=1 -amper HarrierAttackSourceNew2_alt_CRTC_CART16.asm HARRIER1
-; Buffer at &F000, 8 bytes per record, 250 records max (2000 bytes).
-; Dump from WinAPE debugger:  SAVE "log.bin",&F000,2000
-;
-; Purpose: NOT a captured landscape (that approach was retired - see
-; AMIGA_PORT_PLAN.md). This measures, at real CPC decision points across
-; land, sea, flak and town generation, what R was immediately before/after
-; each specific decision's own code - so the Amiga port's CPC_R_COST_*
-; constants can be checked against real Z80 M1-fetch counts instead of
-; guessed values. rExit-rEntry (mod 128) for a given path/recordType IS the
-; real M1 fetch count for that decision (R only advances on M1/opcode-fetch
-; cycles) - no manual instruction counting needed to get this number, though
-; the assembly should still be read to explain *why* it comes out that way.
-;
-; Sprint 14.101 covered land only (recordType 0). Sprint 14.102 added sea,
-; flak and town (recordType 1-3) using the same shared 8-byte record and
-; write routine, so all four interleave chronologically in one buffer as a
-; single play session naturally passes through each stage.
-;
-; Record format (8 bytes, one record per logged decision):
-;   Byte 0: recordType - 0=land (l9134 dispatch), 1=sea (drawseatiles),
-;           2=flak (launchflakattack, only when flak is actually drawn),
-;           3=town (buildportstanley building selection)
-;   Byte 1: pathId - meaning depends on recordType:
-;           land: LOG_PATH_* below. sea: always 0 (single path, no branch).
-;           flak: always 0 (only the "flak drawn" case is logged).
-;           town: the selected blockId (0-7, `(R>>2)&7`).
-;   Byte 2: rEntry - R at the start of this decision's own code
-;   Byte 3: rExit - R at the point (or right after) this decision reads R
-;           for whatever it's choosing
-;   Byte 4: context - land: l885d height. sea/flak/town: 0 (unused).
-;   Byte 5-6: currtime (16-bit LE, genrandomhl state) - cross-reference only
-;   Byte   7: reserved (0)
-; ============================================================================
-ifdef LOGGEN
-
-LOG_PATH_MODE0_FLAT         equ 0
-LOG_PATH_HILL_DOWN_OK       equ 1
-LOG_PATH_HILL_DOWN_BLOCKED  equ 2
-LOG_PATH_HILL_UP_OK         equ 3
-LOG_PATH_HILL_UP_BLOCKED    equ 4
-LOG_PATH_TARGET_RADAR       equ 5
-LOG_PATH_TARGET_LAUNCHER    equ 6
-LOG_PATH_TARGET_GUN         equ 7
-LOG_PATH_TARGET_TANK        equ 8
-LOG_PATH_TARGET_GATE_CLOSED equ 9
-
-LOG_TYPE_LAND equ 0
-LOG_TYPE_SEA  equ 1
-LOG_TYPE_FLAK equ 2
-LOG_TYPE_TOWN equ 3
-
-log_buffer     equ &F000
-log_ptr        defw log_buffer
-log_count      defb 0
-log_max        equ 250
-
-recordTypeLog  defb 0
-pathLog        defb 0FFh
-rEntryLog      defb 0FFh
-rExitLog       defb 0FFh
-contextLog     defb 0
-
-; Shared record writer - call after setting recordTypeLog/pathLog/rEntryLog/
-; rExitLog/contextLog for whichever subsystem just made a decision. Safe to
-; call from anywhere: preserves af/bc/hl, no-ops once log_max is reached.
-log_write8:
-  push af
-  push bc
-  push hl
-  ld a,(log_count)
-  cp log_max
-  jr nc,log_write8_done
-  ld hl,(log_ptr)
-  ld a,(recordTypeLog)
-  ld (hl),a
-  inc hl
-  ld a,(pathLog)
-  ld (hl),a
-  inc hl
-  ld a,(rEntryLog)
-  ld (hl),a
-  inc hl
-  ld a,(rExitLog)
-  ld (hl),a
-  inc hl
-  ld a,(contextLog)
-  ld (hl),a
-  inc hl
-  ld bc,(currtime)
-  ld (hl),c
-  inc hl
-  ld (hl),b
-  inc hl
-  xor a
-  ld (hl),a
-  inc hl
-  ld (log_ptr),hl
-  ld hl,log_count
-  inc (hl)
-  log_write8_done:
-  pop hl
-  pop bc
-  pop af
-ret
-
-; Called after the column is fully generated. Writes a land record only if
-; l9134's dispatch actually ran this tick (gamelevelprogress==3 exactly -
-; NOT 4-7, which are insertenemylandtile's own multi-tick continuation and
-; would otherwise duplicate this tick's already-recorded pathLog/rEntryLog/
-; rExitLog against a *different*, unrelated currtime/height).
-log_column_end:
-  ld a,(gamelevelprogress)
-  cp 3
-  ret nz
-  xor a
-  ld (recordTypeLog),a
-  ld a,(l885d)
-  ld (contextLog),a
-  jp log_write8
-
-endif
-; ============================================================================
-
-;SAVE 'myfile.bin',start,size,DSK,'fichierdsk.dsk'
+;SAVE ’myfile.bin’,start,size,DSK,’fichierdsk.dsk’
 
 
 

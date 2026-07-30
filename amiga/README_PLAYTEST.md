@@ -31,7 +31,8 @@ Game:
 - Right/Left or D/A / joystick: increase/decrease throttle; minimum speed is never zero
 - Fire / Space / Ctrl: fire rocket
 - B / Alt: drop bomb
-- E: eject / lose one life and respawn
+- E: ejector seat and parachute sequence; lose one life after descent
+- P: pause; Space (or P) continues while the HUD message blinks
 - Esc: return to menu
 
 Game over:

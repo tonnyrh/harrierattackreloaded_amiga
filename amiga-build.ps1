@@ -29,6 +29,7 @@ $CpcAssetExtractorScript = Join-Path $Root "extract-cpc-assets.ps1"
 $CpcAssetPromoterScript = Join-Path $Root "promote-cpc-assets.ps1"
 $CpcAssetExtractorPy = Join-Path $Root "tools\extract_cpc_assets.py"
 $CpcAssetPromoterPy = Join-Path $Root "tools\promote_cpc_assets.py"
+$AmigaSfxPipeline = Join-Path $Root "prepare-amiga-sfx.ps1"
 $CpcLoadingScreen = Join-Path $Root "compile\HARRSCR.bin"
 $PaletteSource = Join-Path $Root "boot2.asm"
 $FontSource = Join-Path $Root "AMSTRADFONT3.asm"
@@ -172,6 +173,13 @@ if (Test-Path -LiteralPath $CpcAssetPromoterScript) {
         if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
         }
+    }
+}
+
+if (Test-Path -LiteralPath $AmigaSfxPipeline) {
+    & $AmigaSfxPipeline
+    if (-not $?) {
+        throw "Amiga-lydpipelinen feilet: $AmigaSfxPipeline"
     }
 }
 

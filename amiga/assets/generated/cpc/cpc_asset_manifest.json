@@ -3829,7 +3829,7 @@
         "asset_id": "enemy_ship_scroll_columns",
         "kind": "composite.column_major",
         "source_label": "enemyshipsprite",
-        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5424",
+        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5395",
         "raw_bytes_hex": [
           "00",
           "00",
@@ -3890,7 +3890,7 @@
         "asset_id": "end_frigate_scroll_columns",
         "kind": "composite.column_major",
         "source_label": "endfrigatesprite",
-        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:6012",
+        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5912",
         "raw_bytes_hex": [
           "00",
           "00",
@@ -4032,7 +4032,7 @@
         "asset_id": "enemy_land_targets",
         "kind": "records.2x2_terminated",
         "source_label": "enemylandsprites",
-        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5757",
+        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5676",
         "raw_bytes_hex": [
           "00",
           "2a",
@@ -4136,7 +4136,7 @@
         "asset_id": "solid_land_fill",
         "kind": "raw.drawspriteblock3_fill",
         "source_label": "solidlandspriteblock",
-        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5764",
+        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5683",
         "raw_bytes_hex": [
           "01",
           "01",
@@ -4174,7 +4174,7 @@
         "asset_id": "write_frigate_tilemap_1",
         "kind": "objectmap.row",
         "source_label": "writefrigatetilemap1",
-        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:2920",
+        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:2914",
         "raw_bytes_hex": [
           "01",
           "01",
@@ -4229,7 +4229,7 @@
         "asset_id": "write_frigate_tilemap_2",
         "kind": "objectmap.row",
         "source_label": "writefrigatetilemap2",
-        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:2921",
+        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:2915",
         "raw_bytes_hex": [
           "01",
           "01",
@@ -4284,7 +4284,7 @@
         "asset_id": "write_frigate_tilemap_3",
         "kind": "objectmap.row",
         "source_label": "writefrigatetilemap3",
-        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:2922",
+        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:2916",
         "raw_bytes_hex": [
           "04",
           "04",
@@ -4341,7 +4341,7 @@
         "asset_id": "pier_pen_data",
         "kind": "raw.ascii_tile_stream",
         "source_label": "pendata",
-        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5888",
+        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5788",
         "raw_bytes_hex": [
           "4a",
           "48",
@@ -4383,7 +4383,7 @@
         "asset_id": "town_block_0",
         "kind": "raw.drawspriteblock3_column_stream",
         "source_label": "blk0",
-        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5878",
+        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5778",
         "raw_bytes_hex": [
           "00",
           "00",
@@ -4411,7 +4411,7 @@
         "asset_id": "town_block_1",
         "kind": "raw.drawspriteblock3_column_stream",
         "source_label": "blk1",
-        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5879",
+        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5779",
         "raw_bytes_hex": [
           "00",
           "00",
@@ -4449,7 +4449,7 @@
         "asset_id": "town_block_2",
         "kind": "raw.drawspriteblock3_column_stream",
         "source_label": "blk2",
-        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5880",
+        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5780",
         "raw_bytes_hex": [
           "00",
           "3b",
@@ -4487,7 +4487,7 @@
         "asset_id": "town_block_3",
         "kind": "raw.drawspriteblock3_column_stream",
         "source_label": "blk3",
-        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5881",
+        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5781",
         "raw_bytes_hex": [
           "00",
           "00",
@@ -4555,7 +4555,7 @@
         "asset_id": "town_block_4",
         "kind": "raw.drawspriteblock3_column_stream",
         "source_label": "blk4",
-        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5882",
+        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5782",
         "raw_bytes_hex": [
           "00",
           "3e",
@@ -4623,7 +4623,7 @@
         "asset_id": "town_block_5",
         "kind": "raw.drawspriteblock3_column_stream",
         "source_label": "blk5",
-        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5883",
+        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5783",
         "raw_bytes_hex": [
           "00",
           "00",
@@ -4661,7 +4661,7 @@
         "asset_id": "town_block_6",
         "kind": "raw.drawspriteblock3_column_stream",
         "source_label": "blk6",
-        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5884",
+        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5784",
         "raw_bytes_hex": [
           "40",
           "40",
@@ -4699,7 +4699,7 @@
         "asset_id": "town_block_7",
         "kind": "raw.drawspriteblock3_column_stream",
         "source_label": "blk7",
-        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5885",
+        "source": "HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5785",
         "raw_bytes_hex": [
           "00",
           "2b",
