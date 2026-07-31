@@ -184,4 +184,20 @@ if (Test-Path -LiteralPath $AmigaSfxPipeline) {
 }
 
 & $make -C $AmigaDir -j4 "program=$Program"
-exit $LASTEXITCODE
+$makeExitCode = $LASTEXITCODE
+
+if ($makeExitCode -eq 0) {
+    $Exe2Adf = Join-Path $bin "exe2adf.exe"
+    $BuiltExe = Join-Path $AmigaDir "$Program.exe"
+    $AdfPath = Join-Path $AmigaDir "$Program.adf"
+    if ((Test-Path -LiteralPath $Exe2Adf) -and (Test-Path -LiteralPath $BuiltExe)) {
+        & $Exe2Adf -i $BuiltExe -l "Harrier Attack" -a $AdfPath
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "exe2adf feilet (kode $LASTEXITCODE) - ADF ble ikke generert."
+        }
+    } else {
+        Write-Warning "Fant ikke exe2adf.exe eller $BuiltExe - hopper over ADF-generering."
+    }
+}
+
+exit $makeExitCode

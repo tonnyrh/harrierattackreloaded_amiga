@@ -275,9 +275,12 @@
 #define MAVERICK_DIRECTION_UP_LEFT 8
 #define BOMB_SPEED_X_PIXELS 1
 #define BOMB_SPEED_Y_PIXELS 1
-/* Four vertical pixels per three frames: 33% faster than the previous
- * one-pixel-per-frame fall, while retaining pixel-smooth movement. */
-#define BOMB_EXTRA_FALL_INTERVAL 3
+/* Three vertical pixels per two frames (1.5px/frame): request to fall
+ * "about 10% faster" than the previous four-pixels-per-three-frames pace
+ * (1.333px/frame) - 2 is the closest interval that keeps this a plain
+ * extra-pixel-every-Nth-frame integer step rather than a fractional-pixel
+ * accumulator, landing at +12.5% rather than exactly +10%. */
+#define BOMB_EXTRA_FALL_INTERVAL 2
 /* CPC dolaunchbomb performs one immediate horizontal move, then consumes
  * bombmomentum=3 over three more horizontal updates. Only after that does
  * playerbombstatus change to the descending state. */
@@ -1219,10 +1222,9 @@ enum HarObjectRowMode {
 };
 
 /* Sprint 14.96: CPC's wingmanpowerupstatus values (0=none, 1=wingman,
- * 2=health, 3=rockets, 4=bombs). Wingman type is reserved in the enum so
- * the data structure is forward-compatible, but trySpawnPowerup() never
- * emits it until a real wingman subsystem exists -POWERUP_WINGMAN pickups
- * would currently have no effect, so we just don't spawn them. */
+ * 2=health, 3=rockets, 4=bombs). Sprint 15.26: trySpawnPowerup() now forces
+ * this type whenever game->wingman.destroyed is set, and activatePowerup()
+ * revives the wingman on pickup instead of falling back to health. */
 enum PowerupType {
 	POWERUP_NONE = 0,
 	POWERUP_WINGMAN = 1,
@@ -8756,6 +8758,7 @@ static void destroyWingman(GameState* game) {
 	WORD impactY = wingman->screenY;
 	wingman->active = 0;
 	wingman->destroyed = 1;
+	wingman->mode = WINGMAN_DESTROYED;
 	wingman->rocket.active = 0;
 	wingman->bomb.active = 0;
 	wingman->returningToFormation = 0;
@@ -9632,9 +9635,16 @@ static void trySpawnPowerup(GameState* game) {
 		return;
 
 	/* CPC's wingman-resurrection branch: if wingman was destroyed (status
-	 * 254), every qualifying spawn becomes a wingman powerup. Wingman
-	 * isn't implemented on the Amiga port yet - skip this branch entirely
-	 * (the data type is reserved in the enum for forward compatibility). */
+	 * 254), every qualifying spawn becomes a wingman powerup instead of
+	 * consulting the normal health/rockets/bombs rotation below - it does
+	 * not consume a spawnId slot, so the rotation resumes exactly where it
+	 * left off once the wingman is back. */
+	if (game->wingman.destroyed) {
+		LONG spawnWorldColumn = checkColumn;
+		UBYTE startRow = (UBYTE)(cpcRandomStateForWorldColumn(spawnWorldColumn) & POWERUP_SPAWN_MAX_ROW);
+		spawnPowerup(game, POWERUP_WINGMAN, startRow);
+		return;
+	}
 
 	/* CPC reads R again after roughly thirteen intervening opcode fetches.
 	 * R's low seven bits advance linearly, so model that second read instead
@@ -9686,11 +9696,31 @@ static void activatePowerup(GameState* game, UBYTE type) {
 			}
 			break;
 		case POWERUP_WINGMAN:
-			/* Deferred - no wingman subsystem yet. Treat as health so the
-			 * pickup isn't wasted (matches the spec's "or just give full
-			 * health" fallback). */
-			game->flakDamageCount = 0;
-			game->armour = 100;
+			if (game->wingman.destroyed) {
+				/* Revive at the pickup point and reuse WINGMAN_TAKEOFF's
+				 * existing smooth converge-into-formation logic (its own
+				 * "climb clear of the carrier" phase is a no-op here since
+				 * a mid-air pickup already starts above TAKEOFF_CLEAR_Y). */
+				WingmanState* wingman = &game->wingman;
+				WORD pickupScreenX = (WORD)(game->powerup.worldX - (LONG)game->scrollX);
+				wingman->active = 1;
+				wingman->destroyed = 0;
+				wingman->mode = WINGMAN_TAKEOFF;
+				wingman->interceptScreenX = pickupScreenX;
+				wingman->screenY = game->powerup.y;
+				wingman->row = (WORD)(game->powerup.y / GAME_TILE_HEIGHT);
+				wingman->moveTimer = 0;
+				wingman->returningToFormation = 0;
+				wingman->rocket.active = 0;
+				wingman->bomb.active = 0;
+			} else {
+				/* CPC's own "or just give full health" fallback for the
+				 * (normally unreachable, since trySpawnPowerup() only ever
+				 * emits this type while a wingman is actually destroyed)
+				 * case of collecting this type with nothing to revive. */
+				game->flakDamageCount = 0;
+				game->armour = 100;
+			}
 			break;
 		default:
 			collected = 0;
@@ -9832,6 +9862,28 @@ static UBYTE playerObjectMapCollision(const GameState* game, LONG* hitWorldColum
 
 static void maybeStartWingmanIntercept(GameState* game); /* Sprint 15.5, defined below */
 
+/* Sprint 15.27: the fixed 5-lane rotation below has no idea where the
+ * procedurally generated terrain actually is, so a tall hill/town facade
+ * at the exact spawn column could put a lane's tile row underground - the
+ * plane would spawn embedded in solid terrain. Reuse the wingman's own
+ * sky/cloud/flak passability check (it's generic terrain logic despite the
+ * name) across the enemy sprite's full 2-tile width, and fall back through
+ * the other lanes in rotation order before giving up and using the
+ * originally requested one anyway - same "better an occasional awkward
+ * spawn than none at all" philosophy as wingmanSafeTargetRow(). */
+static WORD enemyPlaneSafeSpawnY(LONG spawnWorldColumn, UBYTE preferredLane) {
+	static const WORD lanes[] = { 40, 56, 72, 88, 104 };
+	const UBYTE laneCount = (UBYTE)(sizeof(lanes) / sizeof(lanes[0]));
+	for (UBYTE offset = 0; offset < laneCount; offset++) {
+		UBYTE lane = (UBYTE)((preferredLane + offset) % laneCount);
+		WORD tileRow = (WORD)(lanes[lane] / GAME_TILE_HEIGHT);
+		if (wingmanCellIsPassable(spawnWorldColumn, tileRow) &&
+			wingmanCellIsPassable(spawnWorldColumn + 1, tileRow))
+			return lanes[lane];
+	}
+	return lanes[preferredLane];
+}
+
 static void spawnEnemyPlane(GameState* game) {
 	static const WORD lanes[] = { 40, 56, 72, 88, 104 };
 	UBYTE lane = game->enemySpawnIndex % (sizeof(lanes) / sizeof(lanes[0]));
@@ -9842,7 +9894,7 @@ static void spawnEnemyPlane(GameState* game) {
 	game->enemyPlane.active = 1;
 	game->enemyPlane.timer = 0;
 	game->enemyPlane.x = SCREEN_WIDTH - ENEMY_SPRITE_WIDTH - 4;
-	game->enemyPlane.y = lanes[lane];
+	game->enemyPlane.y = enemyPlaneSafeSpawnY(spawnWorldColumn, lane);
 	game->enemyPlane.dx = -ENEMY_SPEED_PIXELS;
 	game->enemyPlane.dy = 0;
 	/* CPC chooses once when the plane approaches and keeps that identity
@@ -11645,6 +11697,11 @@ int main(void) {
 						UBYTE nextSkill = game.skillLevel < 5
 							? (UBYTE)(game.skillLevel + 1) : 5;
 						UBYTE nextWingmanControl = game.wingmanControl;
+						/* A wingman lost earlier in the run must stay lost
+						 * into the next mission too - only a Wingman powerup
+						 * pickup should bring it back, not a free respawn
+						 * every time the carrier resets for the next sortie. */
+						UBYTE nextWingmanDestroyed = game.wingman.destroyed;
 
 						skillLevel = nextSkill;
 						startGameSession(&game, copper, worldBuffers,
@@ -11660,6 +11717,9 @@ int main(void) {
 						game.bonusScore = nextBonusScore;
 						game.score = nextBonusScore;
 						game.hitsCount = nextHitsCount;
+						game.wingman.destroyed = nextWingmanDestroyed;
+						if (nextWingmanDestroyed)
+							game.wingman.mode = WINGMAN_DESTROYED;
 						game.takeoffState = TAKEOFF_STATE_READY;
 						game.scrollX = 0;
 						setTakeoffDeckPosition(&game);

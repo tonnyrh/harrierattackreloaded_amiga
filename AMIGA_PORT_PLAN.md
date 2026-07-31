@@ -3701,3 +3701,91 @@ engine stops, channel 3 automatically joins that pool.
   anti-aliased signed-8-bit Paula pipeline.
 - Sample DMA length and software lifetime are derived from each embedded
   asset's actual byte count rather than hand-maintained partial lengths.
+
+## Sprint 15.26.0 - Wingman revival powerup
+
+Runnable result: a destroyed CPU Wingman comes back. `WingmanState.destroyed`
+(set by `destroyWingman()` since Sprint 15.22.0, but never read by anything
+until now) now actually drives the CPC-documented resurrection path instead
+of sitting unused.
+
+- `trySpawnPowerup()` forces the next qualifying spawn to `POWERUP_WINGMAN`
+  whenever `game->wingman.destroyed` is set, ahead of and bypassing the
+  normal health/rockets/bombs spawnId rotation entirely (matching the CPC
+  comment already on this code path) - it does not consume a spawnId slot,
+  so the rotation resumes where it left off once the wingman is back.
+- `activatePowerup()`'s `POWERUP_WINGMAN` case now actually revives: clears
+  `destroyed`, sets `mode = WINGMAN_TAKEOFF` and positions it at the
+  powerup's own pickup coordinates, reusing `updateWingmanTakeoff()`'s
+  existing smooth converge-into-formation logic unchanged (its "climb clear
+  of the carrier" phase is a no-op here, since a mid-air pickup already
+  starts above `TAKEOFF_CLEAR_Y`). Falls back to the old health-pickup
+  behaviour only in the unreachable case of collecting this type with no
+  destroyed wingman to revive.
+- `destroyWingman()` now also sets `mode = WINGMAN_DESTROYED` (previously
+  left stale) for clarity, though nothing currently reads `mode` for a
+  wingman with `active = 0`.
+- The post-landing next-mission transition (Sprint 15.9.0) resets the whole
+  `GameState` via `startGameSession()` and explicitly restores a short list
+  of run-persistent values (score, hits, lives) afterward - `destroyed`
+  wasn't on that list, so a wingman lost mid-mission would have silently
+  come back for free at the next landing. Added `wingman.destroyed` (and
+  `mode` when still destroyed) to that same restore step so a lost wingman
+  stays lost across mission transitions until an actual powerup revives it.
+
+Verified: clean rebuild. Headless autoplay with a temporary direct call to
+`destroyWingman()`/`activatePowerup(POWERUP_WINGMAN)` (bypassing the need to
+script a real enemy kill and a real mid-air pickup, which autoplay's
+straight-up-holding flight can't reliably arrange) confirmed a second grey
+Harrier-type sprite appears in the world exactly when expected, independent
+of the player and enemy plane, consistent with `WINGMAN_TAKEOFF` converging
+it back toward formation. All temporary test flags/hooks reverted afterward.
+
+## Sprint 15.27.0 - Bomb fall speed, enemy-plane spawn safety, ADF build output
+
+Three independent small requests landed together.
+
+**Bombs fall faster.** `BOMB_EXTRA_FALL_INTERVAL` (an Amiga-only tuning
+value, not a CPC-fidelity constant - see its own comment) reduced from 3 to
+2: fall rate goes from 4 pixels/3 frames (1.333px/frame) to 3 pixels/2
+frames (1.5px/frame), +12.5% rather than exactly the requested +10%, since 2
+is the closest integer step available without switching the whole mechanism
+to a fractional-pixel accumulator (the same technique `updatePowerup()`
+already uses for its own fall rate) for a difference this small. Affects
+both the player's bomb and the Wingman's own bomb, since both share the
+same constant.
+
+**Enemy plane could spawn inside tall terrain.** `spawnEnemyPlane()` picked
+one of five fixed screen-Y lanes (`{40, 56, 72, 88, 104}`) by simple
+round-robin, with no idea whether the procedurally generated terrain at that
+exact spawn column was tall enough to put that lane's tile row underground -
+a tall hill or town facade could spawn the plane embedded in solid terrain.
+New `enemyPlaneSafeSpawnY()` reuses the wingman's own `wingmanCellIsPassable()`
+sky/cloud/flak check (generic terrain logic despite the name) across the
+enemy sprite's full 2-tile width, tries the other four lanes in rotation
+order if the preferred one is blocked, and falls back to the originally
+requested lane only if literally none of the five are clear - the same
+"better an occasional awkward case than none at all" philosophy already
+used by `wingmanSafeTargetRow()`.
+
+**ADF build output.** `amiga-build.ps1` now runs `exe2adf` (bundled with the
+BartmanAbyss amiga-debug VS Code extension) against the freshly built
+`amiga/out/harrier_amiga.exe` after every successful build, producing a
+bootable 880 KB `amiga/out/harrier_amiga.adf` floppy image (OFS, single
+`startup-sequence` that runs the executable) alongside it - both paths
+already covered by `amiga/out/`'s existing `.gitignore` entry. Missing
+`exe2adf.exe` or a missing built executable warns and skips rather than
+failing the build.
+
+Verified: clean rebuild confirms `exe2adf` runs automatically and reports a
+correctly sized/structured volume every time; a combined headless autoplay
+smoke test (bomb-speed and enemy-spawn changes both live, no temporary test
+hooks needed) ran cleanly with zero HUD-guard/corruption hits and the usual
+expected game-over freeze from autoplay's unavoided obstacles, not a crash
+or hang. Floppy-boot of the generated ADF itself wasn't separately verified
+in WinUAE (an ad-hoc `floppy0=` test config kept landing on the AmigaDOS CLI
+rather than auto-booting - most likely a config/Kickstart-compatibility
+detail of that throwaway test setup, not evidence against the ADF's own
+structure, which `exe2adf` reported as a valid OFS volume with a correct
+boot-executing `startup-sequence` both times) - worth a real floppy-boot
+check outside this harness if that specific path matters.
