@@ -864,6 +864,15 @@ typedef struct GameState {
 	UBYTE enemyShipMissileTriggerIndex;
 	UBYTE enemyMissileFromShip;
 	UBYTE enemyMissileTarget;   /* 1 = player, 2 = Wingman; CPC missiletargetwingman */
+	/* CPC enemyplanestatus: once the plane reaches firing range it commits
+	 * to firing at most once (asm:6301-6303, "IF WE HAVE LAUNCHED MISSILE
+	 * ALREADY, SKIP THIS" gates the actual missile spawn, but the plane's
+	 * OWN status still advances to "FIRED MISSILE" the instant range closes,
+	 * regardless of whether a missile happened to be free to launch) and
+	 * immediately climbs straight up and away instead of continuing to
+	 * chase the target's altitude (enemyplaneretreatafterfire, asm:6610-
+	 * 6632) until it exits the top of the screen. */
+	UBYTE enemyPlaneRetreating;
 	UBYTE crashTimer;
 	UBYTE ejectState;           /* 0=inactive, 1=ejector seat, 2=parachute */
 	UBYTE ejectTimer;
@@ -4368,6 +4377,7 @@ static void initGameState(GameState* game) {
 	game->enemyShipMissileTriggerIndex = 0;
 	game->enemyMissileFromShip = 0;
 	game->enemyMissileTarget = ENEMY_TARGET_NONE;
+	game->enemyPlaneRetreating = 0;
 	game->crashTimer = 0;
 	game->ejectState = 0;
 	game->ejectTimer = 0;
@@ -10183,6 +10193,7 @@ static void spawnEnemyPlane(GameState* game) {
 	game->enemyPlane.y = enemyPlaneSafeSpawnY(spawnWorldColumn, lane);
 	game->enemyPlane.dx = -ENEMY_SPEED_PIXELS;
 	game->enemyPlane.dy = 0;
+	game->enemyPlaneRetreating = 0;
 	/* CPC chooses once when the plane approaches and keeps that identity
 	 * until its missile is gone. Only an airborne Wingman is eligible. */
 	game->enemyMissileTarget = ENEMY_TARGET_PLAYER;
@@ -10207,17 +10218,25 @@ static UBYTE updateEnemyPlane(GameState* game, UBYTE scrollPixels) {
 		return 0;
 	}
 
-	/* Real CPC enemy plane actively converges its altitude toward the target's
-	 * every tick (enemyplaneexitscreen, HarrierAttackSourceNew2...asm:6575-6608),
-	 * stepping 1 row/frame - it never just flies level. */
-	WORD enemyTargetY = (game->enemyMissileTarget == ENEMY_TARGET_WINGMAN &&
-		game->wingman.active) ? game->wingman.screenY : game->playerY;
-	if (game->enemyPlane.y < enemyTargetY)
-		game->enemyPlane.dy = 1;
-	else if (game->enemyPlane.y > enemyTargetY)
+	if (game->enemyPlaneRetreating) {
+		/* CPC enemyplaneretreatafterfire (asm:6610-6632): once it has
+		 * committed to firing, the plane stops tracking anyone's altitude
+		 * and just climbs straight up and away every tick until it exits
+		 * the top of the screen - it never lingers to fire again. */
 		game->enemyPlane.dy = -1;
-	else
-		game->enemyPlane.dy = 0;
+	} else {
+		/* Real CPC enemy plane actively converges its altitude toward the target's
+		 * every tick (enemyplaneexitscreen, HarrierAttackSourceNew2...asm:6575-6608),
+		 * stepping 1 row/frame - it never just flies level. */
+		WORD enemyTargetY = (game->enemyMissileTarget == ENEMY_TARGET_WINGMAN &&
+			game->wingman.active) ? game->wingman.screenY : game->playerY;
+		if (game->enemyPlane.y < enemyTargetY)
+			game->enemyPlane.dy = 1;
+		else if (game->enemyPlane.y > enemyTargetY)
+			game->enemyPlane.dy = -1;
+		else
+			game->enemyPlane.dy = 0;
+	}
 
 	/* Real CPC blocks the altitude step against ANY obstruction, not just
 	 * flak (checkflakobstructionenemyplane/checksecondaryobstruction,
@@ -10246,10 +10265,21 @@ static UBYTE updateEnemyPlane(GameState* game, UBYTE scrollPixels) {
 
 	game->enemyPlane.x += (WORD)(game->enemyPlane.dx - scrollPixels);
 	game->enemyPlane.y += game->enemyPlane.dy;
-	if (game->enemyPlane.y < 0)
+	if (game->enemyPlane.y <= 0) {
+		if (game->enemyPlaneRetreating) {
+			/* CPC markenemyplaneoffscreen: climbed off the top after firing -
+			 * gone cleanly (no death, no score), same as scrolling off the
+			 * left edge below. Also resets the shared target-selection flag,
+			 * matching the ASM's own "RESET TARGETTING MECHANISM". */
+			game->enemyPlane.active = 0;
+			game->enemyPlaneRetreating = 0;
+			game->enemyMissileTarget = ENEMY_TARGET_NONE;
+			return 1;
+		}
 		game->enemyPlane.y = 0;
-	else if (game->enemyPlane.y > HUD_TOP - ENEMY_SPRITE_HEIGHT)
+	} else if (game->enemyPlane.y > HUD_TOP - ENEMY_SPRITE_HEIGHT) {
 		game->enemyPlane.y = HUD_TOP - ENEMY_SPRITE_HEIGHT;
+	}
 	game->enemyPlane.timer++;
 	if (game->enemyPlane.x < -ENEMY_SPRITE_WIDTH) {
 		game->enemyPlane.active = 0;
@@ -10727,8 +10757,16 @@ static UBYTE updateEnemyMissile(GameState* game, UBYTE scrollPixels) {
 	/* Real CPC fires based on horizontal proximity to the target
 	 * (|enemy.x - target.x| < 10, :6556-6561), not a screen-position/timer
 	 * threshold. The fallback frame count stays as a safety net so a plane
-	 * that never gets in range still fires before leaving the screen. */
-	if (game->enemyPlane.active && !game->enemyMissile.active) {
+	 * that never gets in range still fires before leaving the screen.
+	 *
+	 * CPC commits to enemyplanestatus=2 ("FIRED MISSILE") the instant this
+	 * range/fallback condition is met, independent of whether another
+	 * missile is currently in flight (asm:6560-6567: the status write
+	 * happens first; only the actual missile spawn is separately gated on
+	 * enemymissilestatus). Mirror that: reaching this condition always
+	 * commits the plane to retreat, whether or not the shared missile slot
+	 * happened to be free to actually launch this time. */
+	if (game->enemyPlane.active && !game->enemyPlaneRetreating) {
 		WORD targetX = game->playerX;
 		if (game->enemyMissileTarget == ENEMY_TARGET_WINGMAN &&
 			game->wingman.active)
@@ -10738,8 +10776,11 @@ static UBYTE updateEnemyMissile(GameState* game, UBYTE scrollPixels) {
 			planeToTargetX = (WORD)-planeToTargetX;
 		if (planeToTargetX < ENEMY_MISSILE_FIRE_RANGE_PIXELS ||
 				game->enemyPlane.timer >= enemyMissileFireFallbackFrameForSkill(game->skillLevel)) {
-			launchEnemyMissile(game);
-			changed = 1;
+			game->enemyPlaneRetreating = 1;
+			if (!game->enemyMissile.active) {
+				launchEnemyMissile(game);
+				changed = 1;
+			}
 		}
 	}
 

@@ -3949,3 +3949,61 @@ existing `RAWKEY_*` constants already use correctly. A real keypress test
 (actual hardware or a WinUAE config with a keyboard-emulated joystick on
 port 1) would close this out properly if it matters before relying on it
 further. All temporary debug flags reverted afterward.
+
+## Sprint 15.29 follow-up - Enemy plane fires at most once, then retreats
+
+User suspicion, confirmed by the ASM: real CPC enemy planes never fire more
+than one missile per approach, and climb straight up and away immediately
+once they've committed to firing - which is also why flak sitting directly
+above one can visibly leave it "stuck" for a moment.
+
+**Full state machine traced this time**, not just the altitude/obstruction
+piece from Sprint 15.29: `launchenemyplane` (asm:6290-6376) is the real
+per-frame entry point - if `enemyplanestatus` is already nonzero it jumps
+straight into `moveenemyplaneapproach`, which itself dispatches on the exact
+status value (documented in a comment at asm:1191: `0 = NOT ON SCREEN, 1 =
+ON APPROACH, 2 = FIRED MISSILE, 3 = PLANE HIT, 4 = PLANE DESTROYED`). Status
+only ever advances to 2 in one place (asm:6560-6567), the instant the plane
+closes to firing range - and critically, that write happens *before* the
+separate `enemymissilestatus` check that gates whether a missile object
+actually spawns ("IF WE HAVE LAUNCHED MISSILE ALREADY, SKIP THIS"). So the
+plane commits to "fired" the moment it's in range regardless of whether the
+one shared missile slot happened to be free. Once status is 2,
+`moveenemyplaneapproach`'s own dispatch (`dec a; jr nz,enemyplaneretreatafterfire`)
+never returns to the approach branch again for this spawn - it runs
+`enemyplaneretreatafterfire` (asm:6610-6632) instead, which climbs one row
+per frame in a straight line (reusing the exact same
+`checkflakobstructionenemyplane` check the approach phase uses, so flak or
+terrain directly above still blocks the climb for that frame) until it
+exits the top of the screen, at which point it's marked cleanly gone -
+`markenemyplaneoffscreen` (asm:6635-6644) - no death, no score, target-
+selection flag reset, same as scrolling off the left edge.
+
+This port's `updateEnemyPlane()`/`updateEnemyMissile()` had none of this -
+the plane just perpetually re-checked "in range and no missile currently
+active? fire" every single frame for as long as it stayed near the target,
+so it could fire many missiles in sequence before eventually scrolling off
+the left edge on its own.
+
+**Fix**: new `GameState.enemyPlaneRetreating` flag (reset on spawn and on a
+fresh session). The fire-range check in `updateEnemyMissile()` now sets it
+the instant the range/fallback condition is met - mirroring the ASM, this
+happens independently of whether the shared missile slot was free, so a
+plane that reaches range while another missile is already in flight still
+commits to retreat without ever getting a "real" shot off, exactly like
+CPC. Once set, `updateEnemyPlane()` stops converging toward the target's
+altitude entirely and forces a steady climb (still subject to the existing
+sky/cloud-only obstruction check from Sprint 15.29 proper, so flak/terrain
+above it still stalls the climb for that frame). Reaching the top of the
+screen while retreating now despawns the plane cleanly (previously the
+port only clamped Y to 0 and left it hovering at the ceiling forever - a
+latent bug of its own, since nothing before this ever tried to drive Y that
+low) instead of requiring the old scroll-off-the-left path.
+
+Verified: clean rebuild. Headless autoplay (temporarily boosted to 9 lives
+so the run lasted long enough to see multiple encounters, since the default
+1-life setting from Sprint 15.15 ends runs quickly under autoplay's
+unavoidant flying) plus two temporary counters distinguishing "climbed off
+the top after firing" from "scrolled off the left" confirmed the new path
+fired twice and the old path zero times over a 90-second run, with no
+crashes or hangs. All temporary counters and test flags reverted afterward.
