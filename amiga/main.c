@@ -191,7 +191,10 @@
 #define PLAYER_MOVE_SPEED_PIXELS 2
 #define PLAYER_SPEED_ANCHOR_X 96
 #define PLAYER_SPEED_ANCHOR_STEP_PIXELS 6
-#define PLAYER_START_LIVES 3
+/* Real CPC has exactly 1 life - keep that as the default, but the menu's
+ * Lives toggle (still 1/3) lets the player opt into the Amiga port's more
+ * forgiving 3-life mode instead. */
+#define PLAYER_START_LIVES 1
 #define PLAYER_RESPAWN_SAFE_FRAMES 90
 #define PLAYER_CRASH_FRAMES 64
 #define PLAYER_CRASH_PART_COUNT 3
