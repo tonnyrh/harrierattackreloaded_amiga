@@ -4007,3 +4007,265 @@ unavoidant flying) plus two temporary counters distinguishing "climbed off
 the top after firing" from "scrolled off the left" confirmed the new path
 fired twice and the old path zero times over a 90-second run, with no
 crashes or hangs. All temporary counters and test flags reverted afterward.
+
+## Sprint 15.28 follow-up 2 - Player 2 Wingman was invisible and revived as CPU
+
+User report: "When I select 2 player game, no plane occurs until I pick up
+a red power up. Then I get a CPU controlled wingman." Two independent bugs,
+both dating back to Sprint 15.28.0's original Player 2 implementation:
+
+**Bug 1 - parked Wingman never rendered on deck.** `startGameSession()` set
+`carrierParkedWingmanVisible = (wingmanControl == WINGMAN_CONTROL_CPU)` -
+Player 2 mode always evaluated this false, so the baked "Wingman parked on
+deck" carrier composite was never selected even though the Wingman was
+correctly waiting in `WINGMAN_ON_DECK` for an Up press
+(`updateWingmanPlayer2Control()`, asm:2611-2625 fidelity from Sprint
+15.28.0). The player had no visual cue a Wingman existed at all, so "no
+plane occurs" was actually "invisible plane, sitting there unlaunched."
+Fixed: `carrierParkedWingmanVisible` is now true for both
+`WINGMAN_CONTROL_CPU` and `WINGMAN_CONTROL_PLAYER2` at session start, false
+only for `WINGMAN_CONTROL_OFF`.
+
+**Bug 2 - the Wingman-revival powerup ignored wingmanControl.**
+`activatePowerup()`'s `POWERUP_WINGMAN` case unconditionally set
+`wingman->mode = WINGMAN_TAKEOFF` on revival - the CPU AI's own
+converge-into-formation state. A Player 2 game that lost its Wingman and
+then collected the revival powerup got a Wingman back, but it flew itself
+(CPU logic) instead of returning control to the second joystick, matching
+the user's "Then I get a CPU controlled wingman." Fixed: the revival branch
+now sets `wingman->mode` to `WINGMAN_PLAYER2_FLIGHT` when
+`game->wingmanControl == WINGMAN_CONTROL_PLAYER2`, `WINGMAN_TAKEOFF`
+otherwise - the pickup-point position/rocket/bomb reset logic already in
+that branch applies equally to both, since `WINGMAN_PLAYER2_FLIGHT` only
+needs a starting screen position, not a runway/formation approach.
+
+Verified: clean rebuild, no new warnings. Not re-verified end-to-end in
+WinUAE this round (Player 2 joystick input can't be driven by this
+project's headless harness - see Sprint 15.28 follow-up's documented
+`keybd_event` limitation) - both fixes are narrow, single-condition
+corrections reusing already-proven code paths (the CPU branch's own
+long-standing behavior, and `updateWingmanPlayer2Control()`'s existing
+deck-launch branch, which sets the identical
+`mode = WINGMAN_PLAYER2_FLIGHT` + position fields this fix now also reaches
+from the revival path).
+
+## Sprint 15.30.0 - High-score table row spacing
+
+User report: the high-score/"hall of fame" table's font looked "too big" on
+real Amiga hardware in general, but after asking for specifics, tests on two
+real machines gave different results - too small on a real Amiga 600, fine
+on a real Amiga 1200. Further detail: on the A600, "the bottom of the
+letters are overwritten with the text below... it's not corrupted" -
+i.e. not garbage/tearing, just adjacent rows visually touching.
+
+`drawMenuHighScore()` placed data rows exactly `FONT_HEIGHT` (8px) apart
+(`y = 58 + row * 8`) - the 8px-tall glyphs are drawn back-to-back with
+*zero* blank scanline between rows, unlike the 6px gap already used between
+the "NAME/LEVEL/HITS/SCORE" header and the first data row. WinUAE's exact
+pixel-perfect display, and apparently a real A1200, don't show any bleed at
+0px separation; a real A600's CRT/output path evidently does. Since text is
+drawn once into a static bitmap (not a per-frame or copper-timed effect),
+this isn't a timing bug like Sprint 14.91.4's HUD ghosting - it's a genuine
+zero-margin layout that only certain real displays render forgivingly.
+
+**Fix**: changed the row pitch from 8px to 9px (`y = 53 + row * 9`),
+inserting a 1px blank scanline between every row. The new constants were
+chosen to preserve the existing bounds exactly - row 0 still clears the
+y=44 header row by 1px (down from 6px), and the last of the 7 rows
+(`HIGH_SCORE_ENTRY_COUNT`) still clears `itemY[0]` (116, the "> START
+GAME" row) by 1px (down from 2px) - so every adjacent pair of text elements
+in this screen now has at least 1px of separation, using up all the spare
+vertical room that existed in the original layout.
+
+Verified: clean rebuild, no warnings. Screenshotted the menu screen in
+WinUAE and confirmed visually (zoomed crop) that every row of the table now
+has a clear blank line before the next, with no encroachment on the header
+above or the menu items below. Real-hardware A600 confirmation still
+pending - the actual root cause on that display (CRT/scandoubler scanline
+bleed vs. something else) was never fully identified, since it can't be
+reproduced or measured from this environment; this fix is the maximum safe
+separation obtainable within the existing screen layout without moving
+other menu elements, and directly addresses the described symptom.
+
+## Sprint 15.31.0 - Idle attract-mode "field guide" screen
+
+User request: an idle screen on the main menu that shows each enemy's name
+and "hitpoints" plus what each parachute powerup colour means, triggering
+after 30 seconds of no input and returning to the normal menu after another
+30 seconds - with music given priority (never delayed/interrupted by it).
+
+**Content, sourced directly from existing gameplay constants/rules so it
+can't drift out of sync with real behaviour**:
+- Enemy point values reuse `GROUND_TARGET_SCORE_VALUE` (100),
+  `ENEMY_SHIP_SCORE_VALUE` (500), `TOWN_BLOCK_SCORE_VALUE` (350) and
+  `ENEMY_SCORE_VALUE` (750) directly - the same constants
+  `updateGameCollisions()`/the rocket/bomb hit handlers already award.
+  "Hitpoints" reads as one hit for every destructible object - CPC has no
+  multi-hit health model anywhere (`damageEnemyShipAtColumnRow()`'s own
+  comment: "CPC's bombhitenemyship has no whole-ship health counter... every
+  successful hit just replaces the exact struck tile with smoke"), so this
+  is accurate rather than a simplification.
+- Flak and the gunship are called out separately, since neither fits the
+  "1 hit, X points" shape: flak absorbs the player's own rockets/bombs with
+  no effect (Sprint 14.95 Part 2, `HAR_OBJ_FLAK`'s hit handling) and instead
+  damages the player's armour on contact, scaled by
+  `flakDamageThresholdForSkill()` (~15-23 hits depending on skill); the
+  gunship (`HAR_OBJ_GUNSHIP`) is fixed level geometry with no weapon
+  interaction at all (`isWideLevelObject()`) - fatal to touch, never
+  destructible.
+- Parachute powerup colours reuse `buildPowerupBobTileIfNeeded()`'s own
+  `typeColor[]` table verbatim: RED = Wingman revival, YELLOW = full
+  armour/health, BLUE (closest available palette blue, same one
+  `CPC_FONT_BLUE_*` already uses) = rockets refilled, GREEN = bombs
+  refilled.
+
+**Implementation** (`amiga/main.c`): new `drawFieldGuideScreen()` renders a
+plain full-screen bitmap (`fillScreen` + `drawText`/`drawUnsignedPadded`/
+`fillRect`), the same "static info page" shape `drawDebugHub()` already
+uses, displayed via `buildDisplayCopper()` (no ticker band needed, matching
+the debug hub's own choice). New `MENU_IDLE_TIMEOUT_FRAMES` /
+`FIELD_GUIDE_DISPLAY_FRAMES` (30*50 = 1500 vblanks each, 50Hz PAL).
+
+State machine lives in the main loop, gated to only run at the plain menu
+(`!inGameScene && !gamePaused && !telemetryStatsPaused && debugHubPage ==
+DEBUG_HUB_CLOSED`) so it can never trigger over gameplay, a pause screen,
+the telemetry overlay or the debug hub:
+- Idle countdown resets on `input.any` (an existing `InputState` field
+  already covering every real input source `ReadInput()` reads - reused
+  rather than inventing a second, possibly-inconsistent idle definition)
+  and is pinned to 0 whenever `inGameScene` is true, so returning to the
+  menu after a game always starts a fresh 30s countdown instead of
+  resuming a stale one from before the game started.
+- Once shown, any input OR the 30s display timeout dismisses it back to
+  the normal `drawMenuScreen()` + `buildMenuCopper()` (restoring the
+  ticker band).
+- Both the entry and exit transitions `continue` the main loop for that
+  frame, the same pattern the existing Escape-cancel handler already uses -
+  low risk, no re-indenting of the existing (large) menu-navigation block
+  was needed.
+
+**Music priority**: `modTick()`/`modCompletePendingRetriggers()` and
+`updateMenuTicker()` all run earlier in the same loop iteration,
+unconditionally, before this new state machine is even reached - showing or
+dismissing the field guide never skips, delays or gates them. Verified by
+inspection (the new code only ever touches `screenBuffer`/copper/counters,
+never `modPlaying` or any mod_* function).
+
+Verified in WinUAE: left the emulator running untouched past the 30s idle
+mark - field guide appeared with correct content (screenshot-confirmed all
+six enemy rows and four powerup rows render correctly, no layout collision
+with the title or footer). Confirmed the 30s auto-return also works
+(screenshot after waiting with the window focused - an earlier check while
+the WinUAE window was unfocused appeared "stuck" because WinUAE itself
+throttles emulation speed while backgrounded, not a code issue; bringing it
+to the foreground let it catch up and confirm the return happened
+correctly). Clean rebuild, no new warnings.
+
+## Sprint 15.31 follow-up - Explosion drawn one tile above the actual hit
+
+User report: rocket/bomb explosions on a ground target, ship or "any other
+object" looked like they landed one tile too high.
+
+**Root cause**: `updateBombImpactBob()` places the explosion Bob at
+`row = impact.y / GAME_TILE_HEIGHT` - an integer division of whatever y was
+passed to `startWorldImpact()`/`startWorldImpactQuiet()`/
+`startGroundTargetHitImpact()`. Every hit-detection call site, though,
+probes a point *offset* from the projectile's own sprite position rather
+than the sprite's raw (x,y) - a falling bomb checks
+`bombShot.y + BOMB_SHOT_PIXEL_BOB_HEIGHT` (its bottom edge, offset 3), a
+rocket checks `rocketShot.y + 4` (its vertical centre) - specifically so
+the probe lands on the tile that visually contains the weapon, not the
+tile its top-left corner happens to occupy. Every one of these call sites
+then passed the *raw, unoffset* `bombShot.y`/`rocketShot.y` back into the
+explosion functions instead of the offset value (or the tile row already
+resolved from it). Whenever the projectile's y modulo 8 fell in the last
+few pixels of a tile (enough to push the *offset* probe into the next tile
+down but not the raw y itself), `raw_y / 8` computed one row less than the
+tile that was actually detected as hit - the explosion rendered one tile
+above the target, roughly 3/8 of the time for bombs and up to half the
+time for rockets, matching the report.
+
+**Fix**: `startGroundTargetHitImpact()` already received the correctly-
+resolved `tileY` for its sound-selection logic; it now also builds the
+explosion's y directly from it (`tileY * GAME_TILE_HEIGHT`) instead of a
+separately-passed, now-removed `y` parameter - fixing all four callers
+that route through it (player rocket, player bomb, Player 2 wingman bomb,
+CPU wingman bombing run) in one place. The three remaining plain
+`startWorldImpact()`/`startWorldImpactQuiet()` calls - reached only for a
+hit on the player's own frigate, the one case `objectUsesGroundTargetHitSfx()`
+doesn't cover - were each updated the same way, using their own already-
+resolved tile row (`rocketTileY`/`bombTileY`/wingman's `tileY`). The two
+unrelated `startWorldImpact()` calls for destroying a *powerup* (not a
+tile-grid object - no tileY exists for those) were deliberately left
+untouched.
+
+This is a pure position-arithmetic fix, correct by construction
+(`(tileY * GAME_TILE_HEIGHT) / GAME_TILE_HEIGHT == tileY` always, with no
+rounding case left to hit) rather than something that needed a live-fire
+test to confirm - verified by re-reading every changed call site to confirm
+each uses its own matching tile-row variable, plus a clean rebuild with no
+new warnings (in particular no leftover reference to the removed `y`
+parameter).
+
+## Sprint 15.31 follow-up 2 - Field guide icons
+
+User follow-up: the field guide needs the actual graphic for each item, not
+just text.
+
+**Implementation** (`amiga/main.c`): moved `drawFieldGuideScreen()` and its
+data tables from right after `drawMenuHighScore()` to right after
+`drawDebugGraphicsBrowser()` (~line 6140) - it needs `gameTilePixelColor()`
+(5444) and `cpcPlusPenToGameColor()` (5919) for icon rendering, both
+defined after the screen's original location. Three small icon renderers,
+all sampling into a fixed 16x16 `FIELD_GUIDE_ICON_BOX` with simple nearest-
+neighbour scaling so mixed 8x8/16x8/16x16 sources land at the same on-
+screen size, exactly the same two graphic sources the debug hub's own
+GRAPHICS BROWSER already uses one screen up:
+- `drawFieldGuideTileIcon()` - one of the 102 converted CPC tiles via
+  `gameTilePixelColor()`, same call `drawDebugGameTileScaled()` makes.
+- `drawFieldGuideSpriteIcon()` - a promoted CPC sprite pen array via
+  `cpcPlusPenToGameColor()`, same call `drawDebugPromotedGraphicScaled()`
+  makes.
+- `drawFieldGuideParachuteIcon()` - the same parachute art
+  `buildPowerupBobTileIfNeeded()` bakes into the real drop Bob, recoloured
+  live per row (pen 15 canopy -> that row's colour, pen 1 rigging -> fixed
+  dark) instead of building a tile buffer, since this is drawn once per
+  idle trigger rather than every frame.
+
+Icon choices are real tile IDs pulled from the actual spawn/placement code,
+not guesses: 45 (ground target) is CPC_LAND_TARGET_TANK_FRONT's tile from
+`targetTiles[]` in `objectCellForWorldColumnTile()`; 20 (enemy ship) is one
+of the six hull tiles listed for the ship group in `level_route.h`; 66
+(town block) is `town_block_0`'s one real building tile in
+`cpc_promoted_assets.h` (its other four cells are empty/fill placeholders);
+57 (flak) is one of the two tiles `trySpawnFlak()` picks between. Enemy
+plane and gunship use their full promoted sprite art directly
+(`harCpcEnemyPlaneFlyingLeftPixels`/`harCpcGunshipLeftPixels`), the same
+data `debugPromotedGraphics[]` already labels "ENEMY FLYING LEFT"/"GUNSHIP
+LEFT".
+
+`FieldGuideEntry` gained `isSprite`/`tileId`/`pixels`/`spriteWidth`/
+`spriteHeight` fields (two small constructor-style macros,
+`FIELD_GUIDE_TILE_ICON(tile)` / `FIELD_GUIDE_SPRITE_ICON(px,w,h)`, fill the
+unused side of whichever variant a given row doesn't need) so the same
+table drives both icon kinds. The powerup swatch rectangles were removed
+entirely - the recoloured parachute icon now IS the colour indicator, no
+separate flat-colour box needed.
+
+Row layout reworked around the 16px-tall icons (previously a bare 8px text
+row): icon column at x=16, name/label at x=40, points/meaning columns
+shifted right to clear a 13-character name. Row pitch grew from 8-9px to
+18px (16 for the icon + 2px gap) for both the six-row enemy list and the
+four-row powerup list; re-checked against SCREEN_HEIGHT(256) - title,
+header, both lists and the footer line all still fit with a few pixels to
+spare at the very bottom edge.
+
+Verified in WinUAE: triggered the idle timeout, screenshotted the full
+screen (all six enemy rows and four powerup rows render with distinct,
+recognisable icons - tank-like ground target, hull-like ship, building-
+like town block, small flak-gun dots, full-colour enemy plane and gunship
+sprites, and four correctly-coloured parachute canopies) and a 4x zoomed
+crop (confirmed no corrupted/garbled pixels - the single-tile icons are
+simply smaller/simpler than the full-sprite ones because they're genuinely
+one 8x8 piece of a larger multi-tile object, not a rendering bug). Clean
+rebuild, no new warnings.

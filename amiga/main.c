@@ -15,7 +15,7 @@
 #include <string.h>
 #include "assets/harrier_menu_text.h"
 
-#define HAR_BUILD_LABEL "SPRINT 15.38.0"
+#define HAR_BUILD_LABEL "SPRINT 15.38.2"
 
 #define SCREEN_WIDTH 320
 /* 256 lines (not 200) - PAL comfortably supports this (320x256 is a common,
@@ -421,6 +421,14 @@
 #define MENU_TICKER_ROW_BYTES (MENU_TICKER_SOURCE_WIDTH / 8)
 #define MENU_TICKER_BITMAP_BYTES \
 	(FONT_HEIGHT * SCREEN_PLANES * MENU_TICKER_ROW_BYTES)
+
+/* Attract-mode "field guide" idle screen (see drawFieldGuideScreen()):
+ * shown after this many idle vblanks at the plain main menu (no input at
+ * all - InputState.any stays 0), and shown for up to this many vblanks
+ * before automatically returning to the normal menu. 50Hz PAL, so 30
+ * seconds each way. */
+#define MENU_IDLE_TIMEOUT_FRAMES (30 * 50)
+#define FIELD_GUIDE_DISPLAY_FRAMES (30 * 50)
 
 /* Complete CPC tribute text extracted from AMSTRADFONT3.asm. Keep the alias
  * here so an Amiga-specific message can still be substituted in one place
@@ -1552,7 +1560,7 @@ static const SfxSample sfxSamples[SFX_COUNT] = {
 };
 
 static const UWORD menuPalette[32] = {
-	0x000, 0xffa, 0xf22, 0x026, 0x0f0, 0xaf0, 0x05f, 0x0af,
+	0x000, 0xffa, 0xf22, 0x026, 0x0f0, 0xff0, 0x05f, 0x0af,
 	0x444, 0xf00, 0xf80, 0x0ff, 0xfa0, 0x0a0, 0xa00, 0x00a,
 	0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000,
 	0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000
@@ -2396,6 +2404,29 @@ static void modTick(void) {
 	}
 }
 
+/* Menu pages are drawn directly into the displayed buffer and a complete
+ * redraw can span more than one PAL frame on a stock 68000. Driving the MOD
+ * once per main-loop iteration therefore loses music ticks while text and
+ * icons are being rendered. Catch up from the real VBlank counter instead,
+ * and allow long menu draw routines to service the replayer between rows. */
+static UWORD modLastServicedFrame;
+
+static void serviceModMusicToCurrentVbl(void) {
+	UWORD now = frameCounter;
+	UWORD elapsed = (UWORD)(now - modLastServicedFrame);
+	if (!modPlaying) {
+		modLastServicedFrame = now;
+		return;
+	}
+	while (elapsed--) {
+		modCompletePendingRetriggers();
+		modTick();
+		if (!modPlaying)
+			break;
+	}
+	modLastServicedFrame = now;
+}
+
 static void startModTrack(const UBYTE* modData, UBYTE loopEnabled,
 	UBYTE tempoPercent) {
 	modParseHeader(modData);
@@ -2416,6 +2447,7 @@ static void startModTrack(const UBYTE* modData, UBYTE loopEnabled,
 	modLoopEnabled = loopEnabled;
 	modTempoPercent = tempoPercent;
 	modPlaying = 1;
+	modLastServicedFrame = frameCounter;
 	/* Play row 0 immediately instead of waiting modSpeed ticks (~120ms at the
 	 * default speed=6/tempo=125 before this tune's own row-0 F-effects even
 	 * take hold) - a normal ProTracker replayer processes the first row on
@@ -4320,8 +4352,16 @@ static void drawMenuHighScore(UBYTE* bitmap) {
 	drawTextStyled(bitmap, 212 + MENU_CONTENT_X_OFFSET, 44, "HITS", FONT_STYLE_CPC_GREEN);
 	drawTextStyled(bitmap, 268 + MENU_CONTENT_X_OFFSET, 44, "SCORE", FONT_STYLE_CPC_GREEN);
 
+	/* Row pitch was exactly FONT_HEIGHT (8px), leaving zero blank scanline
+	 * between rows - the 8px-tall glyphs touched top-to-bottom with no gap.
+	 * Reported on real Amiga 600 hardware as descenders being overwritten by
+	 * the row below (not corrupted, just no separation) - fine on Amiga 1200
+	 * and in WinUAE, but real CRT/scandoubler scanline bleed makes a 0px gap
+	 * risky. 53+row*9 keeps the same start/end bounds as before (row 0 still
+	 * clears the y=44 header by 1px, the last row still clears itemY[0]=116
+	 * by 1px) while inserting a 1px blank line between every row. */
 	for (short row = 0; row < HIGH_SCORE_ENTRY_COUNT; row++) {
-		short y = (short)(58 + row * 8);
+		short y = (short)(53 + row * 9);
 		drawTextStyled(bitmap, 40 + MENU_CONTENT_X_OFFSET, y, highScoreTable[row].name, FONT_STYLE_CPC_GREEN);
 		drawUnsignedPaddedStyled(bitmap, 136 + MENU_CONTENT_X_OFFSET, y, highScoreTable[row].level, 2, FONT_STYLE_CPC_GREEN);
 		drawUnsignedPaddedStyled(bitmap, 212 + MENU_CONTENT_X_OFFSET, y, highScoreTable[row].hits, 5, FONT_STYLE_CPC_GREEN);
@@ -4890,14 +4930,19 @@ static void updateMenuDemoHudValues(UBYTE* bitmap, short skillLevel,
 
 static void drawMenuScreen(UBYTE* bitmap, short selected, short skillLevel, short livesSetting, short wingmanControl, ULONG highScore) {
 	fillScreen(bitmap, MENU_COLOR_PANEL);
+	serviceModMusicToCurrentVbl();
 
 	drawMenuTicker(bitmap);
 	drawMenuNotice(bitmap, "", MENU_COLOR_WHITE);
 	drawTextCenteredStyled(bitmap, 28, HAR_TEXT_TITLE, FONT_STYLE_CPC_GREEN);
+	serviceModMusicToCurrentVbl();
 	drawMenuHighScore(bitmap);
+	serviceModMusicToCurrentVbl();
 	drawMenuItems(bitmap, selected, skillLevel, livesSetting, wingmanControl);
 	drawMenuRightSettings(bitmap);
+	serviceModMusicToCurrentVbl();
 	drawMenuDemoHud(bitmap, skillLevel, livesSetting, highScore);
+	serviceModMusicToCurrentVbl();
 }
 
 static void drawTelemetryMenuIndicator(UBYTE* bitmap) {
@@ -6120,6 +6165,174 @@ static void drawDebugGraphicsBrowser(UBYTE* bitmap, UWORD index) {
 		MENU_COLOR_YELLOW);
 	drawTextCentered(bitmap, 220, "LEFT/RIGHT OBJECT", MENU_COLOR_WHITE);
 	drawTextCentered(bitmap, 234, "ESC OR SHIFT+D BACK", MENU_COLOR_SHADOW);
+}
+
+/* Attract-mode "field guide" idle screen (see MENU_IDLE_TIMEOUT_FRAMES).
+ * Point values reuse the exact same constants the collision/hit code awards
+ * (GROUND_TARGET_SCORE_VALUE/ENEMY_SHIP_SCORE_VALUE/TOWN_BLOCK_SCORE_VALUE/
+ * ENEMY_SCORE_VALUE), so this can never drift out of sync with real scoring.
+ * Every object here is one-hit destructible and instant death on player
+ * contact except flak (Sprint 14.91/14.95): flak absorbs the player's own
+ * weapons harmlessly (never destroyed) and instead chips armour per contact
+ * frame up to flakDamageThresholdForSkill()'s skill-scaled hit budget, and
+ * the gunship is fixed background geometry with no weapon interaction at
+ * all (isWideLevelObject()) - fatal to touch, never destructible. Powerup
+ * colours match buildPowerupBobTileIfNeeded()'s typeColor[] table exactly.
+ *
+ * Icons reuse the exact same graphics the game actually draws in the world,
+ * the same way the debug hub's own GRAPHICS BROWSER does just above (see
+ * drawDebugGameTileScaled()/drawDebugPromotedGraphicScaled()) - either one
+ * of the 102 converted 8x8 CPC tiles (gameTilePixelColor(), tile IDs taken
+ * directly from the real spawn/placement code: 45 is a TANK_FRONT ground
+ * target per targetTiles[] in objectCellForWorldColumnTile(), 20 is an
+ * ENEMY_SHIP hull tile from level_route.h, 66 is town_block_0's one real
+ * building tile in cpc_promoted_assets.h, 57 is a flak tile per
+ * trySpawnFlak()'s tile choice), or a promoted CPC sprite part
+ * (cpcPlusPenToGameColor(), same pen data debugPromotedGraphics[] already
+ * names "ENEMY FLYING LEFT"/"GUNSHIP LEFT"/"PARACHUTE"). Both are sampled
+ * with simple nearest-neighbour scaling into a fixed small icon box so
+ * mixed 8x8/16x8/16x16 sources all end up the same on-screen size. */
+#define FIELD_GUIDE_ICON_BOX 16
+
+static void drawFieldGuideTileIcon(UBYTE* bitmap, short x, short y, UBYTE tileId) {
+	for (UBYTE dy = 0; dy < FIELD_GUIDE_ICON_BOX; dy++) {
+		UBYTE sy = (UBYTE)(dy * GAME_TILE_HEIGHT / FIELD_GUIDE_ICON_BOX);
+		for (UBYTE dx = 0; dx < FIELD_GUIDE_ICON_BOX; dx++) {
+			UBYTE sx = (UBYTE)(dx * GAME_TILE_WIDTH / FIELD_GUIDE_ICON_BOX);
+			putPixel(bitmap, (short)(x + dx), (short)(y + dy),
+				gameTilePixelColor(tileId, sx, sy));
+		}
+		serviceModMusicToCurrentVbl();
+	}
+}
+
+static void drawFieldGuideSpriteIcon(UBYTE* bitmap, short x, short y,
+	const UBYTE* pixels, UBYTE srcWidth, UBYTE srcHeight) {
+	for (UBYTE dy = 0; dy < FIELD_GUIDE_ICON_BOX; dy++) {
+		UBYTE sy = (UBYTE)((UWORD)dy * srcHeight / FIELD_GUIDE_ICON_BOX);
+		for (UBYTE dx = 0; dx < FIELD_GUIDE_ICON_BOX; dx++) {
+			UBYTE sx = (UBYTE)((UWORD)dx * srcWidth / FIELD_GUIDE_ICON_BOX);
+			UBYTE pen = pixels[(UWORD)sy * srcWidth + sx] & 15;
+			if (pen)
+				putPixel(bitmap, (short)(x + dx), (short)(y + dy),
+					cpcPlusPenToGameColor(pen));
+		}
+		serviceModMusicToCurrentVbl();
+	}
+}
+
+/* Same parachute art buildPowerupBobTileIfNeeded() bakes into the in-game
+ * drop Bob, recoloured live here instead of into a tile buffer: pen 15 (the
+ * canopy) becomes this row's powerup colour, pen 1 (rigging lines) stays a
+ * fixed dark colour, matching that function's own canopy/rigging split. */
+static void drawFieldGuideParachuteIcon(UBYTE* bitmap, short x, short y,
+	UBYTE canopyColor) {
+	for (UBYTE dy = 0; dy < FIELD_GUIDE_ICON_BOX; dy++) {
+		UBYTE sy = (UBYTE)((UWORD)dy * HAR_CPC_PARACHUTE_HEIGHT / FIELD_GUIDE_ICON_BOX);
+		for (UBYTE dx = 0; dx < FIELD_GUIDE_ICON_BOX; dx++) {
+			UBYTE sx = (UBYTE)((UWORD)dx * HAR_CPC_PARACHUTE_WIDTH / FIELD_GUIDE_ICON_BOX);
+			UBYTE pen = harCpcParachutePixels[(UWORD)sy * HAR_CPC_PARACHUTE_WIDTH + sx];
+			if (pen == 15)
+				putPixel(bitmap, (short)(x + dx), (short)(y + dy), canopyColor);
+			else if (pen == 1)
+				putPixel(bitmap, (short)(x + dx), (short)(y + dy), MENU_COLOR_PANEL);
+		}
+		serviceModMusicToCurrentVbl();
+	}
+}
+
+typedef struct FieldGuideEntry {
+	const char* name;
+	UWORD points;
+	const char* note;
+	UBYTE isSprite;
+	UBYTE tileId;
+	const UBYTE* pixels;
+	UBYTE spriteWidth;
+	UBYTE spriteHeight;
+} FieldGuideEntry;
+
+#define FIELD_GUIDE_TILE_ICON(tile) 0, tile, 0, 0, 0
+#define FIELD_GUIDE_SPRITE_ICON(px, w, h) 1, 0, px, w, h
+
+static const FieldGuideEntry fieldGuideEnemies[] = {
+	{ "GROUND TARGET", GROUND_TARGET_SCORE_VALUE, "1 HIT",
+		FIELD_GUIDE_TILE_ICON(45) },
+	{ "ENEMY SHIP",     ENEMY_SHIP_SCORE_VALUE,    "1 HIT",
+		FIELD_GUIDE_TILE_ICON(20) },
+	{ "TOWN BLOCK",     TOWN_BLOCK_SCORE_VALUE,    "1 HIT",
+		FIELD_GUIDE_TILE_ICON(66) },
+	{ "ENEMY PLANE",    ENEMY_SCORE_VALUE,         "1 HIT",
+		FIELD_GUIDE_SPRITE_ICON(harCpcEnemyPlaneFlyingLeftPixels,
+			HAR_CPC_ENEMY_PLANE_FLYING_LEFT_WIDTH,
+			HAR_CPC_ENEMY_PLANE_FLYING_LEFT_HEIGHT) },
+	{ "FLAK GUN",       0,                         "CHIPS ARMOUR",
+		FIELD_GUIDE_TILE_ICON(57) },
+	{ "GUNSHIP HULK",   0,                         "FIXED OBSTACLE",
+		FIELD_GUIDE_SPRITE_ICON(harCpcGunshipLeftPixels,
+			HAR_CPC_GUNSHIP_LEFT_WIDTH, HAR_CPC_GUNSHIP_LEFT_HEIGHT) }
+};
+#define FIELD_GUIDE_ENEMY_COUNT \
+	(sizeof(fieldGuideEnemies) / sizeof(fieldGuideEnemies[0]))
+
+typedef struct FieldGuidePowerup {
+	const char* label;
+	UBYTE color;
+	const char* meaning;
+} FieldGuidePowerup;
+
+static const FieldGuidePowerup fieldGuidePowerups[] = {
+	{ "RED",    MENU_COLOR_RED,    "WINGMAN REVIVED" },
+	{ "YELLOW", MENU_COLOR_YELLOW, "FULL ARMOUR" },
+	{ "BLUE",   MENU_COLOR_CYAN,   "ROCKETS REFILLED" },
+	{ "GREEN",  MENU_COLOR_GREEN,  "BOMBS REFILLED" }
+};
+#define FIELD_GUIDE_POWERUP_COUNT \
+	(sizeof(fieldGuidePowerups) / sizeof(fieldGuidePowerups[0]))
+
+static void drawFieldGuideScreen(UBYTE* bitmap) {
+	fillScreen(bitmap, MENU_COLOR_PANEL);
+	serviceModMusicToCurrentVbl();
+	drawTextCentered(bitmap, 8, "FIELD GUIDE", MENU_COLOR_GREEN);
+
+	short y = 26;
+	drawText(bitmap, 40, y, "ENEMY", MENU_COLOR_CYAN);
+	drawText(bitmap, 156, y, "PTS", MENU_COLOR_CYAN);
+	drawText(bitmap, 200, y, "NOTE", MENU_COLOR_CYAN);
+	y += 12;
+	for (UBYTE i = 0; i < FIELD_GUIDE_ENEMY_COUNT; i++) {
+		const FieldGuideEntry* entry = &fieldGuideEnemies[i];
+		if (entry->isSprite)
+			drawFieldGuideSpriteIcon(bitmap, 16, y, entry->pixels,
+				entry->spriteWidth, entry->spriteHeight);
+		else
+			drawFieldGuideTileIcon(bitmap, 16, y, entry->tileId);
+		drawText(bitmap, 40, (short)(y + 4), entry->name, MENU_COLOR_WHITE);
+		if (entry->points)
+			drawUnsignedPadded(bitmap, 156, (short)(y + 4), entry->points, 3,
+				MENU_COLOR_YELLOW);
+		else
+			drawText(bitmap, 156, (short)(y + 4), "--", MENU_COLOR_SHADOW);
+		drawText(bitmap, 200, (short)(y + 4), entry->note, MENU_COLOR_WHITE);
+		y += FIELD_GUIDE_ICON_BOX + 2;
+		serviceModMusicToCurrentVbl();
+	}
+
+	y += 6;
+	drawTextCentered(bitmap, y, "PARACHUTE DROP COLOURS", MENU_COLOR_CYAN);
+	y += 14;
+	for (UBYTE i = 0; i < FIELD_GUIDE_POWERUP_COUNT; i++) {
+		const FieldGuidePowerup* powerup = &fieldGuidePowerups[i];
+		drawFieldGuideParachuteIcon(bitmap, 16, y, powerup->color);
+		drawText(bitmap, 40, (short)(y + 4), powerup->label, MENU_COLOR_WHITE);
+		drawText(bitmap, 100, (short)(y + 4), powerup->meaning, MENU_COLOR_WHITE);
+		y += FIELD_GUIDE_ICON_BOX + 2;
+		serviceModMusicToCurrentVbl();
+	}
+
+	y += 10;
+	drawTextCentered(bitmap, y,
+		"ANY CONTACT EXCEPT FLAK = INSTANT LOSS", MENU_COLOR_SHADOW);
 }
 
 static void drawDebugSoundBrowser(UBYTE* bitmap, UBYTE index,
@@ -8950,9 +9163,18 @@ static UBYTE objectUsesGroundTargetHitSfx(UBYTE objectId) {
 		objectId == HAR_OBJ_TOWN_BLOCK;
 }
 
-static void startGroundTargetHitImpact(GameState* game, WORD x, WORD y,
+/* The projectile's own y at the moment of collision is deliberately NOT
+ * used for the explosion's position: hit detection probes a point offset
+ * from the projectile's sprite (e.g. its bottom edge for a falling bomb,
+ * its centre for a rocket - see the probe math at each call site), so the
+ * raw sprite y can sit in the tile row ABOVE the one that was actually
+ * detected as hit. Since updateBombImpactBob() places the explosion at
+ * `impact.y / GAME_TILE_HEIGHT`, re-deriving y from the already-known
+ * correct tileY instead guarantees the explosion lands on the struck tile
+ * itself, never one row short. */
+static void startGroundTargetHitImpact(GameState* game, WORD x,
 	LONG worldColumn, WORD tileY, UBYTE objectId) {
-	startWorldImpactQuiet(game, x, y);
+	startWorldImpactQuiet(game, x, (WORD)(tileY * GAME_TILE_HEIGHT));
 	/* A miss on bare land gets its own dedicated sound instead of reusing
 	 * one of the "actually hit a target/building/ship" variants. */
 	if (objectId == HAR_OBJ_LAND)
@@ -9039,9 +9261,9 @@ static void updateWingmanPlayer2Bomb(GameState* game, UBYTE** worldBuffers, UBYT
 		/* Absorbed with no visible/audible effect, matching the player's
 		 * own bomb against the same object types. */
 	} else if (objectUsesGroundTargetHitSfx(cell.id)) {
-		startGroundTargetHitImpact(game, wingman->bomb.x, wingman->bomb.y, worldColumn, tileY, cell.id);
+		startGroundTargetHitImpact(game, wingman->bomb.x, worldColumn, tileY, cell.id);
 	} else {
-		startWorldImpact(game, wingman->bomb.x, wingman->bomb.y);
+		startWorldImpact(game, wingman->bomb.x, (WORD)(tileY * GAME_TILE_HEIGHT));
 	}
 	wingman->bomb.active = 0;
 }
@@ -9305,10 +9527,10 @@ static UBYTE updateWeapons(GameState* game, UBYTE scrollPixels, UBYTE** worldBuf
 			} else {
 				if (objectUsesGroundTargetHitSfx(rocketCell.id))
 					startGroundTargetHitImpact(game, game->rocketShot.x,
-						game->rocketShot.y, rocketWorldColumn, rocketTileY, rocketCell.id);
+						rocketWorldColumn, rocketTileY, rocketCell.id);
 				else
 					startWorldImpact(game, game->rocketShot.x,
-						game->rocketShot.y);
+						(WORD)(rocketTileY * GAME_TILE_HEIGHT));
 				game->rocketShot.active = 0;
 			}
 			game->targetLock.active = 0;
@@ -9418,11 +9640,13 @@ static UBYTE updateWeapons(GameState* game, UBYTE scrollPixels, UBYTE** worldBuf
 			} else {
 				if (objectUsesGroundTargetHitSfx(bombCell.id))
 					startGroundTargetHitImpact(game, game->bombShot.x,
-						game->bombShot.y, bombWorldColumn, bombTileY, bombCell.id);
+						bombWorldColumn, bombTileY, bombCell.id);
 				else if (game->bombShot.timer <= BOMB_IMPACT_SFX_GRACE_FRAMES)
-					startWorldImpactQuiet(game, game->bombShot.x, game->bombShot.y);
+					startWorldImpactQuiet(game, game->bombShot.x,
+						(WORD)(bombTileY * GAME_TILE_HEIGHT));
 				else
-					startWorldImpact(game, game->bombShot.x, game->bombShot.y);
+					startWorldImpact(game, game->bombShot.x,
+						(WORD)(bombTileY * GAME_TILE_HEIGHT));
 				game->bombShot.active = 0;
 			}
 		} else if (game->bombShot.y >= SEA_SURFACE_Y) {
@@ -9993,15 +10217,19 @@ static void activatePowerup(GameState* game, UBYTE type) {
 			break;
 		case POWERUP_WINGMAN:
 			if (game->wingman.destroyed) {
-				/* Revive at the pickup point and reuse WINGMAN_TAKEOFF's
+				/* Revive at the pickup point. CPU reuses WINGMAN_TAKEOFF's
 				 * existing smooth converge-into-formation logic (its own
 				 * "climb clear of the carrier" phase is a no-op here since
-				 * a mid-air pickup already starts above TAKEOFF_CLEAR_Y). */
+				 * a mid-air pickup already starts above TAKEOFF_CLEAR_Y).
+				 * Player 2 must stay under the human's control instead of
+				 * silently becoming a CPU-flown Wingman - go straight to
+				 * WINGMAN_PLAYER2_FLIGHT at the pickup point. */
 				WingmanState* wingman = &game->wingman;
 				WORD pickupScreenX = (WORD)(game->powerup.worldX - (LONG)game->scrollX);
 				wingman->active = 1;
 				wingman->destroyed = 0;
-				wingman->mode = WINGMAN_TAKEOFF;
+				wingman->mode = (game->wingmanControl == WINGMAN_CONTROL_PLAYER2) ?
+					WINGMAN_PLAYER2_FLIGHT : WINGMAN_TAKEOFF;
 				wingman->interceptScreenX = pickupScreenX;
 				wingman->screenY = game->powerup.y;
 				wingman->row = (WORD)(game->powerup.y / GAME_TILE_HEIGHT);
@@ -10659,7 +10887,7 @@ static void updateWingmanBombingRun(GameState* game, UBYTE** worldBuffers,
 		 * aims precisely at targetLock's own position, it never "misses"
 		 * onto plain land the way a freely-aimed Player 2 bomb can. */
 		startGroundTargetHitImpact(game, wingman->bomb.x,
-			wingman->bomb.y, targetColumn, targetRow, HAR_OBJ_GROUND_TARGET);
+			targetColumn, targetRow, HAR_OBJ_GROUND_TARGET);
 		wingman->bomb.active = 0;
 	} else if (wingman->bomb.x < -BOMB_SHOT_PIXEL_BOB_WIDTH ||
 		wingman->bomb.y >= HUD_TOP) {
@@ -11344,8 +11572,22 @@ static void startGameSession(GameState* game,
 	 * skill-scaled starting ammo instead. */
 	ammoForSkill(skillLevel, &game->bombs, &game->rockets);
 	game->wingmanControl = wingmanControl;
+	/* Player 2 also starts with a Wingman parked on deck (it just waits for
+	 * an Up press instead of auto-launching, see updateWingmanPlayer2Control())
+	 * - only WINGMAN_CONTROL_OFF has no Wingman to show at all. */
 	carrierParkedWingmanVisible =
-		(wingmanControl == WINGMAN_CONTROL_CPU);
+		(wingmanControl == WINGMAN_CONTROL_CPU || wingmanControl == WINGMAN_CONTROL_PLAYER2);
+	/* Establish the real deck coordinates immediately. Previously these were
+	 * assigned only when Player 1 reached TAKEOFF_STATE_AIRBORNE. Player 2 can
+	 * press Up while the carrier is already waiting in READY, so that earlier
+	 * input activated the Wingman from initGameState()'s zeroed (0,0)
+	 * coordinates and made it appear to be missing from the opening. */
+	if (wingmanControl != WINGMAN_CONTROL_OFF) {
+		game->wingman.mode = WINGMAN_ON_DECK;
+		game->wingman.interceptScreenX = WINGMAN_TAKEOFF_DECK_X;
+		game->wingman.screenY = WINGMAN_TAKEOFF_DECK_Y;
+		game->wingman.row = WINGMAN_TAKEOFF_DECK_Y / GAME_TILE_HEIGHT;
+	}
 	*activeWorldBuffer = 0;
 	resetBombShotPixelBobFootprints();
 	resetRocketShotPixelBobFootprints();
@@ -11540,6 +11782,9 @@ int main(void) {
 	 * session: arm cancellation only after Escape has been observed up. */
 	UBYTE gameCancelArmed = 0;
 	UBYTE debugHubPage = DEBUG_HUB_CLOSED;
+	UBYTE fieldGuideActive = 0;
+	UWORD menuIdleFrameCounter = 0;
+	UWORD fieldGuideFrameCounter = 0;
 	UBYTE debugHubSelected = DEBUG_ITEM_TELEMETRY;
 	UWORD debugGraphicIndex = 0;
 	UBYTE debugSoundIndex = 0;
@@ -11566,10 +11811,8 @@ int main(void) {
 
 	while (1) {
 		WaitVbl();
-		modCompletePendingRetriggers();
+		serviceModMusicToCurrentVbl();
 		updateSfx();
-		if (!inGameScene || game.gameOver || game.missionComplete)
-			modTick();
 		updateCarrierIdleSfx(
 			inGameScene && !telemetryStatsPaused && !gamePaused &&
 			!modPlaying && !game.gameOver &&
@@ -11610,6 +11853,54 @@ int main(void) {
 		}
 #endif
 		UBYTE inputMask = InputMask(&input);
+
+		/* Idle-timeout attract mode: only tracked at the plain main menu
+		 * (not mid-game, not paused, not while the debug hub/telemetry
+		 * overlay owns the screen). input.any already covers every real
+		 * button/direction/mouse-fire source ReadInput() reads (see its own
+		 * definition) - reusing it here instead of inventing a second idle
+		 * definition that could drift out of sync with it. Uses `continue`
+		 * to skip the rest of this iteration's menu-state handling, the same
+		 * pattern the Escape-cancel handler below already relies on; music
+		 * (modTick()/modCompletePendingRetriggers()) and the ticker already
+		 * ran earlier this frame regardless of this branch, so neither is
+		 * ever delayed or skipped by the field guide showing. */
+		if (inGameScene) {
+			menuIdleFrameCounter = 0;
+		} else if (!gamePaused && !telemetryStatsPaused &&
+			debugHubPage == DEBUG_HUB_CLOSED) {
+			if (fieldGuideActive) {
+				fieldGuideFrameCounter++;
+				if (input.any ||
+					fieldGuideFrameCounter >= FIELD_GUIDE_DISPLAY_FRAMES) {
+					fieldGuideActive = 0;
+					menuIdleFrameCounter = 0;
+					drawMenuScreen(screenBuffer, selected, skillLevel,
+						livesSetting, wingmanControl, highScore);
+					drawTelemetryMenuIndicator(screenBuffer);
+					drawInputDebugIfEnabled(screenBuffer, &input, 102,
+						MENU_COLOR_PANEL);
+					buildMenuCopper(copper, screenBuffer, menuTickerBitmap,
+						menuPalette, nullSprite);
+					custom->copjmp1 = 0x7fff;
+					lastInputMask = inputMask;
+				}
+				continue;
+			}
+			if (input.any)
+				menuIdleFrameCounter = 0;
+			else if (menuIdleFrameCounter < MENU_IDLE_TIMEOUT_FRAMES)
+				menuIdleFrameCounter++;
+			if (menuIdleFrameCounter >= MENU_IDLE_TIMEOUT_FRAMES) {
+				fieldGuideActive = 1;
+				fieldGuideFrameCounter = 0;
+				drawFieldGuideScreen(screenBuffer);
+				buildDisplayCopper(copper, screenBuffer, menuPalette,
+					nullSprite);
+				custom->copjmp1 = 0x7fff;
+				continue;
+			}
+		}
 
 		/* Escape is a scene-level command, not a gameplay action. Handle it
 		 * before pause, telemetry, game-over and all simulation state
@@ -11985,6 +12276,16 @@ int main(void) {
 					pendingPlayerSpriteUpdate = 1;
 				} else if (game.takeoffState == TAKEOFF_STATE_READY) {
 					setTakeoffDeckPosition(&game);
+					/* Player 2 must be able to leave the deck during the opening
+					 * READY phase, not only after Player 1 has completed the whole
+					 * lift. This also swaps the parked carrier composite for the
+					 * live Wingman sprite at the moment P2 presses Up. */
+					if (game.wingmanControl == WINGMAN_CONTROL_PLAYER2) {
+						updateWingmanPlayer2Control(&game, worldBuffers,
+							&input2, &previousInput2);
+						if (game.wingman.active)
+							pendingWingmanSpriteUpdate = 1;
+					}
 					if (Pressed(input.up, previousInput.up)) {
 						game.takeoffState = TAKEOFF_STATE_LIFTING;
 						game.scrollX = 0;
