@@ -3913,3 +3913,39 @@ climbing/diving the instant the cell(s) ahead clear.
 
 Verified: clean rebuild, headless autoplay smoke test completed with no
 crash/hang and the usual expected game-over freeze from unavoided obstacles.
+
+## Sprint 15.28 follow-up - Player 2 keyboard fallback
+
+User report: selected `Wingman: Player 2`, played, and "nothing happened" -
+traced to testing in an emulator with no second joystick actually configured
+on physical port 1, so `Joy0Dat()` never saw an Up press and the Wingman
+just waited on the deck forever with no on-screen indication why.
+
+Added a numeric-keypad fallback to `ReadPlayer2Input()` (KP8/KP2/KP4/KP6 for
+direction, KP0 for fire, KP Enter for bomb - raw codes `0x3E/0x1E/0x2D/0x2F/
+0x0F/0x43`, kept clear of every key Player 1's own controls already use),
+`||`-ed alongside the existing `Joy0Dat()`/button reads exactly the way
+Player 1's own `ReadInput()` already combines joystick and keyboard. This
+restores the real CPC's own flexibility (Player 2 was always freely
+rebindable to keyboard or joystick, asm `testkeyup2` etc. read a generic
+matrix, not a hard-wired port) rather than requiring hardware most players
+testing this feature won't have connected.
+
+**Verification honestly caveated**: tried to confirm this live by injecting
+synthetic keypresses into the running headless WinUAE instance via Win32
+`keybd_event`, twice, with no visible Wingman response either time. Rather
+than conclude the fix was broken, checked the actual mechanism first -
+temporarily enabled this project's own `HAR_DEBUG_INPUT_OVERLAY` (already
+existed, shows a live `RAW:xx` hex readout of the last key the Amiga side
+actually saw) and sent the same synthetic key on the plain menu screen: it
+read `RAW:--` (no key at all). So the injected key never reached WinUAE's
+keyboard capture in the first place - confirmed as a test-harness
+limitation (WinUAE most likely captures raw hardware input in a way
+software-synthesized key events don't reach), not evidence against the
+code. Confidence instead rests on reusing Player 1's own already-proven
+`KeyDown()`/`PollKeyboard()`/`keyboardDown[]` mechanism unchanged, plus the
+new raw codes matching the same standard Amiga keymap table this file's
+existing `RAWKEY_*` constants already use correctly. A real keypress test
+(actual hardware or a WinUAE config with a keyboard-emulated joystick on
+port 1) would close this out properly if it matters before relying on it
+further. All temporary debug flags reverted afterward.

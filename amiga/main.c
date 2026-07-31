@@ -536,6 +536,15 @@ static UBYTE* menuTickerBitmap = 0;
 #define RAWKEY_RIGHT_SHIFT 0x61
 #define RAWKEY_LEFT_ALT 0x64
 #define RAWKEY_RIGHT_ALT 0x65
+/* Numeric keypad - Player 2's keyboard fallback (see ReadPlayer2Input()),
+ * kept clear of every key Player 1 already uses. Standard Amiga keymap raw
+ * codes. */
+#define RAWKEY_KP_0 0x0f
+#define RAWKEY_KP_2 0x1e
+#define RAWKEY_KP_4 0x2d
+#define RAWKEY_KP_6 0x2f
+#define RAWKEY_KP_8 0x3e
+#define RAWKEY_KP_ENTER 0x43
 
 struct ExecBase *SysBase;
 volatile struct Custom *custom;
@@ -612,8 +621,9 @@ typedef struct InputState {
 /* Sprint 15.28: Wingman: Player 2's own controller - deliberately separate
  * from InputState rather than extra fields bolted onto it, since it reads a
  * different physical port and only ever matters while wingmanControl ==
- * WINGMAN_CONTROL_PLAYER2. No keyboard fallback (unlike Player 1) - a
- * missing second joystick just means Player 2 mode has nothing to fly. */
+ * WINGMAN_CONTROL_PLAYER2. Has a numeric-keypad keyboard fallback (see
+ * ReadPlayer2Input()) for the same reason Player 1 does - a second physical
+ * joystick isn't something every player (or test setup) has to hand. */
 typedef struct Player2InputState {
 	UBYTE up;
 	UBYTE down;
@@ -3188,14 +3198,26 @@ static void ReadInput(InputState* input, UBYTE suppressMouse) {
  * MouseLeft()/MouseRight() for the mouse case) for fire/bomb. No debounce on
  * the second button here - ReadJoyFire1Debounced() exists because Player 1's
  * bomb button flickered enough to double-fire; revisit if Player 2 shows the
- * same symptom. */
+ * same symptom.
+ *
+ * Sprint 15.28 follow-up: added a numeric-keypad fallback (kept clear of
+ * every key Player 1's own controls already use) after a report of
+ * "selected Player 2, nothing happened" that traced back to testing in an
+ * emulator with no second joystick actually configured on port 1 - with no
+ * device there, Joy0Dat() reads a fixed idle pattern and Up never comes, so
+ * the Wingman just waits on deck forever with no on-screen indication why.
+ * Real CPC's own Player 2 was always freely rebindable to keyboard or
+ * joystick (asm testkeyup2/etc. read a generic matrix, not a fixed port) -
+ * this restores that same flexibility rather than hard-requiring a second
+ * physical controller, which most players (and this exact bug report)
+ * won't have to hand. */
 static void ReadPlayer2Input(Player2InputState* input) {
-	input->up = (UBYTE)JoyUp2();
-	input->down = (UBYTE)JoyDown2();
-	input->left = (UBYTE)JoyLeft2();
-	input->right = (UBYTE)JoyRight2();
-	input->fire = (UBYTE)Joy0Fire();
-	input->bomb = (UBYTE)Joy0Fire1();
+	input->up = (UBYTE)(JoyUp2() || KeyDown(RAWKEY_KP_8));
+	input->down = (UBYTE)(JoyDown2() || KeyDown(RAWKEY_KP_2));
+	input->left = (UBYTE)(JoyLeft2() || KeyDown(RAWKEY_KP_4));
+	input->right = (UBYTE)(JoyRight2() || KeyDown(RAWKEY_KP_6));
+	input->fire = (UBYTE)(Joy0Fire() || KeyDown(RAWKEY_KP_0));
+	input->bomb = (UBYTE)(Joy0Fire1() || KeyDown(RAWKEY_KP_ENTER));
 }
 
 static UBYTE Pressed(UBYTE now, UBYTE previous) {
