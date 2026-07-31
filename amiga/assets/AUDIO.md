@@ -34,18 +34,20 @@ compression and therefore represents the bytes produced by the Amiga decoder.
 | `pickpuppowerup.wav` | `pickup_powerup.raw` | Played once when the player collects any health, rocket, bomb or Wingman powerup. |
 | `flak_0.wav` | `flak_gun_1.raw` | One of two flak-gun firing variants. Volume falls with vertical distance from the player and pitch occasionally varies slightly. |
 | `flak_1.wav` | `flak_gun_2.raw` | One of two flak-gun firing variants. Volume falls with vertical distance from the player and pitch occasionally varies slightly. |
-| `ground_hit_0.wav` | `ground_target_hit_1.raw` | Random destructive hit variant for ground targets, enemy ships, land and town blocks. |
-| `ground_hit_1.wav` | `ground_target_hit_2.raw` | Random destructive hit variant for ground targets, enemy ships, land and town blocks. |
-| `ground_hit_2.wav` | `ground_target_hit_3.raw` | Random destructive hit variant for ground targets, enemy ships, land and town blocks. |
-| `ground_hit_3.wav` | `ground_target_hit_4.raw` | Random destructive hit variant for ground targets, enemy ships, land and town blocks. |
+| `ground_hit_0.wav` | `ground_target_hit_1.raw` | Random destructive hit variant for an actual ground target, enemy ship or town block. |
+| `ground_hit_1.wav` | `ground_target_hit_2.raw` | Random destructive hit variant for an actual ground target, enemy ship or town block. |
+| `ground_hit_2.wav` | `ground_target_hit_3.raw` | Random destructive hit variant for an actual ground target, enemy ship or town block. |
+| `ground_hit_3.wav` | `ground_target_hit_4.raw` | Random destructive hit variant for an actual ground target, enemy ship or town block. |
+| `ground_miss_0.wav` | `ground_miss_1.raw` | Bomb/rocket hit on bare land that is not a real target - a "miss". Previously reused a random `ground_target_hit_*` variant; now its own dedicated sound. |
 | `idle_0.wav` | `carrier_idle_1.adpcm` | Random carrier-deck ambience while the Harrier has not taken off and no MOD music is playing. |
 | `idle_1.wav` | `carrier_idle_2.adpcm` | Random carrier-deck ambience under the same conditions. |
 
-Ground-target hits use `startWorldImpactQuiet()` for the visual explosion and
-play one `ground_target_hit_*` sample. This deliberately avoids also playing
-`impact.raw` for the same hit.
+Ground-target hits and land misses both use `startWorldImpactQuiet()` for the
+visual explosion and play one sample (`ground_target_hit_*` for an actual
+target/ship/town block, `ground_miss_1.raw` for bare land) - never both. This
+deliberately avoids also playing `impact.raw` for the same hit.
 
-These four masters receive a mild low-shelf boost during Paula conversion.
+These five masters receive a mild low-shelf boost during Paula conversion.
 That preserves their bass body after peak normalization to signed 8-bit,
 11025 Hz data without changing playback pitch.
 

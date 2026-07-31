@@ -1400,6 +1400,7 @@ EMBED_CHIP sfxGroundTargetHit1Sample[] = { 0, 0 };
 EMBED_CHIP sfxGroundTargetHit2Sample[] = { 0, 0 };
 EMBED_CHIP sfxGroundTargetHit3Sample[] = { 0, 0 };
 EMBED_CHIP sfxGroundTargetHit4Sample[] = { 0, 0 };
+EMBED_CHIP sfxGroundMissSample[] = { 0, 0 };
 EMBED sfxCarrierIdle1Sample[] = { 0, 0, 0, 2, 0 };
 EMBED sfxCarrierIdle2Sample[] = { 0, 0, 0, 2, 0 };
 EMBED_CHIP menuMusicMod[] = { 0, 0 };
@@ -1441,6 +1442,9 @@ EMBED_CHIP sfxGroundTargetHit3Sample[] = {
 EMBED_CHIP sfxGroundTargetHit4Sample[] = {
 	#embed "assets/sfx/ground_target_hit_4.raw"
 };
+EMBED_CHIP sfxGroundMissSample[] = {
+	#embed "assets/sfx/ground_miss_1.raw"
+};
 EMBED sfxCarrierIdle1Sample[] = {
 	#embed "assets/sfx/carrier_idle_1.adpcm"
 };
@@ -1478,6 +1482,7 @@ enum {
 	SFX_GROUND_TARGET_HIT_2,
 	SFX_GROUND_TARGET_HIT_3,
 	SFX_GROUND_TARGET_HIT_4,
+	SFX_GROUND_MISS,
 	SFX_CARRIER_IDLE_1,
 	SFX_CARRIER_IDLE_2,
 	SFX_COUNT
@@ -1522,6 +1527,13 @@ static const SfxSample sfxSamples[SFX_COUNT] = {
 	[SFX_GROUND_TARGET_HIT_4] = { sfxGroundTargetHit4Sample, sizeof(sfxGroundTargetHit4Sample), SFX_PAULA_PERIOD, 58,
 		SFX_PRIORITY_IMPACT, SFX_PAN_ANY,
 		SFX_FRAMES_FOR_BYTES(sizeof(sfxGroundTargetHit4Sample)) },
+	/* Bare-earth miss - a bomb/rocket hitting plain land (not a real ground
+	 * target/building/ship) previously reused the same random 1-of-4
+	 * ground_target_hit sound as an actual hit; this is its own dedicated
+	 * "just dug a hole" sound instead. */
+	[SFX_GROUND_MISS] = { sfxGroundMissSample, sizeof(sfxGroundMissSample), SFX_PAULA_PERIOD, 58,
+		SFX_PRIORITY_IMPACT, SFX_PAN_ANY,
+		SFX_FRAMES_FOR_BYTES(sizeof(sfxGroundMissSample)) },
 	[SFX_CARRIER_IDLE_1] = { sfxCarrierIdle1Sample, sizeof(sfxCarrierIdle1Sample), SFX_PAULA_PERIOD, 34,
 		SFX_PRIORITY_AMBIENT, SFX_PAN_ANY,
 		SFX_FRAMES_FOR_BYTES(sizeof(sfxCarrierIdle1Sample)) },
@@ -5963,6 +5975,7 @@ static const char* const debugSfxNames[SFX_COUNT] = {
 	"GROUND HIT 2",
 	"GROUND HIT 3",
 	"GROUND HIT 4",
+	"GROUND MISS",
 	"CARRIER IDLE 1",
 	"CARRIER IDLE 2"
 };
@@ -8928,10 +8941,15 @@ static UBYTE objectUsesGroundTargetHitSfx(UBYTE objectId) {
 }
 
 static void startGroundTargetHitImpact(GameState* game, WORD x, WORD y,
-	LONG worldColumn, WORD tileY) {
+	LONG worldColumn, WORD tileY, UBYTE objectId) {
 	startWorldImpactQuiet(game, x, y);
-	playGroundTargetHitSfx((UWORD)(worldColumn ^
-		((LONG)tileY << 8) ^ frameCounter), x);
+	/* A miss on bare land gets its own dedicated sound instead of reusing
+	 * one of the "actually hit a target/building/ship" variants. */
+	if (objectId == HAR_OBJ_LAND)
+		playSfxAt(SFX_GROUND_MISS, x);
+	else
+		playGroundTargetHitSfx((UWORD)(worldColumn ^
+			((LONG)tileY << 8) ^ frameCounter), x);
 }
 
 /* Sprint 15.28: a Player 2-dropped bomb has no target-lock to aim at (unlike
@@ -9011,7 +9029,7 @@ static void updateWingmanPlayer2Bomb(GameState* game, UBYTE** worldBuffers, UBYT
 		/* Absorbed with no visible/audible effect, matching the player's
 		 * own bomb against the same object types. */
 	} else if (objectUsesGroundTargetHitSfx(cell.id)) {
-		startGroundTargetHitImpact(game, wingman->bomb.x, wingman->bomb.y, worldColumn, tileY);
+		startGroundTargetHitImpact(game, wingman->bomb.x, wingman->bomb.y, worldColumn, tileY, cell.id);
 	} else {
 		startWorldImpact(game, wingman->bomb.x, wingman->bomb.y);
 	}
@@ -9277,7 +9295,7 @@ static UBYTE updateWeapons(GameState* game, UBYTE scrollPixels, UBYTE** worldBuf
 			} else {
 				if (objectUsesGroundTargetHitSfx(rocketCell.id))
 					startGroundTargetHitImpact(game, game->rocketShot.x,
-						game->rocketShot.y, rocketWorldColumn, rocketTileY);
+						game->rocketShot.y, rocketWorldColumn, rocketTileY, rocketCell.id);
 				else
 					startWorldImpact(game, game->rocketShot.x,
 						game->rocketShot.y);
@@ -9390,7 +9408,7 @@ static UBYTE updateWeapons(GameState* game, UBYTE scrollPixels, UBYTE** worldBuf
 			} else {
 				if (objectUsesGroundTargetHitSfx(bombCell.id))
 					startGroundTargetHitImpact(game, game->bombShot.x,
-						game->bombShot.y, bombWorldColumn, bombTileY);
+						game->bombShot.y, bombWorldColumn, bombTileY, bombCell.id);
 				else if (game->bombShot.timer <= BOMB_IMPACT_SFX_GRACE_FRAMES)
 					startWorldImpactQuiet(game, game->bombShot.x, game->bombShot.y);
 				else
@@ -10607,8 +10625,11 @@ static void updateWingmanBombingRun(GameState* game, UBYTE** worldBuffers,
 		game->hitsCount++;
 		updateHudValues(game);
 		*hudDirty = 1;
+		/* Always a real locked ground target here - the CPU bombing run
+		 * aims precisely at targetLock's own position, it never "misses"
+		 * onto plain land the way a freely-aimed Player 2 bomb can. */
 		startGroundTargetHitImpact(game, wingman->bomb.x,
-			wingman->bomb.y, targetColumn, targetRow);
+			wingman->bomb.y, targetColumn, targetRow, HAR_OBJ_GROUND_TARGET);
 		wingman->bomb.active = 0;
 	} else if (wingman->bomb.x < -BOMB_SHOT_PIXEL_BOB_WIDTH ||
 		wingman->bomb.y >= HUD_TOP) {

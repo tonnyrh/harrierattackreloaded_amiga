@@ -88,6 +88,11 @@ $Sounds = @(
         Prompt = "single building or ship impact, compact crunch and low dry thud, isolated game sound, no music or voice"
     },
     @{
+        Source = "ground_miss_0.wav"; Runtime = "ground_miss_1.raw"; Preview = "ground_miss_1.wav"
+        Duration = 0.55; MaxMs = 700; BassBoost = 1.0
+        Prompt = "single bomb impact on bare earth, soft dry dirt thud with a brief low rumble, no metal or debris, isolated game sound, no music or voice"
+    },
+    @{
         Source = "idle_0.wav"; Runtime = "carrier_idle_1.adpcm"; Preview = "carrier_idle_1.wav"; Adpcm = $true
         Duration = 4.0; MaxMs = 4000
         Prompt = "quiet aircraft carrier deck ambience, distant machinery and wind, isolated subtle game ambience, no music or voice"
