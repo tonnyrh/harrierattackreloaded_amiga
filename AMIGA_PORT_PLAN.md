@@ -3789,3 +3789,127 @@ detail of that throwaway test setup, not evidence against the ADF's own
 structure, which `exe2adf` reported as a valid OFS volume with a correct
 boot-executing `startup-sequence` both times) - worth a real floppy-boot
 check outside this harness if that specific path matters.
+
+## Sprint 15.28.0 - Wingman: Player 2 human control
+
+Runnable result: selecting `Wingman: Player 2` on the main menu gives a
+second physical joystick real control of the Wingman - free 4-direction
+flight, fire, and bomb-drop - instead of doing nothing (the setting existed
+since Sprint 15.1 but nothing ever consumed it).
+
+**ASM reference first, as always.** `checkwingmankeys` (asm:2664-2711) moves
+the Wingman by a fixed 1 character cell per key-test call, clamped to the
+screen's own character-grid edges, with `controlwingmanfunc` (asm:2732-2734)
+dispatching straight to it and skipping every CPU AI state (formation,
+intercept, bombing-run) entirely once `wingmanon==2` - Player 2 control is a
+wholly separate control path, not an overlay on the CPU logic. Takeoff
+differs from CPU too: `wingmanon==1` auto-launches once the player clears
+the deck; Player 2 must press Up before the carrier scrolls off-screen
+instead (asm:2611-2625). Fire is `testkeyfire2`/`checkfirewingmanmissile`
+(asm:3612-3634, Left+Fire selects Maverick on the player's own missile, but
+the Wingman's weapon has no Maverick variant in this port so that
+distinction doesn't apply); bomb is `testkeyspace2`/`checklaunchbombwingmanpl2`
+(asm:931-941, infinite supply, "he's a powerup").
+
+**Hardware**: physical joystick port 1 (`JOY0DAT`, `$DFF00A`) - the same
+port the mouse normally occupies, already free since this game never reads
+mouse *movement*, only its two buttons (`MouseLeft()`/`MouseRight()`, which
+are really just CIAAPRA/POTINP port-1 button pins regardless of what's
+plugged in). New `Joy0Dat()`/`JoyUp2()`/`JoyDown2()`/`JoyLeft2()`/`JoyRight2()`
+mirror the existing Joy1Dat-based Player 1 functions exactly; `Joy0Fire()`/
+`Joy0Fire1()` are thin aliases over the same reads `MouseLeft()`/`MouseRight()`
+already use. `ReadInput()` gained a `suppressMouse` parameter, set only while
+an in-progress session actually has Player 2 selected, so Player 2's presses
+on those shared pins stop also registering as Player 1 fire/bomb/menu-nav.
+
+**Movement**: CPC's literal "1 tile per key-test call" is deliberately
+rendered pixel-smooth instead (the player's own `PLAYER_MOVE_SPEED_PIXELS`,
+2px/frame) - this project's established practice of keeping the logical rule
+(free 4-direction, no AI) while smoothing the presentation, the same choice
+already made for the CPU Wingman's row-following and the player's own
+motion. Screen bounds reuse the player's own `PLAYER_MIN/MAX_X/Y`.
+
+**Weapons reuse the CPU Wingman's own fields unchanged** (`wingman->rocket`/
+`wingman->bomb`) - fire mirrors `updateWingmanIntercept()`'s missile-spawn
+fields exactly; bomb mirrors `updateWingmanBombingRun()`'s bomb-spawn fields.
+The bomb's *fall physics* needed a genuine fork, not reuse, though: the CPU's
+own bombing-run tail only checks "have I reached the one pre-selected
+target's height" (`bombTargetY`/`bombTargetWorldX`, set by the shared
+ground-target lock) - a Player 2 bomb can be dropped anywhere, with nothing
+locked on. New `updateWingmanPlayer2Bomb()` gives it the same kind of generic
+"what's actually under me" object-map collision the player's own `bombShot`
+already has (ground target/land crater/town block/enemy ship/own frigate/
+flak-absorb, one centre-bottom probe since this bomb has no forward launch
+momentum to land off-centre from). `updateWingmanBombingRun()`'s existing
+tail is now gated to `WINGMAN_CONTROL_CPU` so the two never both process the
+same `wingman->bomb` in the same frame. Rendering needed no changes at all -
+both `drawBombPixelBob()`/`drawRocketPixelBob()` for the Wingman's own
+weapons already run unconditionally off `game.wingman.bomb`/`.rocket`'s own
+state, regardless of what controls the Wingman.
+
+**Landing needed no new code either.** The existing hover-phase transition
+(`if (game->wingman.active) game->wingman.mode = WINGMAN_LANDING_APPROACH;`)
+only checks `active`, not which control mode set it - so a Player 2-flown
+Wingman gets swept into the same automatic landing autopilot the CPU uses
+the moment the mission ends, exactly like the player's own plane already
+loses manual control during the final approach slide. Manual Player 2
+landing (CPC's own dual-waypoint-with-side-choice logic) remains deferred,
+same as before this sprint - this just prevents a Player 2 Wingman from
+blocking mission completion by handing it off automatically instead.
+
+**Bug found and fixed along the way, not Player-2-specific**: the spawn
+trigger that launches the Wingman when the player clears the deck
+(`TAKEOFF_STATE_LIFTING -> AIRBORNE`) only ever checked `!wingman.active`,
+never `!wingman.destroyed`. Since Sprint 15.26 made `destroyed` survive the
+post-landing mission reset specifically so a lost Wingman *stays* lost until
+a powerup revives it, this was a real gap: at the very next mission's
+takeoff, the same "not active" state (true for a destroyed Wingman too)
+would have silently respawned it for free, undoing that persistence
+entirely. Both the CPU and Player 2 branches of the spawn trigger now also
+require `!destroyed`.
+
+**Deliberately not implemented** (per CPC's own "left behind" rule,
+asm:2611-2625): if Player 2 doesn't launch before the carrier scrolls out of
+view, real CPC leaves the Wingman recoverable later as a Wingman powerup.
+This port just leaves it un-launched permanently for that run instead - same
+end state as `Wingman: Off`, simpler, but not the full CPC behaviour.
+
+Verified: clean rebuild. Headless autoplay with a temporary synthetic
+Player 2 input script (brief Up pulse to launch, then Down+Right to bring it
+into clear view, then Fire, then Bomb - since no real second joystick exists
+in this harness) confirmed launch and free movement visually (a zoomed
+screenshot shows a distinct second grey aircraft, independent of the player
+and the enemy plane, at low altitude exactly where commanded) and confirmed
+fire/bomb definitively via two temporary perf-log counters that both read
+exactly 1 right after their respective scripted presses - deterministic
+proof, not dependent on catching the right video frame. All temporary test
+flags, the synthetic input script, and the verification counters were fully
+reverted afterward.
+
+## Sprint 15.29.0 - Enemy plane terrain obstruction
+
+User report: the enemy plane can visually fly into/under solid ground.
+
+**Real CPC only allows the altitude step when both cells ahead are sky/cloud
+alone** (`checkflakobstructionenemyplane`/`checksecondaryobstruction`,
+asm:6585-6600) - it reads the candidate row's tile at the plane's own column
+and the one beside it (matching the plane's 2-tile width) and cancels the
+climb/dive unless *both* come back as CLOUD(0) or SKY(1); anything else -
+land, town, ship, flak - blocks it. The port's own existing comment on this
+code described it as "respects flak obstructions", and the implementation
+matched that description literally: it only ever checked for
+`HAR_OBJ_FLAK` specifically, not the real inclusive rule. A plane converging
+toward the player's or Wingman's altitude would climb or dive straight
+through a hillside with nothing stopping it, rendering embedded in solid
+terrain - exactly the reported bug, and not a faithful CPC quirk (real CPC
+blocks this case too), just an incomplete port of the check.
+
+**Fix**: `updateEnemyPlane()`'s obstruction check now blocks the move
+whenever either of the two candidate-row cells (the plane's column and the
+next one over) is anything other than `HAR_OBJ_SKY`/`HAR_OBJ_CLOUD`, matching
+the real two-cell, allow-list rule exactly instead of a single flak-only
+denylist check. Re-evaluated every frame like before, so the plane resumes
+climbing/diving the instant the cell(s) ahead clear.
+
+Verified: clean rebuild, headless autoplay smoke test completed with no
+crash/hang and the usual expected game-over freeze from unavoided obstacles.

@@ -609,6 +609,20 @@ typedef struct InputState {
 	UBYTE lastRawKey;
 } InputState;
 
+/* Sprint 15.28: Wingman: Player 2's own controller - deliberately separate
+ * from InputState rather than extra fields bolted onto it, since it reads a
+ * different physical port and only ever matters while wingmanControl ==
+ * WINGMAN_CONTROL_PLAYER2. No keyboard fallback (unlike Player 1) - a
+ * missing second joystick just means Player 2 mode has nothing to fly. */
+typedef struct Player2InputState {
+	UBYTE up;
+	UBYTE down;
+	UBYTE left;
+	UBYTE right;
+	UBYTE fire;
+	UBYTE bomb;
+} Player2InputState;
+
 typedef struct TelemetrySample {
 	UWORD frame;
 	UWORD scrollX;
@@ -744,7 +758,11 @@ typedef enum WingmanMode {
 	WINGMAN_BOMB_DROP = 10,
 	WINGMAN_DESTROYED = 11,
 	WINGMAN_WRECK = 12,
-	WINGMAN_TAKEOFF = 13
+	WINGMAN_TAKEOFF = 13,
+	/* Sprint 15.28: free 4-direction human flight under Wingman: Player 2 -
+	 * CPC's checkwingmankeys (asm:2664-2711), an entirely separate control
+	 * path from every CPU AI state above, not an overlay on top of one. */
+	WINGMAN_PLAYER2_FLIGHT = 14
 } WingmanMode;
 
 /* Sprint 15.3: the wingman's own flight state. Deliberately holds only what
@@ -2939,6 +2957,19 @@ static __attribute__((always_inline)) inline short MouseLeft(void) {
 	return !((*(volatile UBYTE*)0xbfe001) & 64);
 }
 
+/* Sprint 15.28: Wingman: Player 2 reuses these exact same port-1 pins as its
+ * fire/bomb buttons - a mouse's buttons and a joystick's buttons share the
+ * same electrical pins on this port regardless of which device is actually
+ * plugged in, so no new hardware access is needed, only a second name for
+ * the same read used when Player 2 control is active. */
+static __attribute__((always_inline)) inline short Joy0Fire(void) {
+	return MouseLeft();
+}
+
+static __attribute__((always_inline)) inline short Joy0Fire1(void) {
+	return !((*(volatile UWORD*)0xdff016) & (1 << 10));
+}
+
 static __attribute__((always_inline)) inline short MouseRight(void) {
 	return !((*(volatile UWORD*)0xdff016) & (1 << 10));
 }
@@ -3013,6 +3044,33 @@ static short JoyUp(void) {
 	return ((joy & 0x0100) != 0) ^ ((joy & 0x0200) != 0);
 }
 
+/* Sprint 15.28: Wingman: Player 2's own joystick, physical port 1 (JOY0DAT,
+ * $DFF00A) - the same port the mouse normally occupies. Bit layout/XOR-diagonal
+ * decode is identical to Joy1Dat() above, just the other port register. */
+static __attribute__((always_inline)) inline UWORD Joy0Dat(void) {
+	return *(volatile UWORD*)0xdff00a;
+}
+
+static short JoyRight2(void) {
+	UWORD joy = Joy0Dat();
+	return (joy & 0x0002) != 0;
+}
+
+static short JoyLeft2(void) {
+	UWORD joy = Joy0Dat();
+	return (joy & 0x0200) != 0;
+}
+
+static short JoyDown2(void) {
+	UWORD joy = Joy0Dat();
+	return ((joy & 0x0001) != 0) ^ ((joy & 0x0002) != 0);
+}
+
+static short JoyUp2(void) {
+	UWORD joy = Joy0Dat();
+	return ((joy & 0x0100) != 0) ^ ((joy & 0x0200) != 0);
+}
+
 static void KeyboardAck(void) {
 	ciaa->ciasdr = 0;
 	ciaa->ciacra |= CIACRAF_SPMODE;
@@ -3064,7 +3122,12 @@ static UBYTE KeyDown(UBYTE rawKey) {
 	return keyboardDown[rawKey & 0x7f] != 0;
 }
 
-static void ReadInput(InputState* input) {
+/* suppressMouse: Wingman: Player 2 reuses port 1's mouse-button pins as its
+ * own fire/bomb buttons (see Joy0Fire()/Joy0Fire1()) - reading them here too
+ * while that mode is live would let Player 2's presses also register as
+ * Player 1 fire/bomb/menu-navigate. Pass 1 only while an in-progress session
+ * actually has Player 2 control selected. */
+static void ReadInput(InputState* input, UBYTE suppressMouse) {
 	PollKeyboard();
 	memset(input, 0, sizeof(*input));
 
@@ -3089,11 +3152,14 @@ static void ReadInput(InputState* input) {
 	UBYTE keyP = KeyDown(RAWKEY_P);
 	UBYTE keyR = KeyDown(RAWKEY_R);
 
+	UBYTE mouseLeft = !suppressMouse && MouseLeft();
+	UBYTE mouseRight = !suppressMouse && MouseRight();
+
 	input->up = JoyUp() || keyUp;
 	input->down = JoyDown() || keyDown;
 	input->left = JoyLeft() || keyLeft;
 	input->right = JoyRight() || keyRight;
-	input->fire = JoyFire() || MouseLeft() || keyFire;
+	input->fire = JoyFire() || mouseLeft || keyFire;
 	/* JoyFire1() (joystick port 2's second button) gives a real 2-button
 	 * joystick/pad bomb access, matching the real Amstrad's button0=bomb/
 	 * button1=rocket pairing on the other button (JoyFire()/button0 stays
@@ -3101,7 +3167,7 @@ static void ReadInput(InputState* input) {
 	 * the existing left-mouse=fire pairing; keyBomb (B/Alt/Space) covers
 	 * keyboard. A single-fire-button joystick still can't reach bomb this
 	 * way - same limitation the real Amstrad's own single-button mode has. */
-	input->bomb = keyBomb || MouseRight() || ReadJoyFire1Debounced();
+	input->bomb = keyBomb || mouseRight || ReadJoyFire1Debounced();
 	input->eject = keyEject;
 	input->shift = keyShift;
 	input->control = keyControl;
@@ -3110,11 +3176,26 @@ static void ReadInput(InputState* input) {
 	input->p = keyP;
 	input->r = keyR;
 	input->menuPrev = input->up;
-	input->menuNext = input->down || MouseRight();
+	input->menuNext = input->down || mouseRight;
 	input->select = input->fire;
 	input->cancel = KeyDown(RAWKEY_ESCAPE);
-	input->any = input->up || input->down || input->left || input->right || input->fire || input->bomb || input->eject || MouseRight();
+	input->any = input->up || input->down || input->left || input->right || input->fire || input->bomb || input->eject || mouseRight;
 	input->lastRawKey = lastKeyboardRawKey;
+}
+
+/* Sprint 15.28: Wingman: Player 2's own controller - joystick port 1
+ * (Joy0Dat) for direction, the same port's two button pins (already read by
+ * MouseLeft()/MouseRight() for the mouse case) for fire/bomb. No debounce on
+ * the second button here - ReadJoyFire1Debounced() exists because Player 1's
+ * bomb button flickered enough to double-fire; revisit if Player 2 shows the
+ * same symptom. */
+static void ReadPlayer2Input(Player2InputState* input) {
+	input->up = (UBYTE)JoyUp2();
+	input->down = (UBYTE)JoyDown2();
+	input->left = (UBYTE)JoyLeft2();
+	input->right = (UBYTE)JoyRight2();
+	input->fire = (UBYTE)Joy0Fire();
+	input->bomb = (UBYTE)Joy0Fire1();
 }
 
 static UBYTE Pressed(UBYTE now, UBYTE previous) {
@@ -3137,7 +3218,7 @@ static void WaitFramesOrSelect(UWORD frames) {
 	InputState input;
 	UWORD start = frameCounter;
 	while ((UWORD)(frameCounter - start) < frames) {
-		ReadInput(&input);
+		ReadInput(&input, 0);
 		if (input.select)
 			break;
 		WaitVbl();
@@ -3147,7 +3228,7 @@ static void WaitFramesOrSelect(UWORD frames) {
 static void WaitForInputRelease(void) {
 	InputState input;
 	do {
-		ReadInput(&input);
+		ReadInput(&input, 0);
 		WaitVbl();
 	} while (input.any);
 }
@@ -8524,7 +8605,8 @@ static void updateWingmanVisualY(GameState* game) {
 		return;
 	if (wingman->mode == WINGMAN_TAKEOFF ||
 		wingman->mode == WINGMAN_LANDING_APPROACH ||
-		wingman->mode == WINGMAN_LANDING_DECK)
+		wingman->mode == WINGMAN_LANDING_DECK ||
+		wingman->mode == WINGMAN_PLAYER2_FLIGHT)
 		return;
 
 	WORD targetY = (WORD)(wingman->row * GAME_TILE_HEIGHT);
@@ -8587,13 +8669,89 @@ static void updateWingmanTakeoff(GameState* game) {
 	}
 }
 
+/* Sprint 15.28: Wingman: Player 2's own control - CPC checkwingmankeys
+ * (asm:2664-2711) moves the wingman by a fixed 1 character cell per key-test
+ * call with no CPU AI involved at all once selected (controlwingmanfunc
+ * dispatches straight here, asm:2732-2734, skipping every formation/
+ * intercept/bombing-run state above entirely). This port gives Player 2 the
+ * same continuous per-frame pixel speed as the player's own plane
+ * (PLAYER_MOVE_SPEED_PIXELS) instead of CPC's coarser per-call tile jump -
+ * matching this project's established practice of keeping the logical rule
+ * (free 4-direction movement, no formation/intercept AI) while rendering it
+ * pixel-smooth, the same choice already made for the player's own motion and
+ * the CPU Wingman's row-following. Screen bounds reuse the player's own
+ * PLAYER_MIN/MAX_X/Y - CPC clamps to its own screen's character-grid edges
+ * (asm:2673-2702), this is that same rule translated to this port's actual
+ * play area. */
+static void updateWingmanPlayer2Control(GameState* game, UBYTE** worldBuffers,
+	const Player2InputState* input2, const Player2InputState* previousInput2) {
+	WingmanState* wingman = &game->wingman;
+	if (game->wingmanControl != WINGMAN_CONTROL_PLAYER2)
+		return;
+
+	if (!wingman->active) {
+		/* CPC: CPU auto-launches once the player passes the parked Wingman
+		 * on deck; Player 2 must press Up before the carrier scrolls out of
+		 * reach instead (asm:2611-2625, "OTHERWISE PLAYER 2 MUST TAKEOFF
+		 * BEFORE OUT OF VIEW"). This port doesn't yet implement the "left
+		 * behind" consequence CPC describes (recoverable later as a Wingman
+		 * powerup) - simply not launching just means no Wingman this run,
+		 * same end result as Wingman: Off. */
+		if (wingman->mode != WINGMAN_ON_DECK || wingman->destroyed || !input2->up)
+			return;
+		wingman->active = 1;
+		wingman->mode = WINGMAN_PLAYER2_FLIGHT;
+		carrierParkedWingmanVisible = 0;
+		dirtyRedrawNativeCarrierAt(worldBuffers, 8);
+		return;
+	}
+
+	if (wingman->mode != WINGMAN_PLAYER2_FLIGHT)
+		return;
+
+	if (input2->up && wingman->screenY > PLAYER_MIN_Y)
+		wingman->screenY = (WORD)(wingman->screenY - PLAYER_MOVE_SPEED_PIXELS);
+	if (input2->down && wingman->screenY < PLAYER_MAX_Y)
+		wingman->screenY = (WORD)(wingman->screenY + PLAYER_MOVE_SPEED_PIXELS);
+	if (input2->left && wingman->interceptScreenX > PLAYER_MIN_X)
+		wingman->interceptScreenX = (WORD)(wingman->interceptScreenX - PLAYER_MOVE_SPEED_PIXELS);
+	if (input2->right && wingman->interceptScreenX < PLAYER_MAX_X)
+		wingman->interceptScreenX = (WORD)(wingman->interceptScreenX + PLAYER_MOVE_SPEED_PIXELS);
+	wingman->row = (WORD)(wingman->screenY / GAME_TILE_HEIGHT);
+
+	/* CPC checkfirewingmanmissile: Fire launches the plain missile - no
+	 * Maverick lock-on exists for the Wingman's weapon in this port (it
+	 * always reuses the player's plain, non-Maverick rocket art/behaviour),
+	 * so Left+Fire isn't given a separate meaning here. */
+	if (!wingman->rocket.active && Pressed(input2->fire, previousInput2->fire)) {
+		memset(&wingman->rocket, 0, sizeof(wingman->rocket));
+		wingman->rocket.active = 1;
+		wingman->rocket.x = wingman->interceptScreenX;
+		wingman->rocket.y = wingman->screenY;
+		wingman->rocket.dx = ROCKET_SPEED_PIXELS;
+	}
+	/* CPC checklaunchbombwingmanpl2: Space drops the infinite-supply bomb -
+	 * same fields updateWingmanBombingRun() sets for the CPU's own bomb. */
+	if (!wingman->bomb.active && Pressed(input2->bomb, previousInput2->bomb)) {
+		memset(&wingman->bomb, 0, sizeof(wingman->bomb));
+		wingman->bomb.active = 1;
+		wingman->bomb.x = (WORD)(wingman->interceptScreenX + 6);
+		wingman->bomb.y = (WORD)(wingman->screenY + PLAYER_SPRITE_HEIGHT - 1);
+		wingman->bomb.worldX = (LONG)game->scrollX + wingman->bomb.x;
+		wingman->bomb.worldAnchored = 1;
+		wingman->bomb.dy = BOMB_SPEED_Y_PIXELS;
+		wingman->bomb.timer = BOMB_FORWARD_MOMENTUM_FRAMES;
+	}
+}
+
 static WORD wingmanScreenX(const GameState* game) {
 	const WingmanState* wingman = &game->wingman;
 	return (wingman->mode == WINGMAN_TAKEOFF ||
 		wingman->mode == WINGMAN_INTERCEPT_APPROACH ||
 		wingman->mode == WINGMAN_BOMB_APPROACH ||
 		wingman->mode == WINGMAN_LANDING_APPROACH ||
-		wingman->mode == WINGMAN_LANDING_DECK)
+		wingman->mode == WINGMAN_LANDING_DECK ||
+		wingman->mode == WINGMAN_PLAYER2_FLIGHT)
 		? wingman->interceptScreenX
 		: (WORD)(game->playerX -
 			WINGMAN_FORMATION_COLUMNS_BEHIND * GAME_TILE_WIDTH);
@@ -8610,7 +8768,8 @@ static void updateWingmanSprite(UWORD* sprite, UWORD* unusedSprite7, const GameS
 		 wingman->mode != WINGMAN_INTERCEPT_APPROACH &&
 		 wingman->mode != WINGMAN_BOMB_APPROACH &&
 		 wingman->mode != WINGMAN_LANDING_APPROACH &&
-		 wingman->mode != WINGMAN_LANDING_DECK)) {
+		 wingman->mode != WINGMAN_LANDING_DECK &&
+		 wingman->mode != WINGMAN_PLAYER2_FLIGHT)) {
 		hideHardwareSprite(sprite);
 		return;
 	}
@@ -8751,6 +8910,90 @@ static void startGroundTargetHitImpact(GameState* game, WORD x, WORD y,
 	startWorldImpactQuiet(game, x, y);
 	playGroundTargetHitSfx((UWORD)(worldColumn ^
 		((LONG)tileY << 8) ^ frameCounter), x);
+}
+
+/* Sprint 15.28: a Player 2-dropped bomb has no target-lock to aim at (unlike
+ * the CPU's own bombing run above, which only ever needs to check "have I
+ * reached the one pre-selected target's height") - it needs the same kind of
+ * generic "what's actually under me" object-map collision the player's own
+ * bombShot already has in updateWeapons(). Deliberately a single centre-
+ * bottom probe rather than that function's four redundant probe points -
+ * this bomb has no forward launch momentum to land slightly off-centre from
+ * (see the bomb-drop trigger in updateWingmanPlayer2Control(), which starts
+ * it already falling straight down), so one probe is enough to be correct,
+ * not just simpler. */
+static void updateWingmanPlayer2Bomb(GameState* game, UBYTE** worldBuffers, UBYTE* hudDirty) {
+	WingmanState* wingman = &game->wingman;
+	if (!wingman->bomb.active || game->wingmanControl != WINGMAN_CONTROL_PLAYER2)
+		return;
+
+	wingman->bomb.y = (WORD)(wingman->bomb.y + wingman->bomb.dy);
+	if ((wingman->bomb.timer % BOMB_EXTRA_FALL_INTERVAL) == (BOMB_EXTRA_FALL_INTERVAL - 1))
+		wingman->bomb.y = (WORD)(wingman->bomb.y + wingman->bomb.dy);
+	wingman->bomb.x = (WORD)(wingman->bomb.worldX - game->scrollX);
+	if (wingman->bomb.timer < 255)
+		wingman->bomb.timer++;
+
+	if (wingman->bomb.y >= SEA_SURFACE_Y || wingman->bomb.x < -16) {
+		wingman->bomb.active = 0;
+		return;
+	}
+
+	ObjectCell cell;
+	LONG worldColumn = -1;
+	WORD tileY = -1;
+	if (!objectCellForWorldPoint(game, (WORD)(wingman->bomb.x + 3),
+			(WORD)(wingman->bomb.y + BOMB_SHOT_PIXEL_BOB_HEIGHT), &cell, &worldColumn, &tileY))
+		return;
+	if (cell.id == HAR_OBJ_SKY || cell.id == HAR_OBJ_CLOUD)
+		return;
+
+	if (cell.id == HAR_OBJ_GROUND_TARGET) {
+		game->bonusScore += GROUND_TARGET_SCORE_VALUE;
+		game->hitsCount++;
+		updateHudValues(game);
+		markTargetDestroyedAtColumn(worldColumn);
+		if (game->targetLock.active &&
+			game->targetLock.worldX / GAME_TILE_WIDTH == worldColumn)
+			game->targetLock.active = 0;
+		addCpcHitSmokeAtColumnRow(worldColumn, tileY);
+		dirtyRedrawWorldColumn(worldBuffers, worldColumn);
+		*hudDirty = 1;
+	} else if (cell.id == HAR_OBJ_ENEMY_SHIP) {
+		UBYTE shipChanged = damageEnemyShipAtColumnRow(worldColumn, tileY);
+		game->bonusScore += ENEMY_SHIP_SCORE_VALUE;
+		game->hitsCount++;
+		updateHudValues(game);
+		dirtyRedrawWorldColumn(worldBuffers, worldColumn);
+		if (shipChanged)
+			dirtyRedrawWorldColumn(worldBuffers, worldColumn - 1);
+		*hudDirty = 1;
+	} else if (cell.id == HAR_OBJ_OWN_FRIGATE) {
+		game->playerFrigateStatus = PLAYER_FRIGATE_STATUS_HIT;
+		addCpcHitSmokeAtColumnRow(worldColumn, tileY);
+		dirtyRedrawWorldColumn(worldBuffers, worldColumn);
+		dirtyRedrawWorldColumn(worldBuffers, worldColumn - 1);
+	} else if (cell.id == HAR_OBJ_LAND) {
+		if (markLandCraterAtColumnRow(worldColumn, tileY))
+			dirtyRedrawWorldColumn(worldBuffers, worldColumn);
+	} else if (cell.id == HAR_OBJ_TOWN_BLOCK) {
+		game->bonusScore += TOWN_BLOCK_SCORE_VALUE;
+		game->hitsCount++;
+		updateHudValues(game);
+		addCpcHitSmokeAtColumnRow(worldColumn, tileY);
+		dirtyRedrawWorldColumn(worldBuffers, worldColumn);
+		*hudDirty = 1;
+	}
+
+	if (cell.id == HAR_OBJ_FLAK || cell.id == HAR_OBJ_SMOKE) {
+		/* Absorbed with no visible/audible effect, matching the player's
+		 * own bomb against the same object types. */
+	} else if (objectUsesGroundTargetHitSfx(cell.id)) {
+		startGroundTargetHitImpact(game, wingman->bomb.x, wingman->bomb.y, worldColumn, tileY);
+	} else {
+		startWorldImpact(game, wingman->bomb.x, wingman->bomb.y);
+	}
+	wingman->bomb.active = 0;
 }
 
 static void destroyWingman(GameState* game) {
@@ -9936,18 +10179,28 @@ static UBYTE updateEnemyPlane(GameState* game, UBYTE scrollPixels) {
 	else
 		game->enemyPlane.dy = 0;
 
-	/* Real CPC also respects flak obstructions while steering (same routine,
-	 * :6585-6600) - it won't climb/dive into a row a flak hazard occupies.
-	 * Check the object-map cell the plane is about to step into and cancel
-	 * the move for this frame if it's flak; re-evaluated every frame, so it
-	 * naturally resumes once the flak scrolls fully past (flak itself is
-	 * player-indestructible - see trySpawnFlak() - so scrolling past is the
-	 * only way this ever clears). */
+	/* Real CPC blocks the altitude step against ANY obstruction, not just
+	 * flak (checkflakobstructionenemyplane/checksecondaryobstruction,
+	 * asm:6585-6600): it reads the candidate row's tile at the plane's own
+	 * column and the one beside it (matching its 2-tile width) and only
+	 * allows the move when BOTH read CLOUD(0) or SKY(1) - anything else
+	 * (land, town, flak, ships...) cancels it, same as flak alone would.
+	 * Previously only checking for flak specifically let the plane climb or
+	 * dive straight into a hillside, rendering embedded in solid terrain -
+	 * re-evaluated every frame, so the move resumes as soon as the column(s)
+	 * ahead clear (terrain scrolls past; flak only clears if shot down or
+	 * scrolls past, per trySpawnFlak()). */
 	if (game->enemyPlane.dy != 0) {
 		LONG enemyWorldColumn = ((LONG)game->scrollX + game->enemyPlane.x) >> 3;
 		WORD candidateTileY = (WORD)((game->enemyPlane.y + game->enemyPlane.dy) >> 3);
 		ObjectCell aheadCell;
-		if (objectCellForWorldColumnTile(enemyWorldColumn, candidateTileY, &aheadCell) && aheadCell.id == HAR_OBJ_FLAK)
+		UBYTE blocked = !objectCellForWorldColumnTile(enemyWorldColumn, candidateTileY, &aheadCell) ||
+			(aheadCell.id != HAR_OBJ_SKY && aheadCell.id != HAR_OBJ_CLOUD);
+		if (!blocked) {
+			blocked = !objectCellForWorldColumnTile(enemyWorldColumn + 1, candidateTileY, &aheadCell) ||
+				(aheadCell.id != HAR_OBJ_SKY && aheadCell.id != HAR_OBJ_CLOUD);
+		}
+		if (blocked)
 			game->enemyPlane.dy = 0;
 	}
 
@@ -10306,7 +10559,11 @@ static void updateWingmanBombingRun(GameState* game, UBYTE** worldBuffers,
 		}
 	}
 
-	if (!wingman->bomb.active)
+	/* This tail assumes the fixed pre-selected bombTargetY/bombTargetWorldX
+	 * only the CPU's own approach logic above ever sets - a Player 2-dropped
+	 * bomb (updateWingmanPlayer2Control()) has no such lock-on target and
+	 * runs its own independent generic ground/object collision instead. */
+	if (!wingman->bomb.active || game->wingmanControl != WINGMAN_CONTROL_CPU)
 		return;
 	wingman->bomb.y += wingman->bomb.dy;
 	if ((wingman->bomb.timer % BOMB_EXTRA_FALL_INTERVAL) ==
@@ -11206,9 +11463,13 @@ int main(void) {
 	initGameState(&game);
 	InputState input;
 	InputState previousInput;
+	Player2InputState input2;
+	Player2InputState previousInput2;
 	UBYTE lastInputMask = 0xff;
 
-	ReadInput(&input);
+	memset(&input2, 0, sizeof(input2));
+	previousInput2 = input2;
+	ReadInput(&input, 0);
 	previousInput = input;
 	drawMenuScreen(screenBuffer, selected, skillLevel, livesSetting, wingmanControl, highScore);
 	initMenuTicker(menuTickerBitmap);
@@ -11241,7 +11502,12 @@ int main(void) {
 			}
 		}
 		previousInput = input;
-		ReadInput(&input);
+		ReadInput(&input, (UBYTE)(inGameScene && game.wingmanControl == WINGMAN_CONTROL_PLAYER2));
+		previousInput2 = input2;
+		if (inGameScene && game.wingmanControl == WINGMAN_CONTROL_PLAYER2)
+			ReadPlayer2Input(&input2);
+		else
+			memset(&input2, 0, sizeof(input2));
 #if HAR_HEADLESS_AUTOPLAY
 		{
 			static UBYTE headlessStartSent = 0;
@@ -11771,8 +12037,14 @@ int main(void) {
 						/* Replace the baked parked aircraft with a hardware
 						 * sprite at the exact same deck position. Its takeoff
 						 * state then performs the CPC journey into formation
-						 * over subsequent frames. */
-						if (game.wingmanControl == WINGMAN_CONTROL_CPU && !game.wingman.active) {
+						 * over subsequent frames. !destroyed guards both
+						 * branches below - a Wingman lost earlier in the run
+						 * must stay grounded at the start of the next mission
+						 * too (destroyed survives the session reset, see the
+						 * post-landing transition below), not respawn for
+						 * free just because a new takeoff began. */
+						if (game.wingmanControl == WINGMAN_CONTROL_CPU &&
+							!game.wingman.active && !game.wingman.destroyed) {
 							game.wingman.active = 1;
 							game.wingman.mode = WINGMAN_TAKEOFF;
 							game.wingman.interceptScreenX =
@@ -11794,6 +12066,22 @@ int main(void) {
 							 * slots and made it appear behind the first enemy
 							 * frigate until those columns streamed again. */
 							dirtyRedrawNativeCarrierAt(worldBuffers, 8);
+						} else if (game.wingmanControl == WINGMAN_CONTROL_PLAYER2 &&
+							!game.wingman.active && !game.wingman.destroyed) {
+							/* Not airborne yet - CPC's checkwingmankeys/
+							 * liftoff rule requires Player 2 to press Up
+							 * before the carrier scrolls out of reach (see
+							 * updateWingmanPlayer2Control()), unlike CPU's
+							 * automatic launch above. Only record the deck
+							 * position here; that function performs the
+							 * actual activation and carrier-composite swap
+							 * once Up is pressed. */
+							game.wingman.mode = WINGMAN_ON_DECK;
+							game.wingman.interceptScreenX =
+								WINGMAN_TAKEOFF_DECK_X;
+							game.wingman.screenY = WINGMAN_TAKEOFF_DECK_Y;
+							game.wingman.row =
+								WINGMAN_TAKEOFF_DECK_Y / GAME_TILE_HEIGHT;
 						}
 					}
 				} else if (game.landingState == LANDING_STATE_HOVER) {
@@ -11891,6 +12179,8 @@ int main(void) {
 					pendingEnemyMissileSpriteUpdate = 1;
 				updateWingmanFormationRow(&game);
 				updateWingmanTakeoff(&game);
+				updateWingmanPlayer2Control(&game, worldBuffers, &input2, &previousInput2);
+				updateWingmanPlayer2Bomb(&game, worldBuffers, &hudDirty);
 				updateWingmanIntercept(&game);
 				updateWingmanBombingRun(&game, worldBuffers, &hudDirty);
 				updateWingmanLanding(&game);
