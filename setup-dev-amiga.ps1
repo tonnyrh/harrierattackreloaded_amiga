@@ -38,6 +38,62 @@ function Ensure-Directory {
     }
 }
 
+function Ensure-BartmanToolchainPath {
+    $extensionRoot = Join-Path $env:USERPROFILE ".vscode\extensions"
+    $extension = Get-ChildItem -LiteralPath $extensionRoot -Directory -ErrorAction SilentlyContinue |
+        Where-Object Name -Like "bartmanabyss.amiga-debug-*" |
+        Sort-Object LastWriteTimeUtc -Descending |
+        Select-Object -First 1
+
+    if (-not $extension) {
+        throw "Fant ikke BartmanAbyss.amiga-debug under $extensionRoot. Installer extensionen og kjor oppsettet pa nytt."
+    }
+
+    $bin = Join-Path $extension.FullName "bin\win32"
+    $compilerBin = Join-Path $bin "opt\bin"
+    $make = Join-Path $bin "gnumake.exe"
+    $compiler = Join-Path $compilerBin "m68k-amiga-elf-gcc.exe"
+    if (-not (Test-Path -LiteralPath $make) -or
+        -not (Test-Path -LiteralPath $compiler)) {
+        throw "Bartman-extensionen finnes, men verktoykjeden er ikke komplett under $bin. Start VS Code en gang og kjor oppsettet pa nytt."
+    }
+
+    $toolPaths = @($compilerBin, $bin)
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    $entries = @($userPath -split ";" | Where-Object { $_ -and $_.Trim() })
+
+    # VS Code keeps the version in the extension directory name. Remove paths
+    # belonging to an older Bartman version before adding the current one.
+    $entries = @($entries | Where-Object {
+        $_ -notmatch "(?i)[\\/]\.vscode[\\/]extensions[\\/]bartmanabyss\.amiga-debug-[^\\/;]+[\\/]bin[\\/]win32(?:[\\/]opt[\\/]bin)?[\\/]?$"
+    })
+    foreach ($toolPath in $toolPaths) {
+        if (-not ($entries | Where-Object {
+            [string]::Equals($_.TrimEnd([char[]]"\/"), $toolPath.TrimEnd([char[]]"\/"),
+                [System.StringComparison]::OrdinalIgnoreCase)
+        })) {
+            $entries += $toolPath
+        }
+        if (-not (($env:PATH -split ";") | Where-Object {
+            [string]::Equals($_.TrimEnd([char[]]"\/"), $toolPath.TrimEnd([char[]]"\/"),
+                [System.StringComparison]::OrdinalIgnoreCase)
+        })) {
+            $env:PATH = "$toolPath;$env:PATH"
+        }
+    }
+
+    $newUserPath = $entries -join ";"
+    if ($newUserPath -ne $userPath) {
+        [Environment]::SetEnvironmentVariable("Path", $newUserPath, "User")
+        Write-Ok "Bartman-verktoykjeden er lagt permanent til i bruker-PATH."
+        Write-Host "Apne en ny terminal (eller start VS Code pa nytt) for at andre prosesser skal arve PATH." -ForegroundColor Gray
+    } else {
+        Write-Ok "Bartman-verktoykjeden finnes allerede i bruker-PATH."
+    }
+    Write-Host "  $compilerBin" -ForegroundColor Gray
+    Write-Host "  $bin" -ForegroundColor Gray
+}
+
 function Resolve-Kickstart13 {
     if (-not (Test-Path -LiteralPath $KickDir)) {
         throw "Fant ikke Kickstart-mappen: $KickDir"
@@ -80,6 +136,56 @@ function Ensure-VSCodeExtension {
     if ($LASTEXITCODE -ne 0) {
         throw "Kunne ikke installere VS Code extension: $ExtensionId"
     }
+}
+
+function Remove-ConflictingAmigaDebugExtensions {
+    $code = Get-Command code -ErrorAction SilentlyContinue
+    if (-not $code) {
+        return
+    }
+
+    # Both extensions register the same "amiga" debug type and commands. If
+    # they are installed together, activation order decides which adapter F5
+    # uses and Bartman may fail with "command ... already exists".
+    $conflictingExtensions = @(
+        "davidcanadasmazo.amiga-debug-arch"
+    )
+    $installed = @(& code --list-extensions 2>$null)
+    foreach ($extensionId in $conflictingExtensions) {
+        if ($installed -contains $extensionId) {
+            Write-Step "Fjerner konkurrerende Amiga-debugger: $extensionId"
+            & code --uninstall-extension $extensionId
+            if ($LASTEXITCODE -ne 0) {
+                throw "Kunne ikke fjerne konkurrerende VS Code extension: $extensionId"
+            }
+        }
+    }
+}
+
+function Update-M68kIncludePath {
+    $extensionRoot = Join-Path $env:USERPROFILE ".vscode\extensions"
+    $extension = Get-ChildItem -LiteralPath $extensionRoot -Directory -ErrorAction SilentlyContinue |
+        Where-Object Name -Like "bartmanabyss.amiga-debug-*" |
+        Sort-Object LastWriteTimeUtc -Descending |
+        Select-Object -First 1
+    if (-not $extension) {
+        return
+    }
+
+    $sysInclude = Join-Path $extension.FullName "bin\win32\opt\m68k-amiga-elf\sys-include"
+    if (-not (Test-Path -LiteralPath $sysInclude)) {
+        return
+    }
+
+    $settingsPath = Join-Path $VsCodeDir "settings.json"
+    if (-not (Test-Path -LiteralPath $settingsPath)) {
+        return
+    }
+
+    $settings = Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json
+    $settings | Add-Member -NotePropertyName "m68k.includePaths" -NotePropertyValue @($sysInclude) -Force
+    $settings | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $settingsPath -Encoding UTF8
+    Write-Ok "m68k include path peker pa Bartman-verktoykjeden."
 }
 
 function Write-TextFile {
@@ -288,10 +394,14 @@ Write-TextFile -Path (Join-Path $VsCodeDir "launch.json") -Content @'
 Install-BartmanTemplate
 
 if (-not $SkipExtensionInstall) {
+    Remove-ConflictingAmigaDebugExtensions
     Ensure-VSCodeExtension "BartmanAbyss.amiga-debug"
     Ensure-VSCodeExtension "ms-vscode.cpptools"
     Ensure-VSCodeExtension "gigabates.m68k-lsp"
 }
+
+Ensure-BartmanToolchainPath
+Update-M68kIncludePath
 
 Write-Ok "Ferdig. Apne repoet i VS Code, velg 'Amiga 500 debug (KS1.3, 1MB)' og trykk F5."
 Write-Host "Forstegangskjoring kan bruke litt tid mens Bartman/Abyss-utvidelsen pakker ut sine egne verktøy." -ForegroundColor Gray

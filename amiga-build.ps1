@@ -19,6 +19,37 @@ function Ensure-Directory {
     }
 }
 
+function Set-UaeConfigOption {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [string]$Name,
+        [Parameter(Mandatory = $true)]
+        [string]$Value
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return
+    }
+
+    $lines = @(Get-Content -LiteralPath $Path)
+    $prefix = "$Name="
+    $replacement = "$Name=$Value"
+    $found = $false
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i].StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            $lines[$i] = $replacement
+            $found = $true
+        }
+    }
+    if (-not $found) {
+        $lines += $replacement
+    }
+
+    Set-Content -LiteralPath $Path -Value $lines -Encoding ASCII
+}
+
 $Root = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
 $AmigaDir = Join-Path $Root "amiga"
 $ExtensionRoot = Join-Path $env:USERPROFILE ".vscode\extensions"
@@ -60,6 +91,7 @@ if (-not $extension) {
 $bin = Join-Path $extension.FullName "bin\win32"
 $make = Join-Path $bin "gnumake.exe"
 $Dh0LogsDir = Join-Path $extension.FullName "bin\dh0\logs"
+$WinUaeConfig = Join-Path $bin "default.uae"
 
 if (-not (Test-Path -LiteralPath $make)) {
     throw "Fant ikke gnumake.exe: $make"
@@ -67,7 +99,15 @@ if (-not (Test-Path -LiteralPath $make)) {
 
 Ensure-Directory -Path $Dh0LogsDir
 
-$env:PATH = "$env:PATH;$bin\opt\bin;$bin"
+# Gameplay uses the standard OCS fine-scroll fetch: 336 pixels are fetched so
+# the 320-pixel DIW can move smoothly by 0..15 pixels.  Without WinUAE's
+# automatic display crop, the hidden fetch word is exposed as an 8-pixel
+# COLOR00 border on both sides and looks like an empty map tile.
+Set-UaeConfigOption -Path $WinUaeConfig -Name "gfx_filter_autoscale" -Value "auto"
+
+# Prefer the toolchain shipped with the selected Bartman extension over any
+# unrelated make/compiler installation already present on the host.
+$env:PATH = "$bin\opt\bin;$bin;$env:PATH"
 
 if ($Target -eq "clean") {
     & $make -C $AmigaDir clean
@@ -183,6 +223,16 @@ if (Test-Path -LiteralPath $AmigaSfxPipeline) {
     }
 }
 
+# The parity/headless runner supplies EXTRA_CCFLAGS directly to make. GNU make
+# does not consider command-line flag changes when deciding whether main.o is
+# current, so an interrupted diagnostic run could otherwise leave F5 launching
+# an autoplay/test binary. Force just the translation unit that contains those
+# compile-time switches; support objects remain incremental.
+$MainObject = Join-Path $AmigaDir "obj\main.o"
+if (Test-Path -LiteralPath $MainObject) {
+    Remove-Item -LiteralPath $MainObject -Force
+}
+
 & $make -C $AmigaDir -j4 "program=$Program"
 $makeExitCode = $LASTEXITCODE
 
@@ -190,8 +240,20 @@ if ($makeExitCode -eq 0) {
     $Exe2Adf = Join-Path $bin "exe2adf.exe"
     $BuiltExe = Join-Path $AmigaDir "$Program.exe"
     $AdfPath = Join-Path $AmigaDir "$Program.adf"
+    $ProgramDir = Split-Path -Parent $BuiltExe
+    $RuntimeLoadingBpl = Join-Path $ProgramDir "loading_screen.bpl"
+    $AdfAssetsDir = Join-Path $ProgramDir "adf-assets"
+
+    # Sprint 15.61: the loading bitmap is a runtime file rather than a
+    # permanent 40 KiB EMBED_CHIP object. Keep it beside the executable for
+    # Bartman/F5 (DH1:) and include the same file at the root of the ADF.
+    Ensure-Directory -Path $ProgramDir
+    Copy-Item -LiteralPath $LoadingBpl -Destination $RuntimeLoadingBpl -Force
+    Ensure-Directory -Path $AdfAssetsDir
+    Copy-Item -LiteralPath $LoadingBpl -Destination (Join-Path $AdfAssetsDir "loading_screen.bpl") -Force
+
     if ((Test-Path -LiteralPath $Exe2Adf) -and (Test-Path -LiteralPath $BuiltExe)) {
-        & $Exe2Adf -i $BuiltExe -l "Harrier Attack" -a $AdfPath
+        & $Exe2Adf -i $BuiltExe -l "Harrier Attack" -a $AdfPath -d $AdfAssetsDir
         if ($LASTEXITCODE -ne 0) {
             Write-Warning "exe2adf feilet (kode $LASTEXITCODE) - ADF ble ikke generert."
         }

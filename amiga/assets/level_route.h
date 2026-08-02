@@ -2,8 +2,10 @@
 //
 // This file is intentionally plain table data, not gameplay code. A future
 // editor should be able to export these two tables: broad terrain/stage
-// segments and explicit object placements. Columns are world tile columns, not
-// pixels.
+// segments and explicit object placements. Columns are world tile columns,
+// not pixels. These are immutable source coordinates: Sprint 15.54 copies
+// them at runtime, completes the final CPC town block and shifts every
+// post-town segment/object/trigger by the same 0..4 columns.
 //
 // Sprint 14.7 mirrors the CPC procedural level generator more closely. The CPC
 // does not store one static map; it emits one right-edge column at a time from
@@ -16,7 +18,7 @@
 #ifndef HAR_LEVEL_ROUTE_H
 #define HAR_LEVEL_ROUTE_H
 
-static const LevelSegmentDef harLevelRoute[] = {
+static const LevelSegmentDef harLevelRouteSource[] = {
 	// start, end, stage, terrain kind
 	{ 0, 49, HAR_STAGE_START, HAR_TERRAIN_SEA },
 	{ 50, 53, HAR_STAGE_START_ENEMY_SHIP, HAR_TERRAIN_SEA },
@@ -32,19 +34,20 @@ static const LevelSegmentDef harLevelRoute[] = {
 	{ 102, 400, HAR_STAGE_DO_LAND, HAR_TERRAIN_CPC_RANDOM_LAND },
 	{ 401, 410, HAR_STAGE_DESCEND_MOUNTAINS, HAR_TERRAIN_CPC_DESCEND_TO_TOWN },
 	{ 411, 610, HAR_STAGE_FLAT_TOWNLAND, HAR_TERRAIN_TOWN },
-	// Sprint 14.97 PRI 6: COAST_FALL reduced from 6 columns (611-616) to 3
-	// (611-613), matching CPC's setcloudcolourtosea 3x2 solid land block.
-	// Pier data (pendata "JHIJHIJHIJHI") starts immediately after at 614.
-	{ 611, 613, HAR_STAGE_START_PIER, HAR_TERRAIN_COAST_FALL },
-	{ 614, 628, HAR_STAGE_START_PIER, HAR_TERRAIN_SEA },
-	{ 629, 632, HAR_STAGE_END_PIER, HAR_TERRAIN_SEA },
-	{ 633, 666, HAR_STAGE_SECOND_SHIP_MISSILE, HAR_TERRAIN_SEA },
-	{ 667, 680, HAR_STAGE_START_FRIGATE, HAR_TERRAIN_SEA },
-	{ 681, 690, HAR_STAGE_END_FRIGATE, HAR_TERRAIN_SEA },
-	{ 691, 703, HAR_STAGE_LANDING_ON_FRIGATE, HAR_TERRAIN_SEA }
+	// Sprint 15.46: setcloudcolourtosea passes C=3 as the LAND object ID,
+	// not a width. drawspriteblock3 uses B=2 and therefore emits one column
+	// with two solid tiles. The 12 JHI pier columns follow immediately; one
+	// sea/terminator tick at 624 then starts the four-column enemy ship.
+	{ 611, 611, HAR_STAGE_START_PIER, HAR_TERRAIN_COAST_FALL },
+	{ 612, 624, HAR_STAGE_START_PIER, HAR_TERRAIN_SEA },
+	{ 625, 628, HAR_STAGE_END_PIER, HAR_TERRAIN_SEA },
+	{ 629, 662, HAR_STAGE_SECOND_SHIP_MISSILE, HAR_TERRAIN_SEA },
+	{ 663, 676, HAR_STAGE_START_FRIGATE, HAR_TERRAIN_SEA },
+	{ 677, 686, HAR_STAGE_END_FRIGATE, HAR_TERRAIN_SEA },
+	{ 687, 703, HAR_STAGE_LANDING_ON_FRIGATE, HAR_TERRAIN_SEA }
 };
 
-static const LevelObjectDef harLevelObjects[] = {
+static const LevelObjectDef harLevelObjectsSource[] = {
 	// column, row/offset, row mode, object id, tile id, flags, hp
 
 	// Friendly start carrier.
@@ -72,44 +75,45 @@ static const LevelObjectDef harLevelObjects[] = {
 	// never selected one. Likewise removed all hand-placed FLAK entries in
 	// land (197-388) and town (456-538) - trySpawnFlak() handles all flak
 	// generation at the right screen edge, and the fixed entries added
-	// guaranteed flak at positions CPC never places them. The 3 LAND cells
-	// at 611-613 (setcloudcolourtosea stand-ins) were also removed - that
+	// guaranteed flak at positions CPC never places them. The old LAND cells
+	// at the city/pier seam were also removed - that
 	// transition is handled by the segment/terrain system, not explicit
 	// objects (see PRI 6 for the exact by-pier block sequence).
 
 	// CPC pendata "JHIJHIJHIJHI" at row 0x0e. These are raw CPC tile ids
 	// 74,72,73 repeated; they give us a first direct pier comparison.
-	// Sprint 14.97 PRI 6: shifted from 617-628 to 614-625 to follow the
-	// 3-column solid land block immediately (no sea gap between).
-	{ 614, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_OWN_FRIGATE, 74, 0, 0 },
-	{ 615, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_OWN_FRIGATE, 72, 0, 0 },
-	{ 616, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_OWN_FRIGATE, 73, 0, 0 },
-	{ 617, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_OWN_FRIGATE, 74, 0, 0 },
-	{ 618, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_OWN_FRIGATE, 72, 0, 0 },
-	{ 619, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_OWN_FRIGATE, 73, 0, 0 },
-	{ 620, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_OWN_FRIGATE, 74, 0, 0 },
-	{ 621, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_OWN_FRIGATE, 72, 0, 0 },
-	{ 622, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_OWN_FRIGATE, 73, 0, 0 },
-	{ 623, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_OWN_FRIGATE, 74, 0, 0 },
-	{ 624, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_OWN_FRIGATE, 72, 0, 0 },
-	{ 625, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_OWN_FRIGATE, 73, 0, 0 },
+	// Exact 12-byte pendata stream after the single transition column.
+	// Column 624 is the CPC terminator tick and remains ordinary sea.
+	{ 612, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_PIER, 74, 0, 0 },
+	{ 613, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_PIER, 72, 0, 0 },
+	{ 614, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_PIER, 73, 0, 0 },
+	{ 615, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_PIER, 74, 0, 0 },
+	{ 616, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_PIER, 72, 0, 0 },
+	{ 617, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_PIER, 73, 0, 0 },
+	{ 618, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_PIER, 74, 0, 0 },
+	{ 619, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_PIER, 72, 0, 0 },
+	{ 620, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_PIER, 73, 0, 0 },
+	{ 621, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_PIER, 74, 0, 0 },
+	{ 622, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_PIER, 72, 0, 0 },
+	{ 623, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_PIER, 73, 0, 0 },
 
 	// Second CPC enemy ship after the pier, using the same stream.
-	{ 629, 13, HAR_ROW_ABSOLUTE, HAR_OBJ_GUNSHIP, 0, HAR_OBJECT_FLAG_CPC_GUNSHIP, 2 },
-	{ 629, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_ENEMY_SHIP, 20, 0, 3 },
-	{ 630, 13, HAR_ROW_ABSOLUTE, HAR_OBJ_ENEMY_SHIP, 18, 0, 3 },
-	{ 630, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_ENEMY_SHIP, 21, 0, 3 },
-	{ 631, 13, HAR_ROW_ABSOLUTE, HAR_OBJ_ENEMY_SHIP, 19, 0, 3 },
-	{ 631, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_ENEMY_SHIP, 22, 0, 3 },
-	{ 632, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_ENEMY_SHIP, 23, 0, 3 },
+	{ 625, 13, HAR_ROW_ABSOLUTE, HAR_OBJ_GUNSHIP, 0, HAR_OBJECT_FLAG_CPC_GUNSHIP, 2 },
+	{ 625, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_ENEMY_SHIP, 20, 0, 3 },
+	{ 626, 13, HAR_ROW_ABSOLUTE, HAR_OBJ_ENEMY_SHIP, 18, 0, 3 },
+	{ 626, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_ENEMY_SHIP, 21, 0, 3 },
+	{ 627, 13, HAR_ROW_ABSOLUTE, HAR_OBJ_ENEMY_SHIP, 19, 0, 3 },
+	{ 627, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_ENEMY_SHIP, 22, 0, 3 },
+	{ 628, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_ENEMY_SHIP, 23, 0, 3 },
 
-	// Final friendly frigate/carrier area. The CPC endfrigatesprite is a
-	// 14-column stream, but the promoted Plus carrier is more legible today; the
-	// deck span matches the CPC final approach width.
-	// End carrier: CPC's endfrigatesprite is horizontally reversed from the
-	// start carrier ("FRIGATE REVERSED, SO IT CAN COME IN SCREEN FROM
-	// OPPOSITE SIDE") - flags OR in the mirrored-sprite variant.
-	{ 667, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_OWN_FRIGATE, 0, HAR_OBJECT_FLAG_NATIVE_CARRIER | HAR_OBJECT_FLAG_NATIVE_CARRIER_REVERSED, 0 },
+	// Final friendly frigate/carrier area. CPC inserts this stream from the
+	// opposite screen edge, but its fully assembled carrier retains the
+	// opening carrier's orientation: bow and parked Wingman remain forward.
+	{ 663, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_OWN_FRIGATE, 0, HAR_OBJECT_FLAG_NATIVE_CARRIER, 0 },
+	{ 663, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_OWN_FRIGATE, 0, HAR_OBJECT_FLAG_NATIVE_DECK, 0 },
+	{ 664, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_OWN_FRIGATE, 0, HAR_OBJECT_FLAG_NATIVE_DECK, 0 },
+	{ 665, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_OWN_FRIGATE, 0, HAR_OBJECT_FLAG_NATIVE_DECK, 0 },
+	{ 666, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_OWN_FRIGATE, 0, HAR_OBJECT_FLAG_NATIVE_DECK, 0 },
 	{ 667, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_OWN_FRIGATE, 0, HAR_OBJECT_FLAG_NATIVE_DECK, 0 },
 	{ 668, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_OWN_FRIGATE, 0, HAR_OBJECT_FLAG_NATIVE_DECK, 0 },
 	{ 669, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_OWN_FRIGATE, 0, HAR_OBJECT_FLAG_NATIVE_DECK, 0 },
@@ -119,24 +123,12 @@ static const LevelObjectDef harLevelObjects[] = {
 	{ 673, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_OWN_FRIGATE, 0, HAR_OBJECT_FLAG_NATIVE_DECK, 0 },
 	{ 674, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_OWN_FRIGATE, 0, HAR_OBJECT_FLAG_NATIVE_DECK, 0 },
 	{ 675, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_OWN_FRIGATE, 0, HAR_OBJECT_FLAG_NATIVE_DECK, 0 },
-	{ 676, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_OWN_FRIGATE, 0, HAR_OBJECT_FLAG_NATIVE_DECK, 0 },
-	{ 677, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_OWN_FRIGATE, 0, HAR_OBJECT_FLAG_NATIVE_DECK, 0 },
-	{ 678, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_OWN_FRIGATE, 0, HAR_OBJECT_FLAG_NATIVE_DECK, 0 },
-	{ 679, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_OWN_FRIGATE, 0, HAR_OBJECT_FLAG_NATIVE_DECK, 0 },
-	{ 680, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_OWN_FRIGATE, 0, HAR_OBJECT_FLAG_NATIVE_DECK, 0 }
+	{ 676, 14, HAR_ROW_ABSOLUTE, HAR_OBJ_OWN_FRIGATE, 0, HAR_OBJECT_FLAG_NATIVE_DECK, 0 }
 };
 
-static const UWORD harEnemyPlaneTriggers[] = {
-	132,
-	246,
-	360,
-	482,
-	628
-};
-
-static const UWORD harEnemyShipMissileTriggers[] = {
+static const UWORD harEnemyShipMissileTriggersSource[] = {
 	54,
-	633
+	629
 };
 
 #endif

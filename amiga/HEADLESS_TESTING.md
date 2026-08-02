@@ -34,7 +34,8 @@ Copy the extension's `bin/win32/default.uae` and delete the two
 what let the game write its result file straight into the host filesystem:
 
 - `filesystem=rw,dh0:...\bartmanabyss.amiga-debug-1.8.2\bin\dh0` - boot volume,
-  contains `s/startup-sequence` which just does `cd dh1: :harrier_amiga.exe`.
+  contains `s/startup-sequence` which does `cd dh1:` followed by
+  `:harrier_amiga.exe`.
 - `filesystem2=rw,dh1:dh1:<repo>/amiga/out,-128` - this is the important one:
   `dh1:` maps directly to the real `amiga/out/` folder on Windows. Anything the
   game writes to `DH1:` lands there and can be read straight from the host.
@@ -60,20 +61,39 @@ output file, then kill the process (`Stop-Process`) once done.
 
 ## Build flags (`amiga/main.c`)
 
-Three `#define`s near the top of `main.c` control the headless harness. All
-default to `0`/off for normal/release builds:
+The headless defines near the top of `main.c` are externally overridable. All
+test behavior defaults to off in normal/release builds; `Makefile` accepts the
+test-only values through `EXTRA_CCFLAGS`, so source does not have to be edited
+and accidentally shipped with autoplay enabled:
 
 | Flag | Purpose |
 |---|---|
 | `HAR_DEBUG_PERF_LOG` | Turns on the perf sampler (`perfLogOpen`/`perfLogFrame`) and the CSV writer described below. |
 | `HAR_HEADLESS_AUTOPLAY` | Injects synthetic input so the game plays itself (see below), and auto-quits after a fixed frame budget. |
+| `HAR_HEADLESS_SKILL_LEVEL` | Selects the skill used by the autoplay session. |
+| `HAR_HEADLESS_MAX_FRAMES` | Safety timeout if the route cannot reach its terminal condition. |
+| `HAR_HEADLESS_CRUISE_SPEED` | Selects a reproducible scroll-speed stress case. |
+| `HAR_HEADLESS_WINGMAN_CONTROL` | Selects Off, CPU or Player 2 for A/B workload measurements. |
+| `HAR_VALIDATION_SESSION_SEED` | Pins the modeled CPC session RNG for true A/B runs. It defaults to `0` in F5/release builds, which keeps menu-time-derived random worlds. |
+| `HAR_DEBUG_HUD_GUARD` | Expensive per-frame HUD corruption scan. Keep this `0` for performance measurements; enable it only when diagnosing HUD memory corruption. |
 | `HAR_USE_RING_WORLD_SCROLL` | The actual scrolling strategy being tested - not test-only, but this is the flag these tests exist to evaluate. |
 
-Set both `HAR_DEBUG_PERF_LOG` and `HAR_HEADLESS_AUTOPLAY` to `1`, pick the
-`HAR_USE_RING_WORLD_SCROLL` value you want to measure, rebuild
-(`.\amiga-build.ps1`), and run as above. **Remember to set them back to `0`
-before shipping** - they add a busy per-frame CPU cost and, more importantly,
-autoplay overrides real input.
+Use the checked-in runner instead of editing these flags by hand:
+
+```powershell
+.\run-amiga-parity.ps1 -Skills 1,3,5 -CruiseSpeed 15 -WingmanControl 1 -SessionSeed 12040
+```
+
+The runner cleans and builds one test executable per skill, starts only the
+cycle-exact headless WinUAE process it owns, waits for the terminal CSV,
+archives results under `.tmp/amiga-parity-results`, and finally restores a
+normal F5/release build without test flags.
+
+The runner defaults to seed `12040` (`0x2f08`, the CPC reference state) and
+includes it in every archived filename. Keep `-SessionSeed` identical when
+comparing builds or Wingman modes. Earlier runs seeded from the menu's elapsed
+frame count and could compare different terrain, cloud, flak and target
+sequences while appearing to be an A/B performance test.
 
 ## The critical gotcha: DOS file I/O deadlocks mid-game
 
@@ -105,8 +125,8 @@ Instead:
 1. `perfLogAppend()` appends each CSV line to a static in-RAM buffer
    (`perfLogBuffer`, `PERF_LOG_BUFFER_BYTES`) - no OS calls, safe under
    `Forbid()`/`Disable()`.
-2. `HAR_HEADLESS_AUTOPLAY` breaks out of the main `while (1)` loop after a
-   fixed frame budget, so the program actually reaches its normal shutdown
+2. `HAR_HEADLESS_AUTOPLAY` breaks out of the main `while (1)` loop after the
+   final carrier is reached (or the safety frame budget expires), so the program reaches its normal shutdown
    path (`FreeSystem()` -> `Enable()`/`Permit()` restore multitasking).
 3. `perfLogFlushToDisk()` runs *after* `FreeSystem()` and does the one-shot
    `Open(MODE_NEWFILE)` + `Write()` + `Close()` of the whole buffer. By this
@@ -136,18 +156,64 @@ right after the real `ReadInput()` call each frame:
    this repeatedly hit "Game over" within the first ~60-70 seconds - visible in
    the CSV as `scrollX` going flat and `armour` cycling 100/0 as the plane
    respawned and died over and over.)
-4. Once airborne and past a fixed frame count (currently `frameCounter > 4700`,
-   ~94s), `break` out of the main loop so the program reaches
-   `FreeSystem()`/`perfLogFlushToDisk()` and exits cleanly back to AmigaDOS.
+4. It accelerates to `HAR_HEADLESS_CRUISE_SPEED`, traverses the complete route,
+   and exits 50 frames after the final landing/hover state is reached. The
+   frame limit is only a deadlock/stall guard, not the normal completion rule.
 
 This is a blunt instrument (no obstacle/enemy avoidance beyond "fly high") -
 good enough to get several tens of seconds of mostly-continuous forward
 scrolling for a perf comparison, not a real playtest.
 
-## Output: `amiga/out/perf_log.csv`
+### Enemy-plane movement profile
 
-Written once, at the very end of the run (see above), via the `DH1:` mount.
-One header row plus one row per completed 10-second interval
+`run-amiga-parity.ps1 -EnemyPlaneExercise` changes only the compiled headless
+input profile.  The reference route still climbs to maximum height until an
+enemy plane appears; during each encounter it then alternates the Harrier
+between two fixed flight levels every 24 frames.  Use a low `-CruiseSpeed`
+(normally 1) so the attacker receives several CPC eight-pixel decisions before
+it crosses the player.  This supplements rather than replaces the ceiling
+route:
+
+- the ceiling route measures spawn, horizontal approach, missile release,
+  retreat and full-map performance;
+- the exercise route measures vertical pursuit, two-cell obstruction and the
+  lag between logical 8x8 positions and pixel-smooth display positions.
+
+`-EnemyPlaneRates 1,2,3` builds separate diagnostic variants.  Both the CPC
+logical cadence and the visual interpolation rate are scaled, but every
+rendered frame remains pixel-smooth (no 8-pixel jumps).  The release/F5 build
+defaults to 1 and does not contain the synthetic input profile.
+
+The autoplay build is invulnerable. Collision detection and the rest of the
+gameplay workload still run, but a terrain contact cannot turn the remaining
+samples into a stationary game-over screen. This behavior is compiled out of
+normal builds.
+
+## Output files
+
+The Amiga writes `perf_log.csv`, `land_log.csv`, `parity_log.csv` and the
+diagnostic `enemy_plane_log.csv` once at
+the end via the `DH1:` mount. The runner moves named copies to
+`.tmp/amiga-parity-results` using skill, speed and Wingman mode in each name.
+`parity_log.csv` is the single-row completion oracle: terrain min/max and
+transition counts, target/enemy/flak/Wingman events, pier events, final scroll,
+landing state and whether the final carrier was reached.
+
+`enemy_plane_log.csv` records spawn, logical step, fire, blocked step and
+despawn events, including visual/logical/target coordinates, tile distance,
+visual lag and real frames since the previous logical decision.  Its trace has
+application-session lifetime: losing a life may reset gameplay state but must
+not discard earlier encounters from the same headless run.
+
+Town-generator parity is recorded as `townBlocks`, `townBuildingCols`,
+`townFlatCols`, `townLength`, `townOverflowCols` and `townClippedCols`. CPC
+state 6 must contribute exactly one flat separator before every selected
+state-7 building. State 7 completes its last block after the 200-column timer,
+so `townLength` may be 200..204 and the complete post-town route moves by
+`townOverflowCols`. `townClippedCols` is retained for result-file compatibility
+and must always be zero.
+
+`perf_log.csv` has one header row plus one row per completed 10-second interval
 (`PERF_LOG_INTERVAL_FRAMES = 500` frames @ 50 Hz PAL):
 
 ```
@@ -180,3 +246,63 @@ a hitch with "was this at a page turnover."
 - This harness only measures frame-timing/backbuffer-readiness. It says
   nothing about visual correctness (e.g. a wrap-seam glitch in a ring-buffer
   scroller) - that still needs a human or a screenshot diff.
+
+## Sprint 15.48 complete-route parity
+
+Cycle-exact A500 plus 512 KiB runs at full cruise reached the final carrier at
+`scrollX=5160` for skills 1, 3 and 5. All runs contained 48 procedural targets,
+11 terrain-state events and one pier event. Measured terrain rows were 11..14,
+9..14 and 7..14 respectively, confirming the sourced difficulty-dependent
+descent floor while retaining the complete city and final approach.
+
+An A/B run at speed 1 isolated CPU Wingman as the remaining avoidable workload:
+Wingman Off averaged 45 FPS, whereas the original CPU path averaged 26.8 FPS
+and recorded 1717 hitch frames. Two behavior-neutral changes were applied:
+
+- formation terrain safety is cached until its tile-column/player-row inputs
+  change, and already-computed safe answers are no longer queried again;
+- immutable CPC Wingman pixels are packed into hardware-sprite words once;
+  movement now updates only the two sprite control words.
+
+The identical CPU-Wingman route now averages 37.2 FPS with 694 hitch frames.
+It reaches the same final scroll and retains the skill-3 terrain fingerprint
+`min=9,max=14,flat=153,climb=47,descend=47,targets=48`. This is deliberately a
+low-speed worst case; no Copper, ring-buffer, object decision or collision
+rule changed, and the cache adds only four small fields to `WingmanState`.
+
+## Sprint 15.41 baseline and target
+
+Cycle-exact A500 run on 2026-08-01, excluding the startup interval and the
+stationary final-carrier rows:
+
+- mean interval FPS: 45.8;
+- worst moving 10-second interval: 38 FPS;
+- worst moving-frame gap: 3 VBlanks (about 60 ms PAL);
+- heaviest region: approximately `scrollX=3896..4702`;
+- final-carrier hold begins at approximately `scrollX=5192` and must be
+  excluded from scrolling comparisons.
+
+The optimisation target is at least 48 average FPS in every moving interval,
+with `maxVblDelta <= 2` and materially fewer hitch frames. Use identical
+cycle-exact configuration and autoplay duration for before/after comparisons.
+
+Do not enable `HAR_DEBUG_HUD_GUARD` for these comparisons. Its old 960-byte
+memory comparison on every 68000 frame reduced the measured average to about
+26 FPS, making the telemetry itself dominate the result.
+
+### Sprint 15.41.2 result
+
+The dense town renderer previously resolved every tile's runtime-flak cell by
+linearly scanning as many as 64 active entries. A 128-column tagged lookup was
+added alongside the unchanged, bounded gameplay list. Identical cycle-exact
+autoplay produced:
+
+- mean moving FPS: 48.2 (was 45.8);
+- worst moving interval: 45 FPS (was 38);
+- moving hitch frames: 63 (was 310);
+- worst moving gap: 2 VBlanks (was 3).
+
+The remaining hotspot is the interval around `scrollX=3242..4146`, which
+enters the dense town. It should be split by subsystem in the next profiling
+pass; the renderer lookup itself is no longer allowed to scale with the total
+number of retained flak cells.

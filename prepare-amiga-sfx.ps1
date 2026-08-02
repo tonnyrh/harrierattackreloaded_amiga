@@ -48,6 +48,11 @@ $Sounds = @(
         Prompt = "single short metallic aircraft damage crack and warning zap, dry isolated arcade game sound, no music or voice"
     },
     @{
+        Source = "flak_hit.wav"; Runtime = "flak_hit.raw"; Preview = "flak_hit.wav"
+        Duration = 0.45; MaxMs = 550
+        Prompt = "single short anti-aircraft flak strike against an aircraft, sharp metal puncture and compact impact, isolated game sound, no music or voice"
+    },
+    @{
         Source = "eject.wav"; Runtime = "eject.raw"; Preview = "eject.wav"
         Duration = 0.65; MaxMs = 800
         Prompt = "single aircraft ejection seat launch, sharp cartridge blast followed by a brief mechanical air rush, dry isolated game sound, no music or voice"
@@ -91,6 +96,11 @@ $Sounds = @(
         Source = "ground_miss_0.wav"; Runtime = "ground_miss_1.raw"; Preview = "ground_miss_1.wav"
         Duration = 0.55; MaxMs = 700; BassBoost = 1.0
         Prompt = "single bomb impact on bare earth, soft dry dirt thud with a brief low rumble, no metal or debris, isolated game sound, no music or voice"
+    },
+    @{
+        Source = "WaterSplash.wav"; Runtime = "water_splash.raw"; Preview = "water_splash.wav"
+        Duration = 0.75; MaxMs = 900
+        Prompt = "single compact object splash into sea water, short wet impact and spray, isolated arcade game sound, no music or voice"
     },
     @{
         Source = "idle_0.wav"; Runtime = "carrier_idle_1.adpcm"; Preview = "carrier_idle_1.wav"; Adpcm = $true

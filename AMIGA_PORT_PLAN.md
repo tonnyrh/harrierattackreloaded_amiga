@@ -2944,19 +2944,33 @@ Confirmed true before implementing: town blocks were 17 hand-placed `harLevelObj
 
 **Red-flash bug: still not found, still needs a live repro.** Searched exhaustively again for the "red flashing screen" the review raises (`startpalettefade`, `duskpal`, `nightpal`, any dynamic palette-fade logic) - zero matches anywhere in `main.c`, no palette-fade mechanism exists for town entry at all (one static `gamePalette` used throughout). One theory already ruled out: `drawDirectColumnRangeObjects()`'s per-column draw calls (both the old per-block renderer and the new procedural one) always clip to exactly one physical column per call, at both the primary and wrap-duplicate ring-buffer positions - no unclipped wide-block draw exists that could overwrite past the ring seam. If the user has actually seen a full-screen red flash during the town section, its cause isn't identified yet and needs a live repro (which part of the town, does it correlate with a specific block/flak spawn, does it still happen with this session's changes) before guessing further.
 
-### Part 6 - Enemy frigate and friendly carrier (carrier mirroring + deck width done; ship-HP unification deliberately not implemented)
+### Part 6 - Enemy frigate and friendly carrier (historical mirror attempt superseded by Sprint 15.65; deck width done)
 
 Confirmed true: `enemyShipGroups[]` is still 2 hand-placed 4-column instances (`{50,53}`, `{629,632}`), drawn as plain tiles with no dedicated ship-composition function; `enemyShipHp[]` exists but is **never read or decremented anywhere** - vestigial dead data, not a real HP mechanic. Ship destruction is confirmed per-column (`markShipColumnDestroyed()`/`isShipColumnDestroyed()` ignore row entirely - one hit anywhere in a column removes every tile in that whole column). `destroyEnemyShipGroup()` (whole-group destruction) exists but has zero call sites - also dead code.
 
-The just-rewritten (Sprint 14.94 Part 6) `drawPromotedCpcCarrierRangeAt()` was confirmed used identically, with no mirroring, for both the start carrier (column 8) and end carrier (column 667) - the real CPC explicitly reverses the end frigate's sprite ("FRIGATE REVERSED, SO IT CAN COME IN SCREEN FROM OPPOSITE SIDE"). `WORLD_RENDER_CARRIER_WIDTH_TILES`(96px) vs `CARRIER_DECK_PIXEL_WIDTH`(104px) were confirmed mismatched between visual/render width and the landing-collision/refuel-trigger zone's width.
+The Sprint 14.94 investigation correctly found the same carrier renderer used
+at both ends, but incorrectly interpreted CPC's "FRIGATE REVERSED" stream
+comment as a request to mirror the completed carrier image. Sprint 15.65
+supersedes that conclusion after direct CPC screen comparison: the stream
+enters from the opposite edge, while the visible carrier orientation remains
+the same. `WORLD_RENDER_CARRIER_WIDTH_TILES`(96px) vs
+`CARRIER_DECK_PIXEL_WIDTH`(104px) were confirmed mismatched between
+visual/render width and the landing-collision/refuel-trigger zone's width.
 
-**Carrier mirroring (done)**: `tools/cpc_promoted_sprites_to_tiles.py`'s `Canvas` gained a `mirrored()` method that flips the fully-assembled 96x24 composite pixel-for-pixel (not a re-placement of the 6 source pieces mirrored individually - flipping the finished image is simpler and can't get the piece ordering subtly wrong). The script now emits a second baked tile set, `harCarrierReversedTileData`/`harCarrierReversedTileSkip`, alongside the existing normal one. `drawPromotedCpcCarrierRangeAt()` takes a new `reversed` parameter selecting which array to sample from - `compositeColumn` needs no extra reversal itself since the mirroring is already baked into the tile content. Added `HAR_OBJECT_FLAG_NATIVE_CARRIER_REVERSED` (bit 16, ORed onto the existing `NATIVE_CARRIER` bit so every existing match condition still finds the object) and set it on the end carrier's `level_route.h` entry only. Verified the generated mirror is pixel-correct by rendering both tile sets to ASCII art before rebuilding - the bridge/superstructure and tapered bow correctly flip from right-of-center to left-of-center.
+**Carrier mirroring (historical, reverted in Sprint 15.65)**: this pass added
+a technically correct horizontal mirror and runtime flag, but the gameplay
+premise was wrong. The generated mirror arrays may remain as offline tooling
+output, but runtime no longer references them; both carriers use the normal
+composite and geometry.
 
 **Deck width reconciliation (done)**: `CARRIER_DECK_PIXEL_WIDTH` changed from 104 to 96 to match the carrier's actual rendered width (`WORLD_RENDER_CARRIER_WIDTH_TILES`(12) x `GAME_TILE_WIDTH`(8) = 96px) - the refuel/rearm trigger zone (`playerOnNativeCarrierDeckPixels()`) was reaching ~8px past the visible ship's edge. Chose to shrink the collision constant to match the existing art rather than the review's alternative of widening the rendered art to 104px, since the composite is a fixed baked asset with no extra columns to add without redrawing source sprite pieces.
 
 **Deliberately NOT implemented - the whole-ship-HP unification**: Part 6's own text recommends replacing per-column ship destruction with a single `EnemyShipState{hp,destroyed}` instance, but it hedges its own diagnosis ("Jeg mistenker sterkest..." / "I most strongly suspect..." / "et skjermbilde... vil avgjøre umiddelbart" - "a screenshot would decide immediately") - the reviewer wasn't certain. **Part 7 of the same review, written after directly reading `checkenemyhit`/`bombhitenemyship`, contradicts this**: "There is no whole-ship health counter in this CPC path... the Amiga idea of deleting individual ship columns is closer to the CPC than a conventional ship-wide HP system." Part 7's finding is grounded in specific disassembly citations rather than a visual guess, so it's the more reliable of the two - implementing Part 6's HP-counter suggestion would have moved the port *away* from CPC accuracy, not toward it, and would have duplicated/pre-empted the still-open "ship destruction granularity" item already tracked under Part 7's remainder. Left alone. The hand-placed enemy-ship tile data quality question (short/compressed silhouette, tile ordering) also needs a live screenshot to diagnose per the review's own admission - not attempted without one.
 
-**Verified**: clean rebuild both before and after the debug-flag headless smoke test; two full headless autoplay runs completed cleanly with no crash/hang (scroll progressed normally both times, HUD guard/regression columns stayed at zero). Autoplay dies well before reaching world column 667 (the end carrier), so the mirrored sprite's *in-game* appearance is unverified by headless testing - confirmed correct only via the offline ASCII-render check of the generated tile data. Live confirmation (fly to the mission-complete landing at the end and check the carrier faces the opposite way from the start carrier) still needed from the user.
+**Historical verification note**: the old headless runs never reached the end
+carrier, so they could not validate the visual premise. Sprint 15.65 replaces
+the old requested live check: the landing carrier must now face the **same**
+way as the opening carrier.
 
 ### Part 7 - Smoke generation (town-block piece done; remainder verified, not yet implemented)
 
@@ -4269,3 +4283,1204 @@ crop (confirmed no corrupted/garbled pixels - the single-tile icons are
 simply smaller/simpler than the full-sprite ones because they're genuinely
 one 8x8 piece of a larger multi-tile object, not a rendering bug). Clean
 rebuild, no new warnings.
+## Sprint 15.39.0 - Main menu without a duplicate HUD
+
+The main menu no longer renders a demonstration copy of the gameplay HUD.
+This is an intentional Amiga presentation exception rather than an attempt
+to reproduce every CPC menu pixel. The removed preview was not live gameplay
+state and was drawn under `menuPalette`, while the authoritative in-game HUD
+uses `gamePalette`. Reusing numeric colour indices across those palettes made
+the two HUDs look inconsistent and forced every gameplay-HUD change to be
+maintained and tested in a second screen context.
+
+`drawHudStatic()`, `drawHudValues()` and their render-state array now belong
+only to gameplay. The removed `drawMenuDemoHud()` and
+`updateMenuDemoHudValues()` paths are not replaced by another preview. The
+freed lower PAL scanlines instead give the menu choices and status column
+16-pixel row spacing, plus permanent control hints at the bottom. High scores,
+the editable settings, the CPC tribute ticker and the idle Field Guide remain.
+This establishes the direction going forward: gameplay HUD parity is handled
+in one authoritative renderer; the Amiga main menu prioritises readable
+configuration, high scores, music and attract-mode information.
+
+## Sprint 15.40.0 - Water-hit presentation
+
+Open-water bomb impacts are an intentional Amiga presentation enhancement.
+Player and Wingman bombs now trigger `WaterSplash.wav` instead of disappearing
+silently at the sea surface. The build converts the checked-in WAV master to
+`water_splash.raw`; it is also exposed in the debug hub sound browser.
+
+The visual effect reuses the exact CPC tile 51/52 silhouettes (`Smoke 1` then
+`Smoke 2`) without making persistent changes to the world map. Each frame is
+shown for 25 PAL frames (about 0.5 seconds), world-anchored over the impact
+point, then the normal background is restored by the existing Bob compositor.
+For water only, every opaque smoke pixel is rendered white so the two tiles
+read as spray against all sea and sky palettes. Permanent smoke over destroyed
+land objects keeps its original palette and behaviour.
+
+## Sprint 15.40.1 - Runtime mix balance
+
+The Paula runtime applies a common 85-percent output gain to MOD music, the
+synthesized Harrier engine and gameplay effects. The four ground-target-hit
+variants deliberately bypass that gain and remain at their previous volume,
+making their bass-heavy boom stand out from weapon release, misses, water
+splashes and other impacts. This is a non-destructive runtime mix: checked-in
+WAV masters and their converted sample bytes remain unchanged.
+
+## Sprint 15.40.2 - Dedicated flak-hit cue
+
+`flak_hit.wav` is a separate Paula effect used only by the non-fatal flak
+damage path. All other player damage and crash causes continue to use the
+updated `player_hit.wav`. When the final flak strike exhausts armour, the flak
+cue is retained and crash startup suppresses its normal additional player-hit
+cue, avoiding two overlapping hit sounds for one collision.
+
+## Sprint 15.40.3 - Dense flak voice retriggering
+
+The two flak firing samples may now pre-empt and restart one another on the
+same Paula voice, with no per-sample retrigger guard. They preferentially reuse
+an already active flak voice instead of occupying another free channel. Equal-
+priority and higher-priority non-flak sounds remain protected, and the rule
+explicitly excludes the player's dedicated `flak_hit` cue.
+
+## Sprint 15.40.4 - Release-to-rearm player weapons
+
+Player rockets and bombs now both launch only on a new button edge. Holding a
+weapon button while its projectile disappears no longer consumes another
+round automatically; the player must release and press again. Player 2 was
+already edge-triggered for both Wingman weapons and remains unchanged.
+# Sprint 15.40.5 - CPC carrier occupancy and collision fidelity
+
+- The grey second Harrier remains parked on both the start and landing
+  carrier when Wingman control is off, matching CPC
+  `movesecondharrierlandingfrigate`.
+- The carrier superstructure is fatal collision geometry above the deck.
+- The parked Harrier reserves its CPC deck position; Player 1 must land on
+  the free pad. The position mirrors with the reversed end carrier.
+
+# Sprint 15.40.6 - Coast joins the waterline
+
+- The first CPC coast-rise column now uses its original solid land block at
+  sea row 15. Previously it incorrectly used the transparent hill-up tile,
+  visually placing the start of land roughly one tile below the waterline.
+- Terrain and collision heights are unchanged; the second column remains
+  the CPC hill-up transition at row 14.
+
+# Sprint 15.40.7 - Deterministic SFX audition
+
+- The debug sound browser labels ground hits by their real source filenames:
+  `ground_hit_0.wav` through `ground_hit_3.wav`.
+- Selecting or replaying a sound first stops the previous preview. Repeated
+  tests therefore restart one Paula voice instead of layering phase-shifted
+  copies across multiple channels.
+
+# Sprint 15.40.8 - Town hit smoke at ground level
+
+- Persistent CPC hit smoke may replace ordinary terrain claim 1 in the
+  streamed column. This is required when a town building's bottom tile and
+  the land surface occupy the same row.
+- Once placed, smoke receives claim 2, preventing the procedural town facade
+  from redrawing the destroyed building tile over it.
+
+# Roadmap 15.41-15.49 - Revised CPC gameplay parity
+
+This roadmap supersedes the older assumptions that CPC enemy timing had no
+source formula and that most terrain decisions could be represented by one
+general random stream. Every sprint must leave a bootable, playable A500
+build. Smooth pixel presentation remains an Amiga enhancement; gameplay
+decisions should follow the CPC state machines and probabilities.
+
+## Sprint 15.41 - Event telemetry for parity work
+
+Add a second compact telemetry page for discrete gameplay decisions. Keep a
+bounded in-memory ring of events; do not write files or add per-frame screen
+drawing. Record frame, world column, player tile row, skill and the relevant
+CPC-style random/state value for:
+
+- enemy spawn roll passed/rejected and its reason;
+- enemy missile fire transition;
+- Wingman intercept and bombing decisions;
+- Player 2 left behind and Wingman-powerup spawn;
+- terrain state transition and city-to-pier transition.
+
+The debug hub must allow viewing/resetting the counters and recent events.
+Acceptance: telemetry disabled has negligible gameplay cost; enabled mode can
+explain why a plane did or did not spawn at a given column.
+
+Implemented in `SPRINT 15.41.0`:
+
+- a 16-entry bounded event ring and small per-event counters are active only
+  when extended-memory telemetry is enabled;
+- the paused telemetry display uses left/right to switch between performance
+  data and recent gameplay events; `R` resets both pages and Space resumes;
+- spawn auditing records height rejection, CPC-style `R & 15` rejection, a
+  CPC-pass/current-fixed-trigger wait, and the legacy fixed-trigger spawn;
+- missile release records range versus fallback, while Wingman intercept,
+  bombing, resurrection powerup and terrain/stage transitions record their
+  current decision values;
+- the instrumentation is read-only: no spawn, AI, collision or terrain rule
+  changes are part of this sprint. `P2LEFT` is reserved in the event format
+  and will be emitted when the actual left-behind state is introduced in
+  Sprint 15.44.
+
+Refined in `SPRINT 15.41.1`: the interactive performance page samples every
+two seconds for better map-location resolution, while the reproducible DH1
+CSV benchmark retains ten-second comparison windows. Consecutive enemy-spawn
+rejections with the same reason are coalesced into one event row with an `N`
+repeat count, preventing ordinary `R&15` failures from hiding other events.
+
+Optimised in `SPRINT 15.41.2`: runtime-flak lookup during streamed-column
+composition is now tagged O(1), while the existing 64-entry list remains the
+authoritative bounded gameplay state. A cycle-exact before/after run improved
+mean moving FPS from 45.8 to 48.2, reduced hitch frames from 310 to 63 and
+reduced the worst moving gap from three VBlanks to two.
+
+## Sprint 15.42 - CPC enemy-plane spawn gate
+
+Replace fixed `harEnemyPlaneTriggers` as the authoritative ordinary-plane
+spawn rule with CPC `checkenemyfighterapproach` semantics:
+
+1. no second plane while one is active;
+2. player tile row must satisfy `H < 11 - leveldifficulty`;
+3. the relevant CPC decision value must satisfy `(R & 0x0f) == 0`;
+4. retain terrain-safe pixel placement only as an Amiga presentation/safety
+   adjustment after the CPC decision has passed.
+
+Remove the now-false comment claiming there is no sourced CPC formula. Do not
+change enemy missile timing in this sprint. Acceptance: skills 1..5 use row
+limits 10, 9, 8, 7 and 6 respectively, and telemetry shows approximately one
+accepted roll per sixteen eligible checks over a long run.
+
+Implemented in `SPRINT 15.42.0`:
+
+- each newly visible right-edge column is consumed exactly once;
+- phases outside 2..7, an active enemy missile, an unavailable player,
+  `playerRow >= 11-skill`, and non-zero `R&15` reject the attempt with distinct
+  telemetry reasons;
+- a powerup created by the shared CPC roll suppresses the plane for that
+  column, while an already-moving older powerup does not;
+- accepted aircraft use CPC's `currtime&3` top-four-row entry choice, with the
+  existing nearest-safe-row adjustment retained for Amiga presentation;
+- `harEnemyPlaneTriggers` and its trigger index were removed. Enemy ship
+  missile triggers remain separate and unchanged.
+
+Refined in `SPRINT 15.42.1` after playtesting showed that the literal
+screen-row gate did not communicate a useful low-flight advantage:
+
+- detection is now a visible-system-ready 0..1000 accumulator measured from
+  the Harrier's belly to the local terrain or sea surface, not as a percentage
+  of total screen height;
+- the CPC boundary is retained as `(2 + skill)` clearance tiles. Above it,
+  detection gain grows with excess altitude; below it, drain grows faster the
+  deeper the aircraft terrain-masks;
+- reaching 1000 launches an interceptor as soon as the CPC phase, player and
+  shared enemy-missile slot permit, then resets detection. A busy slot holds
+  the accumulated threat rather than throwing the player's history away;
+- from 80 percent, a 127ms low-priority Paula radar pulse rises gradually in
+  volume and rate. Its maximum remains below flak, weapons, impacts and player
+  cues, so those effects always win channel arbitration;
+- telemetry Game Events now shows current radar percent, clearance, threshold,
+  seconds above/below the boundary and alarm-pulse count. This precedes the
+  planned compact 2x3 HUD presentation, allowing calibration from real data.
+
+Headless acceptance traversed the complete map to the final carrier. Moving
+intervals remained at 48-50 average FPS, with the heaviest interval averaging
+48 FPS and a worst gap of three VBlanks.
+
+## Sprint 15.43 - CPC enemy approach and missile release
+
+Model `enemyplanestatus` explicitly: inactive, approach, fired/retreat,
+hit/destroyed as needed by the Amiga representation. During approach, fire
+when horizontal distance to the selected target becomes less than ten CPC
+cells; transition to retreat at that point. Remove the skill-scaled fallback
+fire timer as an ordinary trigger. Preserve the CPC rule that the player's
+rocket cannot destroy the enemy missile and that manoeuvring can evade it.
+
+Acceptance: the missile originates from the aircraft at the range transition,
+never after the aircraft has already left the screen, and both Player 1 and an
+airborne Wingman can be the selected target.
+
+## Sprint 15.44 - Player 2 left behind and recovery
+
+While Player 2 is still `WINGMAN_ON_DECK`, move its carrier-relative position
+left with the departing start carrier. At X <= 0, run the normal Wingman
+destruction transition and retain an explicit killed/destroyed state matching
+CPC value 254. Do not create a recovery timer. The existing normal powerup
+spawn path must see that state and make the next qualifying spawn a Wingman
+powerup; collecting it restores Player 2 control.
+
+Acceptance: not pressing Up visibly carries the parked aircraft offscreen,
+sets one left-behind telemetry event, and the next qualifying drop is the
+Wingman parachute. Taking off in time leaves this path untouched.
+
+Implemented in `SPRINT 15.44.21` after restoring the conservative 320-pixel
+display baseline:
+
+- an on-deck Player 2 now tracks the parked aircraft's true carrier-relative
+  screen X (`deck X - scrollX`) while the start carrier leaves;
+- Up can launch it smoothly from that current position until X reaches zero;
+- at X <= 0 it enters the shared destroyed/recoverable state corresponding to
+  CPC `wingmantakeoff=254`, clears its weapons and enemy-missile targeting,
+  removes the parked carrier artwork and emits one `P2LEFT` telemetry event;
+- no recovery timer was added. The existing qualifying powerup roll sees the
+  destroyed state, emits the Wingman parachute and restores Player 2 control
+  when collected.
+
+Landing follow-up `SPRINT 15.44.22` historically corrected the then-mirrored
+tower rectangle. Sprint 15.65 removed that mirror premise and restored the
+same visible tower/deck coordinates at both carriers.
+
+## Sprint 15.45 - Separate terrain decisions from cosmetic variants
+
+Introduce a precomputed per-world-column gameplay state representing CPC
+`l8859/l8860/l8861` decisions (flat/up/down/object and gameplay target/flak
+state). Keep a separate deterministic variant value for grass appearance,
+hill tile variant and flak sprite 57/58. Cosmetic queries must never advance
+or alter gameplay decisions. Apply the CPC descent floor
+`12 - leveldifficulty`.
+
+This sprint changes the data model and random ownership first; it should not
+try to redesign the city. Acceptance: changing a cosmetic seed changes tile
+appearance but not terrain heights, target columns, flak columns or event
+sequence.
+
+Implemented in `SPRINT 15.45.0`:
+
+- replaced the three parallel height/target/transition arrays with one
+  `CpcLandGameplayState` table, populated by the CPC dispatcher before any
+  cosmetic tile selection occurs;
+- combined the per-world-column `currtime/l8859` and modeled R values in a
+  `CpcColumnGameplayState` table, so terrain, targets and live flak consume
+  an explicitly gameplay-owned snapshot rather than cosmetic state;
+- retained the sourced gameplay ownership: `l8859` selects the terrain mode,
+  modeled R selects target type, and `cpcLandMinimumRow()` still applies the
+  `12 - skillLevel` floor;
+- moved grass and hill variants into a second precomputation pass driven by
+  `HAR_COSMETIC_SEED` and a cheap 16-bit mixer; this pass reads transition
+  type but cannot write or advance gameplay RNG/state;
+- moved runtime flak tile 57/58 selection to the same isolated cosmetic
+  mixer. Flak gate, absolute row, target countdown and spawn column remain on
+  the CPC gameplay state;
+- extended `land_log.csv` with the target value so fixed-session diagnostic
+  builds can compare height/transition/target columns across two cosmetic
+  seeds. Only `surfaceTile` (and live flak tile 57/58) may differ.
+
+No city generator, scroll geometry, Copper setup or object compositor rule
+was changed in this sprint.
+
+## Sprint 15.46 - CPC city state machine and harbor seam
+
+Verify the converted assets against all eight `townspritestable` block
+definitions and give every block an explicit width/column sequence. Enter the
+city only after descent reaches row `0x0e`; keep terrain flat there, generate
+whole blocks until the CPC city counter reaches 200, then finish the active
+block cleanly and transition to pier data, sea and final carrier.
+
+Acceptance: all eight blocks can be inspected in the graphics browser, the
+city lasts the sourced duration, no half-building is cut at the boundary, and
+land, pier and sea join on the same row with no empty or submerged column.
+
+Implemented in `SPRINT 15.46.0`:
+
+- verified all eight `blk0`..`blk7` arrays byte-for-byte against
+  `townspritestable`; their explicit widths remain `1,2,2,5,5,2,2,4` and the
+  complete composites are now the final eight entries in Graphics Browser;
+- retained the two CPC setup/flat columns before the first building and the
+  sourced 200-column town duration. If the final R-selected block cannot fit
+  the fixed route remainder, the generator selects the next sourced block
+  that fits (block 0 guarantees a one-column completion), so it never emits a
+  half building or an uninitialized flat tail;
+- corrected `setcloudcolourtosea`: `C=3` is the LAND object ID, not width;
+  `B=2` draws one vertical column at rows 14-15. The old three-column
+  interpretation was removed;
+- moved the exact twelve-byte `JHIJHIJHIJHI` pier stream to columns 612-623,
+  kept column 624 as CPC's sea/terminator tick, and moved the second enemy
+  ship to 625-628 with its missile trigger at 629;
+- shifted the remaining sea/final-carrier route four columns earlier, keeping
+  all relative approach spans intact. The final carrier now begins at 663 and
+  its landing scroll constants and collision group agree with that position.
+
+Expected telemetry observation: the `PIER` transition is reported at world
+column 611, the second ship missile trigger is column 629, and the final
+carrier starts at column 663. No Copper, ring-buffer or fine-scroll constant
+was changed.
+
+## Sprint 15.47 - CPC Wingman decision parity
+
+Retain smooth Amiga pixel movement and the existing explicit Wingman states,
+but align decision points:
+
+- consume each ground target evaluation once and start bombing only on
+  `(R & 3) == 0` (about 25 percent);
+- choose voluntary enemy interception about 50/50;
+- force interception in the sourced target situations;
+- preserve the CPC progression corresponding to normal formation and states
+  5, 6 and 7 (first waypoint, second waypoint, fire), then return smoothly;
+- keep obstacle-evasion direction selection as an eight-way decision.
+
+Acceptance: telemetry distinguishes voluntary/forced interception and bomb
+accept/reject; a rejected target is not reconsidered every frame.
+
+Implemented in `SPRINT 15.47.0`:
+
+- retained the existing one-decision-per-target bomb cache and CPC `R&3`
+  acceptance rule; rejection telemetry now records the actual non-zero
+  decision value rather than a generic reason;
+- retained the 50/50 voluntary spawn decision and the forced path when the
+  enemy selected Wingman. Event reasons are now unambiguous: `INT OK` reason
+  1 is voluntary, reason 2 is forced, and `INT NO` reason 3 is a rejected
+  voluntary roll;
+- replaced the merged chase with explicit fixed first-pass, live tracking
+  and fire modes corresponding to CPC states 5, 6 and 7. The first waypoint
+  is captured once at six columns ahead of Wingman's entry position, never
+  recomputed while moving;
+- state 6 follows the moving enemy lead point and advances to the fire state
+  only at the sourced altitude/range condition (with the existing Amiga
+  sprite-size stand-off adjustment). The normal non-Maverick Wingman missile
+  remains an infinite-supply weapon;
+- waypoint collision now tries the preferred direction first, followed by a
+  CPC `R&7`-ordered set of all eight directions. The search is capped at
+  eight candidates per frame, so obstruction handling cannot create an
+  unbounded loop; an evasive step cannot also complete the waypoint;
+- all intercept modes use the same independent screen-space X and smoothly
+  interpolated Y. After firing or losing the target, Wingman flies back to
+  the derived formation slot before handing position ownership back to
+  formation mode, avoiding a sprite-position seam.
+
+No Player 2 controls, landing rules, sprite allocation, weapon collision,
+Copper or scroll-buffer code changed in this sprint.
+
+## Sprint 15.48 - Terrain/city regression and balance pass
+
+Run complete levels at skills 1, 3 and 5 with telemetry. Compare minimum and
+maximum terrain rows, enemy/target/flak counts, all state transitions and the
+final carrier approach. Fix only discrepancies exposed by the new state data;
+do not tune by visual guesswork. Confirm scrolling remains smooth and that
+precomputation stays within stock A500 plus 512 KiB expansion constraints.
+
+Acceptance: every run reaches the final carrier without a generation stall,
+flat missing city region or invalid collision surface.
+
+Implemented in `SPRINT 15.48.0`:
+
+- added `run-amiga-parity.ps1`, which builds externally configured diagnostic
+  executables without editing release defines, runs cycle-exact A500 plus
+  512 KiB WinUAE sessions, archives telemetry by skill/speed/Wingman mode and
+  always restores the ordinary F5/release executable afterward;
+- replaced the old fixed-duration autoplay with a complete-route terminal
+  condition. A one-row parity report records terrain, target, enemy, flak,
+  Wingman, pier and final-carrier state after AmigaOS ownership is restored;
+- full-speed runs at skills 1, 3 and 5 all reached the final carrier at
+  `scrollX=5160`, with 48 targets, 11 terrain events and one pier event. Their
+  terrain row ranges were respectively `11..14`, `9..14` and `7..14`, matching
+  the sourced skill floor; no flat missing city tail or generation stall was
+  observed;
+- a controlled speed-1 A/B test identified CPU Wingman rather than world
+  generation as the largest remaining optional workload (45 FPS Off versus
+  26.8 FPS CPU). Formation safety now reuses results while tile inputs are
+  unchanged and avoids checking an already-approved six-column footprint
+  again;
+- the immutable 16x16 CPC Wingman artwork is converted to hardware-sprite
+  plane words once. Per-frame movement now changes only sprite control words,
+  rather than repeating 256 pen-map calls and repacking the payload;
+- the identical CPU-Wingman stress route improved from 26.8 to 37.2 average
+  FPS and from 1717 to 694 hitch frames while preserving the skill-3 terrain
+  fingerprint (`9..14`, flat 153, climb 47, descend 47, 48 targets) and
+  reaching the same final carrier.
+
+No terrain RNG, city layout, Copper/ring-scroll geometry, sprite channels,
+collision surface or gameplay decision was changed. No world-sized cache was
+added, so the stock A500 plus 512 KiB memory target is unchanged.
+
+## Sprint 15.49 - Redefinable controls and documented Amiga deviations
+
+Add control profiles for Player 1 and Player 2 with seven CPC actions each:
+up, down, left, right, rocket, bomb and eject. Include keyboard mapping,
+joystick-port selection, available fire-button mapping and restore-defaults.
+Reject duplicate essential bindings within one player profile and store the
+chosen profiles for the current session without blocking the menu music
+player during redraw/input capture.
+
+Keep the menu's 1/3-lives selection as an intentional Amiga option and label
+it as such in player documentation, rather than claiming CPC parity. If
+hardware limitations prevent a distinct second joystick fire action, document
+the keyboard fallback explicitly.
+
+Implemented in `SPRINT 15.49.0`:
+
+- added session-only `ControlProfile` instances for Player 1 and Player 2,
+  each containing the seven CPC actions, joystick-port choice and independent
+  rocket/bomb button selection;
+- replaced the two hardcoded gameplay readers with one profile-driven hardware
+  path. Profile `ROCKET` writes the established `InputState.fire` semantic;
+  no legacy parallel fire signal remains. Player 2 retains its separate state
+  object and gains the seventh Eject action;
+- added a `Controls...` main-menu item and frame-driven binding screen. It is
+  handled inside the existing main loop after the unconditional VBlank/MOD
+  service, so key capture never enters a blocking wait loop and cannot starve
+  menu music;
+- new raw-key make events carry a serial number. Capture ignores the held Fire
+  key that entered the row and accepts only a later make event; Escape cancels
+  capture or returns to the menu;
+- duplicate non-empty keys and duplicate weapon buttons within one profile are
+  rejected. A non-zero joystick port already owned by the other player is also
+  rejected. `Restore defaults` restores both compatible profiles atomically;
+- defaults are Player 1 arrows/Ctrl/Space/E on physical port 2 and Player 2
+  keypad 8/2/4/6/0/Enter/decimal on physical port 1. Profiles intentionally
+  persist only until Exit to DOS;
+- retained the Amiga 1/3-lives menu option and documented it as an intentional
+  port option. Two-button mappings require compatible hardware; keyboard bomb
+  fallback is documented. Player 2 Eject uses the existing destroyed/recovery
+  transition because the one spare eject/parachute sprite remains assigned to
+  Player 1.
+
+No control setting performs AmigaDOS I/O, and no menu redraw can skip the
+per-frame MOD service.
+
+## Sprint 15.50 - CPU Wingman interception hot path
+
+Profile the remaining CPU-Wingman cost on a cycle-exact stock A500 plus
+512 KiB route before changing gameplay. Preserve CPC waypoint, obstruction,
+evasion and weapon decisions; optimize only repeated read-only map queries.
+
+Implemented in `SPRINT 15.50.0`:
+
+- extended `run-amiga-parity.ps1` with optional diagnostic compiler flags and
+  result tags, so controlled A/B builds can be archived without editing
+  release defines or overwriting the baseline CSV files;
+- measured formation, complete Wingman AI and interception independently.
+  Formation removal changed the heavy intervals by only 0--2 FPS, while
+  disabling interception raised them from roughly 35--38 to 44--46 FPS;
+- retained the general CPC object resolver after a validated specialized
+  replacement produced no measurable gain. This avoids maintaining a second
+  subtly different interpretation of the converted object map;
+- added a 32-entry direct-mapped cache of recent passable Wingman radar cells.
+  A six-cell interception corridor normally overlaps the previous frame by
+  five cells, so the cache removes repeated object-map work while returning
+  exactly the same boolean result;
+- caches only positive (clear sky/cloud/flak) answers. Blocked cells are always
+  resolved again, so destroying a target can immediately open the route and no
+  stale negative result can trap the evasion logic;
+- the identical skill-3, speed-1, CPU-Wingman full route improved from 36.5 to
+  38.8 average FPS after startup (about 6 percent). Terrain stayed `9..14`,
+  with flat/climb/descent `148/52/48`, 47 targets, 11 terrain transitions,
+  one pier transition and the same final `scrollX=5160` carrier state.
+
+The optimized run completed more Wingman intercept/bomb decisions before the
+final carrier, so its last interval is intentionally a heavier gameplay load.
+No AI probability, movement speed, collision, sprite, Copper, scroll-buffer or
+terrain-generation rule changed.
+
+## Sprint 15.51 - Stronger radar response and tick-budgeted terrain probe
+
+Make flying above or below the terrain-relative radar threshold visibly more
+consequential, then remove radar work that cannot affect gameplay state.
+
+Implemented in `SPRINT 15.51.0`:
+
+- raised both above-threshold detection gain and below-threshold masking drain
+  to 150 percent of their previous values. The threshold itself, its five
+  skill-dependent clearances, speed weighting, 0..1000 meter and upward-only
+  70/75/.../100-percent alarm crossings are unchanged;
+- raised the corresponding safety caps from 32/64 to 48/96, so the requested
+  increase remains effective at large altitude differences instead of being
+  silently clipped to the old maximum;
+- kept radar state at its established 12.5 Hz update rate, but moved the
+  three-point Harrier-footprint terrain probe onto that same four-frame tick.
+  Previously the value could only change every fourth frame while the costly
+  procedural town/object lookup still ran and was discarded at 50 Hz;
+- clearance telemetry now reports the most recent radar sample for the three
+  intervening frames. HUD detection and enemy-spawn semantics remain tied to
+  the same tick, so this removes work rather than reducing simulation rate;
+- the full skill-3, speed-1, CPU-Wingman cycle-exact route improved from 38.8
+  to 43.5 average FPS after startup. Its six intervals were
+  `48/46/44/38/37/48` FPS while producing 13 enemy planes, 12 enemy missiles,
+  seven Wingman intercepts and four bombing runs -- a heavier gameplay load
+  than Sprint 15.50's control run;
+- terrain stayed `9..14`, flat/climb/descent remained `148/52/48`, with 47
+  targets, 11 terrain transitions, one pier transition and final
+  `scrollX=5160` at the carrier.
+
+No terrain generator, town lookup result, enemy-plane flight rule, Copper,
+ring-buffer geometry or sprite assignment changed.
+
+## Sprint 15.52 - Deterministic A500 performance validation
+
+Make optimization comparisons repeatable before changing another gameplay hot
+path, and correct the lifetime of the existing Wingman passability cache.
+
+Implemented in `SPRINT 15.52.0`:
+
+- added a diagnostic-only CPC session seed. `run-amiga-parity.ps1` now accepts
+  `-SessionSeed` (default `12040`, CPC state `0x2f08`), passes it only to the
+  validation build and records it in every archived result filename;
+- ordinary F5/release builds still use the frame at which Start is selected,
+  so the random world behavior seen by players is unchanged;
+- a fixed-seed Wingman A/B run now demonstrates the actual remaining cost:
+  CPU Wingman produced post-startup intervals `43/43/44/40/38/47` FPS, while
+  Wingman Off produced `48/48/48/47/46/39`. The CPU path is typically 5--8
+  FPS behind before the final-carrier interval;
+- tested both a direct procedural-town radar lookup and a map-wide positive
+  Wingman cache. Neither improved the controlled route (the latter averaged
+  exactly the same 42.5 FPS as the reference), so neither speculative memory
+  or duplicate map path is shipped;
+- moved the retained 32-entry positive-only Wingman cache into resettable
+  session state. A retry with a newly generated town can no longer inherit a
+  stale `safe` cell from the previous world; blocked cells remain uncached so
+  destroyed scenery opens immediately.
+
+This sprint deliberately prioritizes trustworthy evidence over landing an
+unmeasured rewrite. Moving the existing 128-byte cache does not increase its
+memory use and does not change CPC AI decisions, radar balance, sprite
+assignment, Copper or ring-scroll geometry.
+
+## Sprint 15.53 - CPC town state-machine parity
+
+Replace the Amiga-specific dense packing of town blocks with the actual CPC
+state 6/7 rhythm from `buildportstanley` and `checkbuildpier`.
+
+Implemented in `SPRINT 15.53.0`:
+
+- sourced the generator directly from
+  `HarrierAttackSourceNew2_alt_CRTC_CART16.asm`: state 6 checks the 200-column
+  timer, samples `R`, selects one of `townspritestable`, draws one flat terrain
+  column and enters state 7; state 7 emits one five-tile building column per
+  tick until the `0xff` terminator, then returns to state 6;
+- changed the offline Amiga table to the same
+  `[one flat column][selected complete block]` sequence, including the first
+  building. The former two-column start margin and back-to-back building
+  packing were Amiga inventions and have been removed;
+- removed the boundary rule that silently substituted a different building
+  when the R-selected block did not fit. The first 200 town columns now retain
+  the selected CPC block identity; a clipped tail is explicitly counted by
+  validation rather than hidden by another block;
+- added `townBlocks`, `townBuildingCols`, `townFlatCols` and
+  `townClippedCols` to the headless parity report. Fixed CPC seed `0x2f08`
+  generated 57 blocks, 143 building columns, 57 flat separator columns and
+  zero clipped columns. The old algorithm necessarily produced 198 building
+  columns and only its artificial two-column start margin;
+- the skill-3 full-speed cycle-exact route retained terrain `9..14`, all 11
+  terrain transitions, the city-to-pier transition and final carrier at
+  `scrollX=5160`.
+
+CPC's last active state-7 block may extend a few columns beyond the 200 timer
+because the timer is checked only in state 6. Sprint 15.54 implements that
+remaining state-machine rule rather than clipping the selected block.
+
+## Sprint 15.54 - complete final town block and shift the route
+
+Implemented in `SPRINT 15.54.0`:
+
+- expanded the procedural town table so CPC state 7 always completes the last
+  selected building after state 6's 200-column timer has expired;
+- retained `assets/level_route.h` as immutable editor/source data and builds a
+  writable runtime route for each session. The town segment is extended by its
+  measured 0..4-column overflow, while pier, enemy ship, sea, final carrier,
+  explicit objects and ship-missile triggers are all shifted by exactly the
+  same amount;
+- invalidates and rebuilds the object column index after applying the shift,
+  preventing lookups from retaining the preceding session's coordinates;
+- added `townLength` and `townOverflowCols` to parity telemetry.
+  `townClippedCols` remains as a compatibility field and must now always be
+  zero;
+- verified the zero-overflow control seed 12040 at `townLength=200` and
+  `finalScroll=5160`, and a maximum modeled overflow seed 12042 at
+  `townLength=204` and `finalScroll=5192`. Both reached the final carrier with
+  one city-to-pier transition and no clipped town columns;
+- exhaustively evaluated all 65,535 valid non-zero validation seeds: the
+  modeled CPC R sequence produces route overflows from zero through four
+  columns, all within the allocated five-column completion reserve.
+
+This changes only where the post-town route begins. Building selection,
+terrain generation, combat, Copper geometry and sprite assignment are
+unchanged.
+
+## Sprint 15.55 - ticker-driven Field Guide
+
+Implemented in `SPRINT 15.55.0`:
+
+- replaced the two fixed 30-second attract timers with one complete smooth
+  ticker pass per screen: the main-menu tribute opens the Field Guide when
+  its final glyph leaves the left edge, and the guide's rules ticker returns
+  to the menu by the same rule;
+- added the editable gameplay/rules text as `HAR_TEXT_FIELD_GUIDE` beside the
+  existing tribute in `amiga/assets/harrier_menu_text.h`;
+- assembled the Ground Target illustration from CPC tiles 45 `TANK FRONT`
+  and 46 `TANK REAR`, then moved its shared label/points/note columns right;
+- merged the duplicate Enemy Ship/Gunship rows into one 32-pixel composite,
+  and renders it plus Enemy Plane in local neutral grey without changing any
+  menu or gameplay palette entry;
+- changed Enemy Plane's note to `RADAR DETECT` and removed the misleading
+  blanket instant-loss footer. Flak and smoke behaviour is described by the
+  guide ticker instead.
+
+Follow-up `SPRINT 15.55.1` restores CPC's selectable `Lock height: On/Off` to
+the main menu. On continuously copies the Harrier's current Y to an in-flight
+standard rocket; Off retains its launch height. Maverick guidance is unchanged
+and the CPC-compatible default is On.
+
+## Sprint 15.56 - CPC enemy-plane approach and retreat
+
+Implemented in `SPRINT 15.56.0`:
+
+- restored the CPC interceptor's logical spawn position at screen column
+  `$26` and one of the four `currtime & 3` top rows. A blocked authentic lane
+  is delayed instead of silently relocating the aircraft lower on screen;
+- separated CPC decisions from presentation: approach and retreat operate on
+  8x8 logical cells, while the Amiga display position interpolates by one
+  physical pixel per frame;
+- restored the two-cell sky/cloud obstruction test after each requested
+  altitude step. A blocked step is cancelled and retried from later columns;
+- restored the CPC fire condition after the horizontal step: the interceptor
+  commits to retreat only when fewer than ten logical cells ahead of its fixed
+  player/Wingman target. The Amiga-only timer fallback was removed;
+- restored the retreat path of one logical cell left per decision and one cell
+  up on odd logical columns;
+- extended game-event telemetry: successful spawns report lane and selected
+  target, rejected spawns report the authentic blocked lane, and `EPL BL`
+  reports approach/retreat altitude steps rejected by the two-cell test.
+
+This sprint deliberately leaves enemy missile guidance, radar accumulation,
+terrain generation, sprite assignment and palettes unchanged.
+
+Diagnostic follow-up `SPRINT 15.56.1` adds a compile-time enemy-plane trace
+and two complementary cycle-exact A500 headless profiles.  The ordinary route
+keeps the Harrier at maximum height and is the reference for full-map spawn,
+horizontal approach, fire and retreat.  `-EnemyPlaneExercise` uses low cruise
+speed and alternates the Harrier between two fixed heights during an encounter,
+so vertical pursuit can be measured rather than inferred.  Trace data records
+the visual, logical and target coordinates, obstruction result, fire distance,
+visual lag and real PAL-frame interval for every CPC decision.
+
+Fixed-seed skill-1 runs through frame 1800 compared 1x, 2x and 3x movement.
+All display paths remained pixel-smooth and their maximum logical/display lag
+was only 7, 6 and 7 pixels respectively.  The mean measured decision interval
+was 9.5, 5.3 and 3.0 PAL frames; the 1x path followed the changing target but
+reached only Y 32, while 2x/3x reached Y 48.  Post-startup performance was
+42--45 FPS for all variants, so the multiplier itself is not a CPU concern.
+However, within the same time budget the radar system admitted 6, 8 and 9
+interceptors respectively: increasing logical speed also changes encounter
+density.  Therefore the normal build remains at conservative 1x until a CPC
+real-time capture provides a target duration; 2x is the leading candidate if
+playtesting confirms that 1x is visibly too slow.  3x currently offers no
+measured advantage over 2x large enough to justify the extra gameplay change.
+
+Follow-up `SPRINT 15.56.2` corrects the relationship between player descent
+and bomb gravity.  The Harrier can descend two physical pixels per gameplay
+update, but the previous bomb phase averaged only 1.5 pixels, allowing a diving
+player to catch its own bomb.  Player, CPU-Wingman and Player-2 bombs now use
+pixel-smooth alternating 2/3-pixel steps (2.5 pixels per update).  Horizontal
+momentum, world anchoring, collision, impact and damage rules are unchanged.
+A compile-time assertion prevents future tuning from making bomb descent equal
+to or slower than maximum Harrier descent.
+
+Follow-up `SPRINT 15.56.3` simplifies and hardens the two attract screens:
+
+- the main menu's two redundant bottom control-hint rows were removed, leaving
+  more quiet space for the expanded option list;
+- every entry to either the main menu or Field Guide resets its own one-shot
+  ticker with one complete screen of blank lead-in. Returning early from a
+  page can no longer expose the previous ticker halfway through its text;
+- ticker completion now includes that blank lead-in and still changes screen
+  only after the final glyph has left the left edge;
+- full five-plane clears and both ordinary/styled font renderers service the
+  MOD clock throughout their inner work. The long editable ticker renderer
+  also services it after every pre-rendered glyph, preventing page filling
+  from starving menu music for several PAL frames on a stock 68000.
+
+## Sprint 15.57 - Smooth enemy-plane cell boundaries
+
+Implemented in `SPRINT 15.57.0`:
+
+- CPC remains authoritative: the enemy plane still makes one horizontal and
+  optional vertical decision per 8-pixel character cell, uses the same
+  two-column obstruction rule, fires at the same logical distance and keeps
+  the Amiga-only one-pixel visual interpolation.
+- The regular pause after each eight interpolated pixels was traced to the
+  obstruction test rebuilding procedural town/object data at the exact cell
+  boundary. The ring streamer had already resolved those visible columns.
+- `buildWorldTileColumn()` now retains a compact 15-bit clear-sky/cloud mask
+  for each generated level column. `enemyPlaneRowIsPassable()` reads that
+  mask in constant time and keeps the original resolver only as a safe
+  fallback for a not-yet-generated diagnostic column.
+- The cache is invalidated for every new randomized CPC session and refreshed
+  automatically whenever a column is streamed or redrawn after world damage.
+  No enemy position, collision, fire timing or overall CPC travel rate was
+  changed.
+- A cycle-exact A500 forced-encounter run at 1x interpolation measured 16 CPC
+  events with no dropped trace rows. Mean real decision spacing fell from the
+  earlier 9.5 PAL frames to 8.3, close to the intended eight-frame cadence;
+  maximum visual/logical lag remained the expected seven pixels.
+
+## Sprint 15.58 - CPC heat-seeker cutoff and direction
+
+Implemented in `SPRINT 15.58.0`:
+
+- restored `heatseekposition`'s five-character dead zone. Both aircraft- and
+  ship-launched missiles re-read their fixed player/Wingman target, but only
+  correct altitude while at least five CPC cells ahead. Inside that distance,
+  and after passing the target, they continue horizontally. This restores the
+  original late climb/dive evasion window;
+- retained Amiga's pixel-smooth vertical presentation instead of exposing the
+  CPC's full-row jumps. Guidance compares CPC 8x8 rows, then moves one physical
+  pixel toward the selected row per update;
+- restored CPC graphics 53/54/55 for ascending-left, descending-left and
+  level-left flight. The hostile missile no longer keeps the horizontal tile
+  while visibly climbing or diving;
+- fixed target ownership during enemy-plane retreat. An in-flight missile
+  keeps the target selected at launch even if its aircraft exits at the top;
+  the target is cleared only when the shared missile itself ends.
+
+No sprite channel, collision/damage rule, terrain, radar, scrolling or sound
+assignment changed in this sprint.
+
+Regression follow-up `SPRINT 15.58.1`: the twelve `JHIJHIJHIJHI` pier cells
+were stored as `HAR_OBJ_OWN_FRIGATE`. A player or Wingman weapon touching the
+pier therefore set the shared friendly-carrier damage flag, causing
+`updateLandingApproach()` to reject the final landing even though the visible
+end carrier was intact. CPC gives the pier its own object id and routes weapon
+contact to the silent sea/land absorber. Added `HAR_OBJ_PIER`, reclassified
+only columns 612..623, and made player/Player-2 bombs and player rockets stop
+silently on it. The pier remains solid to aircraft; only real carrier cells
+can now disable the CPC final-carrier sequence.
+
+Menu layout follow-up `SPRINT 15.58.2`: the final high-score row and
+`START GAME` previously touched on adjacent scanlines, visually merging the
+score table with the settings. The complete selectable block and its aligned
+right-hand information column now begin eight scanlines lower. Cursor-only
+redraw, ticker Copper scrolling, music servicing and input behaviour are
+unchanged.
+
+## Sprint 15.59 - CPC broken enemy-plane sequence
+
+Implemented in `SPRINT 15.59.0`:
+
+- restored CPC `enemyplanestatus` 3 -> 4 -> 0 after player or Wingman weapon
+  contact. A hit no longer makes the normal aircraft disappear immediately;
+- the first post-hit aircraft update moves it one complete CPC character cell
+  left and selects the already converted `ENEMY BROKEN` CPC+ sprite halves;
+- the following update removes the broken aircraft and starts the existing
+  skill-dependent respawn delay;
+- score and the explosion sound are still awarded at the original contact,
+  but the generic tile explosion is no longer drawn on top of the dedicated
+  broken-aircraft frame;
+- a hit aircraft is no longer a second collision/fire/intercept target during
+  its short destruction sequence. An already launched heat-seeker retains the
+  fixed target-ownership rule established in Sprint 15.58.
+
+No spawn probability, radar accumulation, approach/retreat path, missile
+guidance, hardware-sprite allocation, palette, terrain or scrolling rule was
+changed.
+
+## Sprint 15.60 - Aircraft failure, ejection and rescue
+
+Implemented Amiga gameplay extension. This deliberately departs from CPC parity:
+the selected `LIVES` value represents complete replacement aircraft, and an
+airborne fatal hit gives the pilot a short, visible opportunity to eject.
+
+### Authoritative rules
+
+- Rename the menu setting and HUD concept from lives to aircraft (`AIR` in the
+  compact HUD). Keep the selectable one/three-aircraft modes but make three the
+  default. One aircraft is currently in use; a successful rescue consumes it
+  exactly once. Debug infinite lives becomes infinite aircraft.
+- Direct contact with terrain, water, a solid ground object or the carrier
+  superstructure remains an unrecoverable crash and goes directly to Game
+  Over. Remaining aircraft do not forgive flying into the ground.
+- Fuel reaching zero, armour reaching zero, an enemy missile hit, or physical
+  aircraft-to-aircraft contact enters `AIRCRAFT_FAILURE_DESCENT` instead of
+  immediately creating the three wreck fragments. Missile and aircraft contact
+  first set armour to zero, regardless of its previous value.
+- Entering failure is edge-triggered. Clear the hostile missile/aircraft that
+  caused it and disable further collision damage so a single contact cannot
+  restart the state or consume more than one aircraft.
+- During failure the engine stops, weapons and throttle changes are disabled,
+  the intact Harrier loses height with modest downward acceleration, and a
+  short white/grey smoke trail follows it. Limited horizontal steering remains
+  available only to make the eject decision readable; it cannot arrest the
+  descent.
+- Sprint 15.60.6 also accepts an edge-triggered `E` during ordinary airborne
+  flight. It deliberately abandons the active Harrier, then uses the same
+  independent aircraft-impact and parachute-rescue sequence as a damage eject;
+  takeoff, landing, safe-reentry and held-key states remain guarded.
+- Sprint 15.60.1 accepts an already-held `E` as soon as failure descent begins;
+  the failure state remains the one-shot gate, so no second eject can fire.
+  Parachute contact is measured against terrain/water in screen pixels rather
+  than accidentally comparing its pixel Y with an eight-pixel tile-row index.
+- Pressing `E` stops the failure alarm, starts the existing seat/parachute
+  sequence and marks the rescue successful. The abandoned aircraft may finish
+  with the existing CPC-style forward-moving wreck parts, but the pilot sprite
+  and parachute remain visually distinct from those parts.
+- A successful parachute descent consumes one aircraft. If another aircraft
+  remains, restart on the opening carrier with full armour, fuel and skill-
+  appropriate ammunition while retaining score, destroyed-target state,
+  difficulty and control settings. If no aircraft remains, finish the chute
+  presentation and enter Game Over.
+- If the failing Harrier reaches terrain or water before `E`, use the normal
+  impact/explosion presentation and enter Game Over immediately, regardless of
+  how many reserve aircraft remain.
+- Sprint 15.60.3 makes that surface contact use the hard impact bang while the
+  existing CPC-style three forward-moving wreck fragments play for their full
+  crash interval before Game Over appears.
+- Sprint 15.60.4 keeps the abandoned Harrier alive after a successful eject.
+  The parachute owns player sprite 0 while the intact falling aircraft borrows
+  the cleared enemy-plane attached pair. On surface contact it plays the same
+  hard bang and transfers to three debris sprites without interrupting the
+  parachute. The landed pilot waits for any remaining debris presentation,
+  then consumes one aircraft and returns to the carrier when a reserve remains;
+  the abandoned-aircraft impact itself never forces Game Over.
+
+### Amiga presentation and audio
+
+- Stop the procedural engine as soon as failure begins. Use its now-free Paula
+  voice for a procedural alarm, so the warning cannot steal a voice from impact,
+  eject or other priority effects.
+- The alarm is a small signed waveform with a period sweep from low to higher
+  pitch: a short 13-PAL-frame bleep (0.26 second, the nearest whole-frame value
+  to 0.25 second), followed by 25 silent frames (0.5 second), then repeat. It
+  uses no WAV asset and stops on eject, impact, Game Over or return to menu.
+- Keep the alarm prominent but below impact/eject priority and below clipping;
+  it must not restart the DMA voice every frame. The audio update advances its
+  sweep and silence phases from the existing PAL game clock.
+- Draw failure smoke as a late, pixel-positioned BOB/particle effect rather
+  than writing smoke tiles into the scrolling world. Each display buffer owns
+  its own erase footprint so the trail cannot corrupt another buffered frame.
+  Existing persistent ground-impact smoke remains unchanged.
+- Use a fixed, allocation-free pool of at most 8--10 world-anchored particles.
+  New particles originate at the Harrier's rear/nozzle, retain their world X
+  while the screen scrolls, drift slightly backward/upward and expire after a
+  short lifetime. This produces a real trail instead of one smoke tile glued
+  to the aircraft.
+- The newest particle is a compact yellow/white flame close to the engine.
+  Older particles progress through dark grey, light grey and sparse white
+  2x2--4x4 dithered masks while expanding. Alternate two deterministic shapes
+  and a small Y wobble so the trail feels turbulent without using RNG or a
+  large animation asset.
+- Reuse the CPU masked-pixel plotting principles and per-buffer footprints
+  already proven by the bomb/rocket mini-BOBs, but reconstruct each erased
+  footprint from current world truth instead of restoring stale saved bytes
+  after a ring-buffer column has been recycled. Do not use the tile compositor,
+  Blitter waits, new hardware sprites or global palette changes.
+  Draw particles before the Harrier hardware sprite so flame/smoke emerge from
+  behind the aircraft rather than covering its body.
+
+### State and frame-order requirements
+
+- Replace ambiguous boolean combinations with one explicit failure state and
+  cause (`NONE`, `FUEL`, `ARMOUR`, `MISSILE`, `AIRCRAFT_CONTACT`). Eject, crash
+  fragments and Game Over remain separate presentation states.
+- Route all fatal airborne causes through one `startAircraftFailure()` entry
+  point. Direct terrain/object crashes continue through the immediate crash
+  path. Do not infer failure merely from `armour == 0` on every frame.
+- Per frame: erase the current buffer's old failure-smoke footprints; update
+  failure physics/alarm; test `E` or surface impact; update the scrolling world;
+  draw normal BOBs; draw new failure smoke; update Harrier/parachute hardware
+  sprites; then swap/display the completed buffer.
+- Restarting at the carrier must use a dedicated mission-reentry function, not
+  today's `respawnPlayer()`, which places a replacement Harrier directly in the
+  air at the current map position.
+
+### Telemetry and acceptance
+
+- Record failure cause, frame, world column, player Y, terrain clearance,
+  aircraft count, eject frame, surface-impact frame and final result
+  (`RESCUED`/`NO EJECT`). Add the state/cause to the paused telemetry page.
+- Verify independently: fuel exhaustion, armour exhaustion from flak/smoke,
+  enemy missile, enemy-plane contact, direct terrain contact, successful eject
+  with reserve aircraft, successful eject of the final aircraft, and failure to
+  eject before impact.
+- Confirm that only a successful eject decrements the reserve once; direct
+  terrain impact and missed eject produce immediate Game Over; fresh carrier
+  reentry has full stores; score and destroyed targets do not reset.
+- Run a stock A500 cycle-exact test with repeated alarm/smoke updates and verify
+  that the new late BOB path introduces no scrolling hitch, stale footprint or
+  Paula-channel starvation.
+- Regression for Sprint 15.60.1: hold or press `E` immediately when the alarm
+  and smoke begin. The ejector seat must deploy before impact, the parachute
+  must visibly descend to the terrain/water surface, and only then may carrier
+  reentry or final Game Over begin.
+- Regression for Sprint 15.60.4: eject high enough to watch both actors. The
+  abandoned Harrier must continue forward/downward, hit the surface with one
+  bang and split into three parts while the canopy keeps descending. With a
+  reserve aircraft this must end at the carrier, not at Game Over.
+
+Out of scope: Wingman rescue/ejection, enemy pilot parachutes, new sprite
+allocation, terrain rules, radar balance, and changes to CPC-style wreck-part
+directions.
+
+### Sprint 15.60.5 - HUD skill and level context
+
+- The compact top HUD row now shows `SKn` for the active gameplay difficulty
+  and `LVnn` for the current board/sortie number.
+- A new mission starts at LV01. A successful end-carrier landing increments LV
+  (display capped at 99) and raises SK by one only until CPC's maximum skill 5.
+- Ejection/carrier rescue preserves both values because it replaces an aircraft
+  within the same board; retry/new game resets LV to 01.
+- The former `HIGH SCORE` label is shortened to `HIGH` so SCORE, HIGH, AIR,
+  SK and LV fit without shrinking the CPC HUD font or touching gauge geometry.
+
+### Sprint 15.60.6 - Voluntary eject and end-of-board aircraft bonus
+
+- A fresh press of `E` while normally airborne now ejects immediately. The
+  engine stops, the abandoned Harrier falls and breaks up at the surface, and
+  the pilot must still complete the parachute descent before one AIR is consumed
+  and carrier rescue can begin. Holding E across reentry cannot consume another
+  aircraft.
+- A sortie that earns at least 2000 points before the final carrier receives one
+  deterministic white parachute pickup during the final approach. Collection
+  adds one AIR, capped at 9.
+- The threshold uses score earned on the current board, not cumulative campaign
+  score. The bonus can spawn only once per board; rescue preserves that flag,
+  while a successful landing starts a fresh eligibility window for the next
+  board. This prevents eject/reentry farming.
+
+### Sprint 15.60.7 - Maverick capture and powerup fall stability
+
+- Maverick guidance now treats an axis within one four-pixel steering step as
+  acquired. It therefore flies straight along the remaining axis instead of
+  overshooting target height and alternating up/down in a travelling V. The
+  existing proximity fuse still decides the actual object hit.
+- Parachute powerups fall one pixel on every PAL frame instead of the old
+  1,1,0-pixel cadence. This is slightly faster but removes periodic micro-judder.
+- Powerup BOB erase restores only its eight touched scanlines rather than up to
+  four complete 8x8 tiles. This halves the common single-buffer erase work and
+  narrows the interval in which a falling canopy could appear faint or flash.
+
+### Deferred checks after Sprint 15.60
+
+- Verify against the CPC routines whether the Wingman finishes ahead of or
+  behind the player on the final carrier, and audit the extracted Wingman
+  landing/wheels-down frames before changing the Amiga landing presentation.
+- Replace the low-contrast grey enemy missile presentation with black only if
+  the CPC asset/palette audit confirms that this does not hide it against any
+  playfield band. This is a visibility follow-up, not part of failure/ejection.
+
+## Sprint 15.61 - Early loading screen and chip-memory reclaim
+
+Status: implemented as Sprint 15.61.0; interactive F5/real-hardware visual
+confirmation remains.
+
+The previous `loadingScreen` symbol embedded the
+40,000-byte `loading_screen.bpl` in `.INCBIN.MEMF_CHIP` for the complete program
+lifetime, then copies it into the 51,200-byte `screenBuffer` which the menu and
+debug screens already require. The bitmap therefore consumes about 39 KiB of
+duplicate chip RAM after the loading presentation has finished.
+
+### Recommended first implementation
+
+- Keep one game executable initially; do not add a resident loader process or
+  self-unloading `LoadSeg` overlay in the first slice.
+- Ship `loading_screen.bpl` as a normal ADF/DH0 asset next to the executable.
+  Allocate the Copper list, reusable `screenBuffer` and null sprite first, read
+  the bitmap directly into the correct centred/interleaved region of
+  `screenBuffer`, close the DOS file, and only then call `TakeSystem()`.
+- Display that buffer immediately, then allocate/initialise the world, HUD,
+  sprites, audio decode buffers and generated route while the loading image is
+  visible. Reuse the exact same buffer for the menu afterward. Never perform
+  DOS file I/O after `TakeSystem()` because task scheduling is disabled there.
+- Remove only the 40,000-byte `EMBED_CHIP loadingScreen[]`; the 64-byte palette
+  may remain embedded. Add the external bitmap to both the ADF builder and the
+  normal DH0/F5 launch layout.
+- If the external bitmap is absent or short, show a tiny built-in black
+  `LOADING...` fallback rather than aborting before the user receives feedback.
+- Start with the raw bitmap to isolate boot-path correctness. A later measured
+  step may store a Doynax-compressed file, read its small staging block before
+  `TakeSystem()`, depack into `screenBuffer`, then free the staging block before
+  gameplay allocations.
+
+This saves about 39 KiB of persistent chip RAM and gives feedback during game
+initialisation. It cannot show anything while AmigaDOS is still loading the
+main executable itself, because all embedded game assets are currently part of
+that executable. If real-floppy measurement shows that pre-`main()` load time is
+the dominant delay, evaluate a tiny bootstrap executable plus externalised game
+assets as a separate second phase; do not accept its extra resident memory or
+process-lifetime complexity without measuring the benefit.
+
+### Acceptance
+
+- Compare `AvailMem(MEMF_CHIP)` immediately before menu entry before/after the
+  change; expected improvement is approximately 40,000 bytes minus negligible
+  loader bookkeeping.
+- Test F5/DH0, generated ADF, Kickstart 1.3 and real 512K+512K hardware.
+- Confirm the picture appears before route/world/audio initialisation completes,
+  the menu overwrites it cleanly, missing-file fallback works, and Exit to DOS
+  restores the OS without a file handle, Copper list or temporary buffer leak.
+
+### Sprint 15.61.0 implementation
+
+- Removed `EMBED_CHIP loadingScreen[]`; only the 64-byte loading palette remains
+  embedded. The verified executable is 433,004 bytes and no longer contains the
+  40,000-byte raw bitmap payload (small loader-code changes make a simple
+  whole-file before/after subtraction less precise than the removed symbol).
+- `main()` now allocates only Copper, the reusable 51,200-byte screen buffer and
+  null sprite, reads the raw 40,000-byte bitmap directly into the vertically
+  centred final buffer, closes the file, then calls `TakeSystem()` and starts
+  Copper/raster DMA. Runtime world/HUD/sprite/audio buffers and the baseline
+  route are initialised after the loading page is live.
+- Kickstart 1.3-safe search order is relative path, `DH1:` and `DF0:` with DOS
+  requesters suppressed. A missing or short asset clears the buffer and draws
+  an embedded `LOADING...` fallback instead of aborting.
+- `amiga-build.ps1` copies the bitmap beside `amiga/out/harrier_amiga.exe` for
+  Bartman/F5 and supplies it to `exe2adf -d`; the generated ADF directory dump
+  confirms `loading_screen.bpl` at its root.
+- The build emits current free chip RAM after runtime allocation through
+  `KPrintF`, making the remaining F5/real-hardware comparison explicit.
+- Verification: clean compile/link/Elf2Hunk and ADF generation succeeded. A
+  short KS1.3 headless boot stayed alive and responsive both with the DH1 asset
+  present and with that generated copy temporarily removed, exercising the
+  fallback path without a DOS requester. No new compiler warning class
+  appeared; the existing unsupported-visibility/LTO warnings remain.
+
+## Sprint 15.62 - CPC Wingman final-carrier landing parity
+
+Status: implemented as Sprint 15.62.3; interactive F5 confirmation remains.
+
+- CPC `wingman1stwaypoint` (`&0518`) is now represented as a distinct airborne
+  staging point. The Wingman no longer aims directly at whichever deck endpoint
+  happens to be farthest from Player 1.
+- CPC `wingman2ndwaypoint` (`&0d1d`) is the normal touchdown position;
+  `wingman2ndwaypointb` (`&0d16`) is selected only when Player 1 occupies that
+  normal position. The Amiga converts those tile-relative offsets to pixels and
+  retains its smooth 2px horizontal/1px descent presentation.
+- CPC `beginlandingapproach` calls `setlandingsprite` before the first waypoint.
+  Amiga hardware sprite 6 now switches from the extracted Wingman flying pair
+  to `harCpcWingmanLandedLeftPixels`/`RightPixels` for both final-approach modes,
+  then rebuilds the immutable payload only on that state transition. Per-frame
+  movement still changes control words only.
+- The deferred grey enemy-missile contrast check remains a separate follow-up;
+  no missile palette, Copper, hardware channel or projectile rule changed here.
+- Sprint 15.62.1 gives the successful `LANDED` state the same bounded HUD panel
+  geometry as `GAME OVER`, using a green/yellow success palette. It changes only
+  presentation; landing contact, hold timing, fanfare and restart are untouched.
+- Sprint 15.62.2 makes radar moderately harder to evade without changing its
+  threshold or alarm. Above-threshold response rises from 150 to 165 percent;
+  below-threshold masking falls from 150 to 135 percent. Relative altitude and
+  speed weighting are unchanged, so low/fast flight remains the best escape but
+  must be sustained longer. Matching safety caps are 53 gain and 86 drain per
+  12.5-Hz radar tick.
+- Sprint 15.62.3 removes the visible erase/draw gap from descending powerup
+  BOBs. When the world columns are unchanged (the normal one-pixel fall), each
+  scanline in the old/new union is restored from world truth and immediately
+  recomposited with the new parachute row before proceeding. Spawn/despawn and
+  the defensive column-change path retain the full erase. Physics, collision,
+  palette and the established one-pixel PAL cadence are unchanged.
+
+### Sprint 15.62 acceptance
+
+- Enable Wingman, reach the final carrier and confirm it first stages above the
+  ship, displays the wheels-down frame, then uses the normal CPC deck pad.
+- Occupy that pad with Player 1 before Wingman descends and confirm Wingman uses
+  the alternate pad without crossing or overlapping Player 1.
+- Confirm mission completion still waits until both aircraft are physically on
+  deck and that the landing fanfare/restart sequence is unchanged.
+
+## Sprint 15.63 - CPC enemy-missile contrast
+
+Status: implemented as Sprint 15.63.0; interactive F5/real-hardware visibility
+confirmation remains.
+
+- The CPC audit confirms `heatseekposition` selects the original Mode-1 tiles
+  53, 54 and 55 for ascending, descending and level-left flight.
+- Amiga hardware sprite 4 reads COLOR25-27. Those registers are also CPC pens
+  9-11 in the player's attached sprite, so changing them to black would alter
+  Harrier colours. The old grey/brown result was a palette-bank constraint, not
+  a bad CPC tile extraction.
+- The enemy missile now uses the existing pixel-precise projectile BOB path.
+  It retains the three CPC directional masks while every opaque pixel is drawn
+  as `GAME_COLOR_BLACK`, which is stable in all sky/dusk/playfield bands.
+- Its former channel-4 allocation remains hidden and reserved to avoid a Copper
+  or sprite-channel reallocation. Homing, cutoff, speed, collision, damage,
+  scoring and launch timing are unchanged.
+
+### Sprint 15.63 acceptance
+
+- Confirm missiles from aircraft and the final frigate are solid black and
+  visible against all three sky gradients, dusk, sea and land transitions.
+- Confirm ascending/descending/level silhouettes still follow vertical motion,
+  no trails remain after movement, and invisible missile collisions no longer
+  occur on F5 or real hardware.
+
+## Sprint 15.64 - Hardened persistent high scores
+
+Status: implemented as Sprint 15.64.0; writable-floppy and real-hard-disk
+confirmation remains.
+
+- Saves use the executing process' Kickstart-1.3-compatible `pr_HomeDir`, so
+  `harrier_scores_a.dat` and `harrier_scores_b.dat` live beside the executable
+  whether it was launched from hard disk or a boot floppy. A missing home lock
+  falls back to the launcher's current directory; no `PROGDIR:` dependency is
+  required.
+- Two alternating generations prevent a torn/full-disk write from destroying
+  the last valid table. Each 114-byte file has a magic value, format version,
+  entry count, payload length, generation and FNV-1a checksum. All fields are
+  explicitly byte-encoded rather than relying on compiler struct padding.
+- A candidate slot is read back, checksummed and compared with RAM before it is
+  accepted. Missing, extra-length, corrupt, removed, full or write-protected
+  media leaves the previous generation and in-memory table intact.
+- Kickstart 1.3's pre-V36 `Close()` has no defined return value, so success is
+  deliberately decided by full `Write()` plus the independent reopen/readback
+  validation, never by testing `Close()`.
+- DOS requesters are suppressed only around bounded score-file operations and
+  always restored. Filesystem access never occurs while `TakeSystem()` has
+  task switching disabled: a dirty table is flushed in a controlled AmigaOS
+  window when leaving Game Over, or retried after `FreeSystem()` on Exit to DOS.
+- The table is loaded exactly once before the loading screen takes over. A run
+  is committed to RAM exactly once at Game Over and disk is marked dirty only
+  when it actually enters the table. Escape from an unfinished run never saves.
+- The former raw `harrier_scores.dat` is accepted only when its exact length,
+  names, values and descending order validate; it is migrated on the next safe
+  save.
+
+### Sprint 15.64 acceptance
+
+- On hard disk, beat 100 points, leave Game Over, restart the executable and
+  confirm the score survives in files beside the EXE.
+- Repeat from a writable floppy and confirm one small score slot is created.
+- Write-protect/remove/full-fill the floppy before leaving Game Over: no DOS
+  requester, hang or crash may occur, gameplay/menu must continue, and the last
+  previously valid score must still load after restoring the disk.
+- Corrupt/truncate the newest slot and confirm the older valid generation is
+  used. Corrupt both and confirm deterministic default scores.
+
+## Sprint 15.65 - Correct CPC carrier orientation and sortie hand-off
+
+Status: implemented as Sprint 15.65.0; live landing/next-sortie confirmation
+remains.
+
+- Corrected the earlier interpretation of CPC's `endfrigatesprite` comment.
+  "FRIGATE REVERSED, SO IT CAN COME IN SCREEN FROM OPPOSITE SIDE" describes
+  the streamed column order used to introduce the object from the far edge;
+  the completed carrier is not visually mirrored. CPC screenshots confirm the
+  bow, tower layout and parked Wingman retain the opening carrier orientation.
+- Removed the final carrier's runtime reversed flag. Opening and landing
+  carriers now select the same promoted tile composite, tower collision box,
+  parked-Wingman obstruction and usable-deck geometry. The older generated
+  mirror arrays are no longer referenced and are eliminated from the linked
+  executable.
+- Replaced the incorrect post-landing animation that moved Player 1 alone
+  along a stationary ship. After the fanfare, the final carrier scrolls from
+  screen X=144 back to X=64 one pixel per PAL frame; landed Harrier and active
+  Wingman move by the identical delta and therefore keep their deck-relative
+  positions. The next-session start carrier is installed at that same X, then
+  normal lift-off resumes.
+- The CPC next-board green palette shown after this hand-off is deliberately
+  deferred to a palette/mission-identity sprint; this correction changes no
+  level colours.
+
+### Sprint 15.65 acceptance
+
+- At final approach, carrier orientation must match the opening carrier and
+  Wingman must remain on the forward deck; no horizontal mirror is allowed.
+- Land Player 1 (and Wingman when enabled), let the fanfare finish, then verify
+  the complete carrier/aircraft assembly moves left together without either
+  aircraft sliding independently over the deck.
+- The assembly must settle at the opening carrier position and allow the next
+  takeoff. Tower and parked-Wingman contact remain solid in their visible,
+  non-mirrored locations; clear deck remains landable.
+
+## Delivery rule
+
+After each sprint: build cleanly, report changed CPC rules/functions, list the
+exact debug/telemetry observation to test, and wait for player verification
+before beginning the next sprint. Do not combine terrain RNG, city generation
+and Wingman AI into one large change; their telemetry must isolate regressions.

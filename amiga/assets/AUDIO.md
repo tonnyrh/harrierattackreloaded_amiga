@@ -30,7 +30,8 @@ compression and therefore represents the bytes produced by the Amiga decoder.
 | `bomb.wav` | `bomb.raw` | Bomb release/fall-start cue for the player and Wingman. It is not the impact sound. |
 | `impact.wav` | `impact.raw` | General explosions created by `startImpact()`: aircraft destruction, missile destruction, crashes and impacts without a specific ground-target sound. |
 | `player_hit.wav` | `hit.raw` | Harrier damage, collision/ejection crash initiation and other direct player-hit cues. |
-| `eject.wav` | `eject.raw` | Ejector-seat launch cue when the player presses E during flight. |
+| `flak_hit.wav` | `flak_hit.raw` | Used only when the player's Harrier is struck by flak. A fatal flak hit does not additionally play `player_hit.wav`. |
+| `eject.wav` | `eject.raw` | Ejector-seat launch cue when the player presses E during an aircraft-failure descent; healthy-flight E is ignored. |
 | `pickpuppowerup.wav` | `pickup_powerup.raw` | Played once when the player collects any health, rocket, bomb or Wingman powerup. |
 | `flak_0.wav` | `flak_gun_1.raw` | One of two flak-gun firing variants. Volume falls with vertical distance from the player and pitch occasionally varies slightly. |
 | `flak_1.wav` | `flak_gun_2.raw` | One of two flak-gun firing variants. Volume falls with vertical distance from the player and pitch occasionally varies slightly. |
@@ -39,6 +40,7 @@ compression and therefore represents the bytes produced by the Amiga decoder.
 | `ground_hit_2.wav` | `ground_target_hit_3.raw` | Random destructive hit variant for an actual ground target, enemy ship or town block. |
 | `ground_hit_3.wav` | `ground_target_hit_4.raw` | Random destructive hit variant for an actual ground target, enemy ship or town block. |
 | `ground_miss_0.wav` | `ground_miss_1.raw` | Bomb/rocket hit on bare land that is not a real target - a "miss". Previously reused a random `ground_target_hit_*` variant; now its own dedicated sound. |
+| `WaterSplash.wav` | `water_splash.raw` | Played when a player or Wingman bomb reaches open water; accompanies the temporary white Smoke 1/Smoke 2 spray animation. |
 | `idle_0.wav` | `carrier_idle_1.adpcm` | Random carrier-deck ambience while the Harrier has not taken off and no MOD music is playing. |
 | `idle_1.wav` | `carrier_idle_2.adpcm` | Random carrier-deck ambience under the same conditions. |
 
@@ -46,6 +48,18 @@ Ground-target hits and land misses both use `startWorldImpactQuiet()` for the
 visual explosion and play one sample (`ground_target_hit_*` for an actual
 target/ship/town block, `ground_miss_1.raw` for bare land) - never both. This
 deliberately avoids also playing `impact.raw` for the same hit.
+
+The runtime mix attenuates MOD music, the synthesized engine, carrier ambience
+and all one-shot effects by approximately 15 percent. The four
+`ground_target_hit_*` effects are the sole exception and retain their authored
+Paula volume so their bass-heavy impact remains prominent. WAV masters and
+converted sample bytes are not altered by this mix adjustment.
+
+The two flak-gun firing variants have no global retrigger delay. A new flak
+shot preferentially cuts and restarts an existing `flak_gun_1/2` Paula voice,
+creating a dense rhythmic burst under heavy fire without consuming additional
+voices. It may interrupt only those two firing sounds; `flak_hit` and every
+other gameplay or music voice remain protected.
 
 These five masters receive a mild low-shelf boost during Paula conversion.
 That preserves their bass body after peak normalization to signed 8-bit,
@@ -71,6 +85,7 @@ measured on a stock 68000.
 | `amiga/assets/music/harrier_menu_fixed.mod` | Four-channel ProTracker music on the main menu. Gameplay stops the MOD so all Paula channels can be used for effects and engine audio. |
 | `amiga/assets/music/raf_game_over.mod` | Four-channel game-over song. Played once at 120% replay tempo when the final life is lost; also stops immediately on Retry or return to the menu. |
 | Runtime engine buffers in `amiga/main.c` | Continuous Harrier engine sound. Generated in chip RAM and adjusted according to speed; it has no WAV or RAW asset. |
+| Runtime radar waveform in `amiga/main.c` | Two-tone `beep-beep` warning from 70% detection. Paula loops a 32-byte waveform and varies `AUDxPER`, volume and repetition rate; it has no WAV or RAW asset. |
 
 ## Paula channel policy
 
