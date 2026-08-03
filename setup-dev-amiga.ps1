@@ -386,6 +386,19 @@ Write-TextFile -Path (Join-Path $VsCodeDir "launch.json") -Content @'
       "program": "${workspaceFolder}/${config:amiga.program}",
       "kickstart": "${workspaceFolder}/.tools/Amiga/Kick/Kickstart1.3.rom",
       "internalConsoleOptions": "openOnSessionStart"
+    },
+    {
+      "name": "Amiga 500 loader + game (KS1.3, 1MB)",
+      "type": "amiga",
+      "request": "launch",
+      "preLaunchTask": "amiga: compile",
+      "config": "A500",
+      "chipmem": "512k",
+      "slowmem": "512k",
+      "fastmem": "0",
+      "program": "${workspaceFolder}/amiga/out/harrier_loader",
+      "kickstart": "${workspaceFolder}/.tools/Amiga/Kick/Kickstart1.3.rom",
+      "internalConsoleOptions": "openOnSessionStart"
     }
   ]
 }
@@ -403,7 +416,7 @@ if (-not $SkipExtensionInstall) {
 Ensure-BartmanToolchainPath
 Update-M68kIncludePath
 
-Write-Ok "Ferdig. Apne repoet i VS Code, velg 'Amiga 500 debug (KS1.3, 1MB)' og trykk F5."
+Write-Ok "Ferdig. Velg 'Amiga 500 debug (KS1.3, 1MB)' for direkte debugging eller 'Amiga 500 loader + game (KS1.3, 1MB)' for ekte oppstart, og trykk F5."
 Write-Host "Forstegangskjoring kan bruke litt tid mens Bartman/Abyss-utvidelsen pakker ut sine egne verktøy." -ForegroundColor Gray
 
 if ($OpenVSCode) {

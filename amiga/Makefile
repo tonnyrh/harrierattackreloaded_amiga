@@ -11,7 +11,7 @@ subdirs := $(wildcard */)
 VPATH = $(subdirs)
 cpp_sources := $(wildcard *.cpp) $(wildcard $(addsuffix *.cpp,$(subdirs)))
 cpp_objects := $(addprefix obj/,$(patsubst %.cpp,%.o,$(notdir $(cpp_sources))))
-c_sources := $(wildcard *.c) $(wildcard $(addsuffix *.c,$(subdirs)))
+c_sources := $(filter-out loader.c,$(wildcard *.c) $(wildcard $(addsuffix *.c,$(subdirs))))
 c_objects := $(addprefix obj/,$(patsubst %.c,%.o,$(notdir $(c_sources))))
 s_sources := support/gcc8_a_support.s support/depacker_doynax.s
 s_objects := $(addprefix obj/,$(patsubst %.s,%.o,$(notdir $(s_sources))))
@@ -43,6 +43,22 @@ VASMFLAGS = -m68000 -Felf -opt-fconst -nowarn=62 -dwarf=3 -quiet -x -I. -I$(SDKD
 
 all: $(OUT).exe
 
+loader_program = out/harrier_loader
+loader_objects = obj/loader.o obj/gcc8_c_support.o obj/gcc8_a_support.o obj/depacker_doynax.o
+
+.PHONY: loader
+loader: $(loader_program).exe
+	@:
+
+$(loader_program).exe: $(loader_program).elf
+	$(info Elf2Hunk $(loader_program).exe)
+	@elf2hunk $(loader_program).elf $(loader_program).exe
+
+$(loader_program).elf: $(loader_objects)
+	$(info Linking $(loader_program).elf)
+	@$(CC) $(CCFLAGS) $(LDFLAGS) $(loader_objects) -o $@
+	@m68k-amiga-elf-objdump --disassemble --no-show-raw-ins --visualize-jumps -S $@ >$(loader_program).s
+
 $(OUT).exe: $(OUT).elf
 	$(info Elf2Hunk $(program).exe)
 	@elf2hunk $(OUT).elf $(OUT).exe
@@ -67,6 +83,10 @@ $(cpp_objects) : obj/%.o : %.cpp
 	@$(CC) $(CPPFLAGS) -c -o $@ $(CURDIR)/$<
 
 $(c_objects) : obj/%.o : %.c
+	$(info Compiling $<)
+	@$(CC) $(CCFLAGS) -c -o $@ $(CURDIR)/$<
+
+obj/loader.o: loader.c
 	$(info Compiling $<)
 	@$(CC) $(CCFLAGS) -c -o $@ $(CURDIR)/$<
 

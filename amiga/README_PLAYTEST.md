@@ -25,15 +25,21 @@ Menu:
 - Fire: choose
 - Left/Right: change the selected setting
 - `Controls...`: edit the current session's Player 1 and Player 2 profiles
-- `Aircraft: 1/3` is an intentional Amiga extension, not CPC parity. Three
-  aircraft is the default.
+- `Mode: Enhanced` is the default and enables the intentional Amiga gameplay
+  extensions: three aircraft, failure/eject/rescue, the white extra-aircraft
+  drop, Player 2 Wingman and terrain-relative accumulating radar.
+- `Mode: Classic` uses one aircraft, immediate CPC-style destruction/Game Over,
+  CPC player-only powerup collection, Off/CPU Wingman choices and CPC's
+  absolute player-height enemy-plane gate. Visual, scrolling and audio polish
+  remains enabled. The Enhanced-only RADAR label and gauge are omitted from
+  the Classic HUD; its right-hand gauge slot intentionally remains blank.
 - Esc: cancel/back where applicable
 
 Game:
 
 - Default Player 1 keys are arrows, Ctrl for rocket, Space for bomb and E for
-  eject. E is accepted only after a fatal airborne hit/fuel failure starts the
-  smoking forced descent; it is ignored during healthy flight. Joystick port 2
+  eject in Enhanced mode. Classic ignores E and destroys the single aircraft
+  immediately. Joystick port 2
   defaults to primary button = rocket and second button = bomb.
 - Default Player 2 keys are keypad 8/2/4/6, keypad 0 for rocket, keypad Enter
   for bomb and keypad decimal for eject. Joystick port 1 is the default.
@@ -107,6 +113,24 @@ Game over:
   not alternate up/down as a travelling V. Watch several parachute powerups
   over both sky and detailed terrain; they must descend at a steady one pixel
   per frame without cadence judder, flashing or damaged background rows.
+- Sprint 15.67 replaces `Aircraft: 1/3` with the explicit Classic/Enhanced
+  profile described above. In Classic, verify that P2 cannot be selected,
+  white extra-aircraft drops never spawn, P2 cannot collect a pickup, fatal
+  airborne events use the three CPC wreck parts instead of failure descent,
+  and enemy admission reacts directly to `playerTileY < 11-skill`. Enhanced
+  must preserve the previous three-aircraft, P2, pickup and radar behavior.
+- Sprint 15.68 adds a second VS Code launch choice, `Amiga 500 loader + game
+  (KS1.3, 1MB)`. Use it to verify that title/loading artwork appears while the
+  full game executable loads. Keep `Amiga 500 debug (KS1.3, 1MB)` for game
+  breakpoints. The ADF always boots through the loader.
+- Sprint 15.68.1 removes the Enhanced-only radar gauge from Classic and adds a
+  deterministic two-player weapon stress profile. Its cycle-exact A500 run
+  must show non-zero P1/P2 rocket and bomb counters throughout the route.
+- In Classic, fly in the eligible middle route at the required absolute height
+  and compare several encounters: admission is now a private temporal 1-in-16
+  roll at CPC 8-pixel logic cadence, not a fixed world-column pattern and not
+  Enhanced radar detection. Then watch the final ship heatseeker through a
+  complete approach; it should no longer blink at fine-scroll/ring phases.
 
 - Smooth horizontal scroll uses Amiga bitplane pointer scrolling.
 - Sprint 13.0 introduces the first CPC-style gameplay `ObjectMap` foundation; the visible world is now rendered from object classes instead of the older decorative `gameWorldTileAt()` routine.
@@ -126,7 +150,9 @@ Game over:
 - Sprint 14.4 renders pier/deck/frigate sections with Amiga-native deck/carrier shapes instead of raw CPC deck tiles, avoiding the sawtooth/garbled graphics seen in Sprint 14.3.
 - The current `ObjectMap` is still generated up front as a full wide buffer. Sprint 14.5 should turn this into right-edge/dirty-column generation.
 - Harrier, weapons, enemies, and enemy missile are hardware sprites for this slice.
-- Multiple lives, respawn, session high score, and AudioGen-generated Paula SFX are enabled.
+- Enhanced mode enables multiple aircraft, rescue/respawn and the white
+  extra-aircraft drop. Classic keeps one aircraft and CPC-style immediate
+  destruction. Session high score and Paula SFX are shared by both profiles.
 - Collision is still simple sprite-box collision, not pixel-perfect.
 - Terrain/object-map collision is intentionally not active yet; that starts in Sprint 15.
 - High score is session-only and is not saved to disk yet.

@@ -5478,6 +5478,115 @@ remains.
   takeoff. Tower and parked-Wingman contact remain solid in their visible,
   non-mirrored locations; clear deck remains landable.
 
+## Sprint 15.67 - Classic and Enhanced gameplay profiles
+
+Status: implemented as Sprint 15.67.0; interactive mode-boundary playtest
+remains.
+
+The former `Aircraft: 1/3` switch mixed one isolated rule with a growing set
+of intentional Amiga extensions. It is replaced by a single explicit gameplay
+profile, selected only from the main menu and fixed for the complete run:
+
+- `Classic` is the CPC-reference profile. It resolves to one aircraft; fatal
+  fuel/armour loss, missile contact and aircraft contact enter the existing
+  three-forward-fragment CPC destruction and then Game Over. Failure descent,
+  voluntary eject, parachute rescue and the white extra-aircraft bonus are
+  disabled. Powerups belong to Player 1, and Wingman choices are limited to
+  Off/CPU. Enemy-plane admission uses CPC's absolute character-row rule
+  `playerTileY < 11-skill` and the 1-in-16 R-state roll instead of accumulating
+  terrain-relative detection. The Amiga radar gauge remains as a binary visual
+  risk indicator; it does not control admission over time.
+- `Enhanced` is the default. It retains three aircraft, recoverable failure and
+  eject sequences, the end-of-board white extra-aircraft reward, Off/CPU/P2
+  Wingman, shared P2 pickup inventory and the terrain-relative accumulating
+  radar/alarm system.
+- Ordinary CPC health/rocket/bomb/Wingman powerups and CPU Wingman behavior are
+  shared. Only the Enhanced ownership and extension rules branch.
+- Mode is copied through carrier rescue, retry and next-mission initialization;
+  remaining aircraft are restored after those resets rather than accidentally
+  replenished. High scores remain shared for now and are not silently split by
+  profile.
+
+### Direction for future features
+
+Every new gameplay rule must state whether it is CPC parity or an Amiga
+extension. A rule that changes difficulty, resources, damage, spawning, AI,
+player capability or progression belongs in Enhanced by default unless we
+explicitly accept it for Classic. Presentation-only improvements -- smooth
+scrolling, clearer graphics, animation, audio, accessibility and diagnostic
+tooling -- may normally be shared by both profiles when they do not alter the
+CPC gameplay result.
+
+### Sprint 15.67 acceptance
+
+- The menu defaults to Enhanced and shows no separate aircraft-count setting.
+- Switching to Classic while P2 is selected resolves Wingman to CPU; Classic
+  cycles only Off/CPU, while Enhanced cycles Off/CPU/P2.
+- Classic always starts with AIR 01. Missile/aircraft/fuel/armour fatal events
+  immediately show the CPC wreck and end the run; E does nothing.
+- Classic never creates a white extra-aircraft drop and only Player 1 collects
+  ordinary drops. Enhanced retains its previous P2 shared-inventory behavior.
+- At identical skill and absolute player height, Classic interceptor eligibility
+  follows the CPC row threshold without depending on accumulated terrain
+  clearance. Enhanced radar behavior is unchanged.
+- Rescue and next-board transitions retain the selected profile and the actual
+  remaining Enhanced aircraft count.
+
+## Sprint 15.68 - Classic air cadence, missile stability and bootstrap loader
+
+Status: implemented; interactive A500 validation remains.
+
+- Classic enemy admission no longer borrows the Enhanced radar accumulator or
+  a terrain/world-column random value. CPC `launchenemyplane` is called once
+  per 8-pixel character gameplay step; the smooth Amiga interpolation takes
+  eight 1-pixel frames to represent that step. Classic therefore advances a
+  private temporal R-like state and performs its 1-in-16 test once per matching
+  logical step. This removes speed-dependent fixed spawn columns while leaving
+  Enhanced detection and alarm behavior untouched.
+- Enemy plane and enemy-ship heatseekers now store one authoritative `worldX`,
+  exactly like the player and Wingman rockets. Screen X and wrapped ring-buffer
+  X are derived from that value after scrolling instead of reconstructing world
+  position from a repeatedly adjusted screen coordinate. This targets the
+  intermittent invisible/blinking ship missile at fine-scroll/page phases.
+- A true early loading page cannot be drawn by the full game executable: DOS
+  loads its complete hunk before `main()` runs. A separate 2-plane bootstrap
+  (`harrier_loader.exe`) is now built. It displays a compact 16 KiB version of
+  the CPC title page and runs `harrier_amiga.exe` while the page remains on
+  screen. Release ADFs boot through this loader. Direct game F5 remains
+  available for source-level debugging; `Amiga 500 loader + game` validates the
+  real startup path.
+
+Acceptance:
+
+- Classic enemy encounters have CPC-style temporal cadence and do not alter
+  Enhanced radar spawning.
+- The final enemy-ship missile remains continuously visible across fine-scroll
+  and ring-wrap phases.
+- The loader artwork appears before the large game executable is loaded; after
+  Exit to DOS, control returns cleanly through the loader to AmigaOS.
+
+## Sprint 15.68.1 - Classic HUD scope and two-player weapon stress
+
+Status: implemented and cycle-exact A500 measured.
+
+- The accumulating terrain-relative radar is an Enhanced feature. Classic now
+  omits both its `RADAR` label and gauge while leaving the established SPEED,
+  FUEL, ROCKETS and BOMBS layout untouched.
+- `run-amiga-parity.ps1 -WeaponStress` supplies and preserves both Player 1 and
+  Player 2, then alternates press/release frames for both weapon buttons. This
+  respects the normal edge-triggered controls rather than bypassing gameplay
+  launch, collision or rendering code.
+- `perf_log.csv` records four launch counters so a seemingly healthy run cannot
+  silently lose P2 or one weapon type. `PERF_LOG_INTERVAL_FRAMES` is externally
+  overridable for denser position-aligned sampling.
+- Fixed-seed, speed-15, Player-2 tests used 100-frame windows. In the town
+  interval (scroll 3340, 3740, 4140 and 4540), both baseline and weapon stress
+  held 50 FPS average/minimum, zero hitches and maximum VBL delta 1. Every
+  stress window contained launches from all four P1/P2 rocket/bomb paths.
+  Therefore the reported city slowdown is not reproduced as a guest CPU/render
+  bottleneck under cycle-exact A500 timing. Future reports should retain their
+  exact map position and emulator/hardware configuration for comparison.
+
 ## Delivery rule
 
 After each sprint: build cleanly, report changed CPC rules/functions, list the

@@ -15,7 +15,7 @@
 #include <string.h>
 #include "assets/harrier_menu_text.h"
 
-#define HAR_BUILD_LABEL "SPRINT 15.65.7"
+#define HAR_BUILD_LABEL "SPRINT 15.68.1"
 
 #define SCREEN_WIDTH 320
 #define LOADING_SCREEN_WIDTH 320
@@ -112,6 +112,9 @@
 #ifndef HAR_HEADLESS_ENEMY_PLANE_EXERCISE
 #define HAR_HEADLESS_ENEMY_PLANE_EXERCISE 0
 #endif
+#ifndef HAR_HEADLESS_WEAPON_STRESS
+#define HAR_HEADLESS_WEAPON_STRESS 0
+#endif
 #ifndef HAR_VALIDATION_SESSION_SEED
 #define HAR_VALIDATION_SESSION_SEED 0
 #endif
@@ -150,7 +153,9 @@
 #define WORLD_RENDER_GUNSHIP_WIDTH_TILES 4
 #define WORLD_RENDER_OBJECT_MIN_TILE_Y 7
 #define WORLD_RENDER_OBJECT_MAX_TILE_Y 15
+#ifndef PERF_LOG_INTERVAL_FRAMES
 #define PERF_LOG_INTERVAL_FRAMES 500
+#endif
 #define TELEMETRY_SAMPLE_COUNT 64
 #define TELEMETRY_INTERVAL_FRAMES 100
 #define TELEMETRY_GAME_EVENT_COUNT 16
@@ -270,11 +275,11 @@
 #define PLAYER_MOVE_SPEED_PIXELS 2
 #define PLAYER_SPEED_ANCHOR_X 96
 #define PLAYER_SPEED_ANCHOR_STEP_PIXELS 6
-/* The Amiga rescue extension treats this setting as complete aircraft rather
- * than abstract lives. Keep the selectable 1/3 modes, but default to the full
- * three-aircraft campaign; Sprint 15.60 will rename the visible menu/HUD label
- * when the failure-and-ejection state machine lands. */
+/* Enhanced mode's Amiga rescue extension treats these as complete aircraft,
+ * rather than abstract lives. Classic resolves to one aircraft at session
+ * start and bypasses the failure/eject state machine entirely. */
 #define PLAYER_START_LIVES 3
+#define PLAYER_CLASSIC_LIVES 1
 #define PLAYER_RESPAWN_SAFE_FRAMES 90
 #define PLAYER_CRASH_FRAMES 64
 #define PLAYER_CRASH_PART_COUNT 3
@@ -516,11 +521,10 @@
 
 #define MENU_ITEM_START 0
 #define MENU_ITEM_SKILL 1
-/* Was "Redefine keys" (a stub - "COMES IN SPRINT 3" notice, no real
- * functionality). Repurposed for the CPC-authenticity lives toggle. Sprint
- * 15.39 removes the decorative menu HUD, so the menu is no longer constrained
- * by a duplicate gameplay-HUD region. */
-#define MENU_ITEM_LIVES 2
+/* Classic keeps CPC gameplay rules; Enhanced enables intentional Amiga
+ * extensions such as three aircraft, failure/eject/rescue, Player 2 and the
+ * terrain-relative accumulating radar. */
+#define MENU_ITEM_GAME_MODE 2
 /* Sprint 15.1: real Off/CPU/PLAYER 2 wingman control setting, replacing the
  * old static "Wingman: Off" status line in drawMenuRightSettings() (which
  * never did anything). */
@@ -963,6 +967,11 @@ typedef enum WingmanControl {
 	WINGMAN_CONTROL_PLAYER2 = 2
 } WingmanControl;
 
+typedef enum GameMode {
+	GAME_MODE_CLASSIC = 0,
+	GAME_MODE_ENHANCED = 1
+} GameMode;
+
 /* Sprint 15.2/15.3: named form of CPC's raw wingmantakeoff state values (see
  * the Sprint 15 roadmap in AMIGA_PORT_PLAN.md for the full ASM-side mapping).
  * Raw CPC value 4 ("documented as landed, but the code normally resets it to
@@ -1059,6 +1068,7 @@ typedef struct GameState {
 	WORD playerX;
 	WORD playerY;
 	UBYTE speedLevel;
+	UBYTE gameMode;
 	ULONG score;
 	ULONG bonusScore;
 	ULONG missionStartScore;
@@ -1089,6 +1099,10 @@ typedef struct GameState {
 	WeaponState enemyMissile;
 	WeaponState crashPart[PLAYER_CRASH_PART_COUNT];
 	UBYTE enemyRespawnTimer;
+	/* Classic's Z80 R roll belongs to the CPC gameplay cadence, not to map
+	 * columns.  Keep its phase/RNG wholly separate from Enhanced radar. */
+	UBYTE classicEnemySpawnPhase;
+	UWORD classicEnemySpawnRandomState;
 	UWORD radarDetection;
 	UBYTE radarClearance;
 	UBYTE radarThreshold;
@@ -1429,6 +1443,10 @@ static UWORD perfMaxFps = 0;
 static UWORD perfHitches = 0;
 static UWORD perfMaxVblDelta = 0;
 static UWORD perfRuntimeFlakSpawns = 0;
+static UWORD perfP1RocketLaunches = 0;
+static UWORD perfP1BombLaunches = 0;
+static UWORD perfP2RocketLaunches = 0;
+static UWORD perfP2BombLaunches = 0;
 #define PERF_LOG_BUFFER_BYTES 4096
 static char perfLogBuffer[PERF_LOG_BUFFER_BYTES];
 static UWORD perfLogBufferUsed = 0;
@@ -2990,7 +3008,7 @@ static void perfLogOpen(void) {
 #endif
 	{
 		static const char header[] =
-			"frame,seconds,loops,minFps,maxFps,avgFps,hitches,maxVblDelta,scroll,speed,origin,job,stage,tileX,tileCols,objCols,pages,fuel,armour,rockets,bombs,hudCalls,hudArmChg,hudFuelChg,hudScoreChg,hudSpdChg,hudRktChg,hudBmbChg,hudGuardHits,hudGuard2Hits,hudRegHits,hudCollisionFires,livBplcon0,expBplcon0,livDdfstrt,expDdfstrt,livDdfstop,expDdfstop,livBpl5pt,expBpl5pt\n";
+			"frame,seconds,loops,minFps,maxFps,avgFps,hitches,maxVblDelta,scroll,speed,origin,job,stage,tileX,tileCols,objCols,pages,fuel,armour,rockets,bombs,p1Rkt,p1Bmb,p2Rkt,p2Bmb,hudCalls,hudArmChg,hudFuelChg,hudScoreChg,hudSpdChg,hudRktChg,hudBmbChg,hudGuardHits,hudGuard2Hits,hudRegHits,hudCollisionFires,livBplcon0,expBplcon0,livDdfstrt,expDdfstrt,livDdfstop,expDdfstop,livBpl5pt,expBpl5pt\n";
 		perfLogAppend(header, sizeof(header) - 1);
 	}
 	perfLastLoopFrame = frameCounter;
@@ -3016,6 +3034,10 @@ static void perfLogResetInterval(void) {
 	perfWorldTileColumns = 0;
 	perfWorldObjectColumns = 0;
 	perfWorldPages = 0;
+	perfP1RocketLaunches = 0;
+	perfP1BombLaunches = 0;
+	perfP2RocketLaunches = 0;
+	perfP2BombLaunches = 0;
 }
 
 static UWORD perfFpsForVblDelta(UWORD delta) {
@@ -3300,6 +3322,14 @@ static void perfLogFrame(const GameState* game, UBYTE activeWorldBuffer) {
 		c = appendUnsignedLong(c, game->rockets);
 		*c++ = ',';
 		c = appendUnsignedLong(c, game->bombs);
+		*c++ = ',';
+		c = appendUnsignedLong(c, perfP1RocketLaunches);
+		*c++ = ',';
+		c = appendUnsignedLong(c, perfP1BombLaunches);
+		*c++ = ',';
+		c = appendUnsignedLong(c, perfP2RocketLaunches);
+		*c++ = ',';
+		c = appendUnsignedLong(c, perfP2BombLaunches);
 		*c++ = ',';
 		c = appendUnsignedLong(c, hudDrawCalls);
 		*c++ = ',';
@@ -4797,7 +4827,7 @@ static void copyMenuText(char* dest, const char* src) {
 	*dest = 0;
 }
 
-static void menuItemText(short item, short skillLevel, short livesSetting, short wingmanControl, char* text) {
+static void menuItemText(short item, short skillLevel, short gameModeSetting, short wingmanControl, char* text) {
 	switch (item) {
 		case MENU_ITEM_START:
 			copyMenuText(text, HAR_TEXT_START_GAME);
@@ -4806,9 +4836,9 @@ static void menuItemText(short item, short skillLevel, short livesSetting, short
 			copyMenuText(text, "Skill level: 1");
 			text[13] = (char)('0' + skillLevel);
 			break;
-		case MENU_ITEM_LIVES:
-			copyMenuText(text, "Aircraft: 1");
-			text[10] = (char)('0' + livesSetting);
+		case MENU_ITEM_GAME_MODE:
+			copyMenuText(text, gameModeSetting == GAME_MODE_CLASSIC ?
+				"Mode: Classic" : "Mode: Enhanced");
 			break;
 		case MENU_ITEM_WINGMAN:
 			switch (wingmanControl) {
@@ -4846,15 +4876,15 @@ static void drawMenuOption(UBYTE* bitmap, short selected, short y, const char* t
 	drawTextStyled(bitmap, 54 + MENU_CONTENT_X_OFFSET, y, text, FONT_STYLE_CPC_BLUE);
 }
 
-static void drawMenuItem(UBYTE* bitmap, short item, short selected, short skillLevel, short livesSetting, short wingmanControl) {
+static void drawMenuItem(UBYTE* bitmap, short item, short selected, short skillLevel, short gameModeSetting, short wingmanControl) {
 	char text[24];
-	menuItemText(item, skillLevel, livesSetting, wingmanControl, text);
+	menuItemText(item, skillLevel, gameModeSetting, wingmanControl, text);
 	drawMenuOption(bitmap, selected, menuItemY(item), text);
 }
 
-static void drawMenuItems(UBYTE* bitmap, short selected, short skillLevel, short livesSetting, short wingmanControl) {
+static void drawMenuItems(UBYTE* bitmap, short selected, short skillLevel, short gameModeSetting, short wingmanControl) {
 	for (short item = 0; item < MENU_ITEM_COUNT; item++)
-		drawMenuItem(bitmap, item, selected == item, skillLevel, livesSetting, wingmanControl);
+		drawMenuItem(bitmap, item, selected == item, skillLevel, gameModeSetting, wingmanControl);
 }
 
 static void drawMenuCursor(UBYTE* bitmap, short item, UBYTE visible) {
@@ -5384,6 +5414,7 @@ static void initGameState(GameState* game) {
 	game->playerX = PLAYER_START_X;
 	game->playerY = PLAYER_START_Y;
 	game->speedLevel = GAME_SPEED_LEVEL_DEFAULT;
+	game->gameMode = GAME_MODE_ENHANCED;
 	game->score = 0;
 	game->bonusScore = 0;
 	game->missionStartScore = 0;
@@ -5420,6 +5451,8 @@ static void initGameState(GameState* game) {
 	memset(&game->wingman, 0, sizeof(game->wingman));
 	game->wingman.lastBombTargetColumn = -1;
 	game->enemyRespawnTimer = 0;
+	game->classicEnemySpawnPhase = 0;
+	game->classicEnemySpawnRandomState = 0x6d2b;
 	game->radarDetection = 0;
 	game->radarClearance = 0;
 	game->radarThreshold = 0;
@@ -5738,7 +5771,7 @@ static void drawUnsignedPaddedDelta(UBYTE* hud, short x, short y, ULONG oldValue
  * confirmed with the user this uses genuinely unused PAL scanline budget
  * (320x256 is a standard resolution) rather than shrinking HUD_TOP/the
  * gameplay viewport. */
-static void drawHudStatic(UBYTE* hud) {
+static void drawHudStatic(UBYTE* hud, UBYTE gameMode) {
 	fillRect(hud, 0, 0, SCREEN_WIDTH, HUD_HEIGHT, HUD_COLOR_BACKGROUND);
 	fillRect(hud, 0, 0, SCREEN_WIDTH, 1, GAME_COLOR_WHITE);
 
@@ -5752,7 +5785,8 @@ static void drawHudStatic(UBYTE* hud) {
 
 	drawTextStyled(hud, 36, 36, "SPEED", FONT_STYLE_CPC_HUD);
 	drawTextStyled(hud, 144, 36, "FUEL", FONT_STYLE_CPC_HUD);
-	drawTextStyled(hud, 240, 36, "RADAR", FONT_STYLE_CPC_HUD);
+	if (gameMode == GAME_MODE_ENHANCED)
+		drawTextStyled(hud, 240, 36, "RADAR", FONT_STYLE_CPC_HUD);
 
 	drawTextStyled(hud, 58, 66, "ROCKETS", FONT_STYLE_CPC_HUD);
 	drawTextStyled(hud, 214, 66, "BOMBS", FONT_STYLE_CPC_HUD);
@@ -5831,8 +5865,9 @@ static void drawHudValues(UBYTE* hud, const GameState* game, ULONG highScore, UB
 		drawHudGaugeBar(hud, 64, 17, 232, 10, armourColor, game->armour, 100);
 		drawHudGaugeBar(hud, 8, 50, 96, 10, HUD_COLOR_VALUE, game->speedLevel, GAME_SPEED_LEVEL_MAX);
 		drawHudGaugeBar(hud, 112, 50, 96, 10, fuelColor, game->fuel, 999);
-		drawHudGaugeBar(hud, 216, 50, 96, 10, radarColor,
-			game->radarDetection, RADAR_DETECTION_MAX);
+		if (game->gameMode == GAME_MODE_ENHANCED)
+			drawHudGaugeBar(hud, 216, 50, 96, 10, radarColor,
+				game->radarDetection, RADAR_DETECTION_MAX);
 		drawHudGaugeBar(hud, 16, 80, 140, 8,
 			HUD_COLOR_POWERUP_ROCKETS, game->rockets, fullRockets);
 		drawHudGaugeBar(hud, 164, 80, 140, 8,
@@ -5859,9 +5894,10 @@ static void drawHudValues(UBYTE* hud, const GameState* game, ULONG highScore, UB
 		if (overlayMode == 0) {
 			drawHudGaugeBarDelta(hud, 8, 50, 96, 10, HUD_COLOR_VALUE, HUD_COLOR_VALUE, state->speedLevel, game->speedLevel, GAME_SPEED_LEVEL_MAX);
 			drawHudGaugeBarDelta(hud, 112, 50, 96, 10, fuelColor, state->fuelColor, state->fuel, game->fuel, 999);
-			drawHudGaugeBarDelta(hud, 216, 50, 96, 10, radarColor,
-				state->radarColor, state->radarDetection,
-				game->radarDetection, RADAR_DETECTION_MAX);
+			if (game->gameMode == GAME_MODE_ENHANCED)
+				drawHudGaugeBarDelta(hud, 216, 50, 96, 10, radarColor,
+					state->radarColor, state->radarDetection,
+					game->radarDetection, RADAR_DETECTION_MAX);
 		}
 		drawHudGaugeBarDelta(hud, 16, 80, 140, 8,
 			HUD_COLOR_POWERUP_ROCKETS, HUD_COLOR_POWERUP_ROCKETS,
@@ -5900,11 +5936,13 @@ static void drawHudValues(UBYTE* hud, const GameState* game, ULONG highScore, UB
 			/* Overlay just cleared - restore what's normally there. */
 			drawTextStyled(hud, 36, 36, "SPEED", FONT_STYLE_CPC_HUD);
 			drawTextStyled(hud, 144, 36, "FUEL", FONT_STYLE_CPC_HUD);
-			drawTextStyled(hud, 240, 36, "RADAR", FONT_STYLE_CPC_HUD);
+			if (game->gameMode == GAME_MODE_ENHANCED)
+				drawTextStyled(hud, 240, 36, "RADAR", FONT_STYLE_CPC_HUD);
 			drawHudGaugeBar(hud, 8, 50, 96, 10, HUD_COLOR_VALUE, game->speedLevel, GAME_SPEED_LEVEL_MAX);
 			drawHudGaugeBar(hud, 112, 50, 96, 10, fuelColor, game->fuel, 999);
-			drawHudGaugeBar(hud, 216, 50, 96, 10, radarColor,
-				game->radarDetection, RADAR_DETECTION_MAX);
+			if (game->gameMode == GAME_MODE_ENHANCED)
+				drawHudGaugeBar(hud, 216, 50, 96, 10, radarColor,
+					game->radarDetection, RADAR_DETECTION_MAX);
 		}
 	}
 
@@ -5939,11 +5977,11 @@ static void drawHudBuffer(UBYTE* hud, const GameState* game, ULONG highScore, UB
 	 * new mission" - exactly this sequence, since that's the one place a
 	 * LANDED->normal transition coincides with a full HUD reset). */
 	hudRenderState[hudBufferIndex].overlayMode = 0;
-	drawHudStatic(hud);
+	drawHudStatic(hud, game->gameMode);
 	drawHudValues(hud, game, highScore, hudBufferIndex);
 }
 
-static void drawMenuScreen(UBYTE* bitmap, short selected, short skillLevel, short livesSetting, short wingmanControl, ULONG highScore) {
+static void drawMenuScreen(UBYTE* bitmap, short selected, short skillLevel, short gameModeSetting, short wingmanControl, ULONG highScore) {
 	(void)highScore;
 	/* Every entry to the menu is a fresh one-shot ticker pass.  Its text is
 	 * pre-rendered one full screen beyond the right edge, so the visible band
@@ -5958,7 +5996,7 @@ static void drawMenuScreen(UBYTE* bitmap, short selected, short skillLevel, shor
 	serviceModMusicToCurrentVbl();
 	drawMenuHighScore(bitmap);
 	serviceModMusicToCurrentVbl();
-	drawMenuItems(bitmap, selected, skillLevel, livesSetting, wingmanControl);
+	drawMenuItems(bitmap, selected, skillLevel, gameModeSetting, wingmanControl);
 	drawMenuRightSettings(bitmap);
 	serviceModMusicToCurrentVbl();
 	/* Deliberate Amiga menu direction: no preview HUD. The gameplay HUD uses
@@ -6463,12 +6501,12 @@ static void drawPauseHudOverlay(UBYTE* hud, UBYTE visible) {
 			HUD_COLOR_VALUE);
 }
 
-static void updateMenuSelection(UBYTE* bitmap, short oldSelected, short newSelected, short skillLevel, short livesSetting, short wingmanControl) {
+static void updateMenuSelection(UBYTE* bitmap, short oldSelected, short newSelected, short skillLevel, short gameModeSetting, short wingmanControl) {
 	if (oldSelected == newSelected)
 		return;
 
 	(void)skillLevel;
-	(void)livesSetting;
+	(void)gameModeSetting;
 	(void)wingmanControl;
 	drawMenuCursor(bitmap, oldSelected, 0);
 	drawMenuCursor(bitmap, newSelected, 1);
@@ -6478,7 +6516,7 @@ static void updateMenuSelection(UBYTE* bitmap, short oldSelected, short newSelec
  * changed. The selected row and (for Lives) the one live HUD value are the
  * only pixels redrawn. */
 static UBYTE adjustSelectedMenuOption(UBYTE* bitmap, short selected, short direction,
-	short* skillLevel, short* livesSetting, short* wingmanControl,
+	short* skillLevel, short* gameModeSetting, short* wingmanControl,
 	ULONG highScore) {
 	(void)highScore;
 	if (selected == MENU_ITEM_SKILL) {
@@ -6487,13 +6525,21 @@ static UBYTE adjustSelectedMenuOption(UBYTE* bitmap, short selected, short direc
 			*skillLevel = 5;
 		else if (*skillLevel > 5)
 			*skillLevel = 1;
-	} else if (selected == MENU_ITEM_LIVES) {
-		*livesSetting = (*livesSetting == 3) ? 1 : 3;
+	} else if (selected == MENU_ITEM_GAME_MODE) {
+		*gameModeSetting = (*gameModeSetting == GAME_MODE_ENHANCED) ?
+			GAME_MODE_CLASSIC : GAME_MODE_ENHANCED;
+		/* Player 2 is an Enhanced co-op extension. Preserve a selected helper
+		 * when moving to Classic by resolving P2 to CPC's CPU Wingman. */
+		if (*gameModeSetting == GAME_MODE_CLASSIC &&
+			*wingmanControl == WINGMAN_CONTROL_PLAYER2)
+			*wingmanControl = WINGMAN_CONTROL_CPU;
 	} else if (selected == MENU_ITEM_WINGMAN) {
 		*wingmanControl += direction;
 		if (*wingmanControl < WINGMAN_CONTROL_OFF)
-			*wingmanControl = WINGMAN_CONTROL_PLAYER2;
-		else if (*wingmanControl > WINGMAN_CONTROL_PLAYER2)
+			*wingmanControl = (*gameModeSetting == GAME_MODE_CLASSIC) ?
+				WINGMAN_CONTROL_CPU : WINGMAN_CONTROL_PLAYER2;
+		else if (*wingmanControl > ((*gameModeSetting == GAME_MODE_CLASSIC) ?
+			WINGMAN_CONTROL_CPU : WINGMAN_CONTROL_PLAYER2))
 			*wingmanControl = WINGMAN_CONTROL_OFF;
 	} else if (selected == MENU_ITEM_LOCK_HEIGHT) {
 		menuRocketHeightLock = !menuRocketHeightLock;
@@ -6501,7 +6547,11 @@ static UBYTE adjustSelectedMenuOption(UBYTE* bitmap, short selected, short direc
 		return 0;
 	}
 
-	drawMenuItem(bitmap, selected, 1, *skillLevel, *livesSetting, *wingmanControl);
+	drawMenuItem(bitmap, selected, 1, *skillLevel, *gameModeSetting, *wingmanControl);
+	/* Changing mode may also have coerced the Wingman row. */
+	if (selected == MENU_ITEM_GAME_MODE)
+		drawMenuItem(bitmap, MENU_ITEM_WINGMAN, 0, *skillLevel,
+			*gameModeSetting, *wingmanControl);
 	return 1;
 }
 
@@ -7650,7 +7700,7 @@ static const FieldGuidePowerup fieldGuidePowerups[] = {
 	{ "YELLOW", MENU_COLOR_YELLOW, "FULL ARMOUR" },
 	{ "BLUE",   MENU_COLOR_CYAN,   "ROCKETS REFILLED" },
 	{ "GREEN",  MENU_COLOR_GREEN,  "BOMBS REFILLED" },
-	{ "WHITE",  MENU_COLOR_WHITE,  "EXTRA AIRCRAFT" }
+	{ "WHITE",  MENU_COLOR_WHITE,  "EXTRA AIRCRAFT ENHANCED" }
 };
 #define FIELD_GUIDE_POWERUP_COUNT \
 	(sizeof(fieldGuidePowerups) / sizeof(fieldGuidePowerups[0]))
@@ -10445,8 +10495,7 @@ static void drawEnemyMissilePixelBob(UBYTE* bitmap, UBYTE bufferIndex,
 
 	const LONG pagePixels =
 		(LONG)GAME_WORLD_SCROLL_PAGE_BYTES * GAME_TILE_WIDTH;
-	LONG worldPixelX = (LONG)game->scrollX + missile->x;
-	LONG localPixelX = worldPixelX % pagePixels;
+	LONG localPixelX = missile->worldX % pagePixels;
 	if (localPixelX < 0)
 		localPixelX += pagePixels;
 	UWORD primaryPixelX =
@@ -10948,6 +10997,13 @@ static void updateWingmanTakeoff(GameState* game) {
  * state. Keep all ways of losing the Wingman on the same transition so the
  * ordinary powerup path can revive CPU and Player-2 Wingmen identically. */
 static void setWingmanDestroyedState(GameState* game) {
+#if HAR_HEADLESS_AUTOPLAY && HAR_HEADLESS_WEAPON_STRESS
+	/* The weapon-stress profile measures rendering/collision load across the
+	 * complete route.  Keep P2 present after hostile/friendly contacts so the
+	 * second rocket and bomb streams do not silently disappear mid-sample. */
+	(void)game;
+	return;
+#endif
 	WingmanState* wingman = &game->wingman;
 	wingman->active = 0;
 	wingman->destroyed = 1;
@@ -10977,7 +11033,8 @@ static void setWingmanDestroyedState(GameState* game) {
  * (asm:2673-2702), this is that same rule translated to this port's actual
  * play area. */
 static void updateWingmanPlayer2Control(GameState* game, UBYTE** worldBuffers,
-	const Player2InputState* input2, const Player2InputState* previousInput2) {
+	const Player2InputState* input2, const Player2InputState* previousInput2,
+	UBYTE* hudDirty) {
 	WingmanState* wingman = &game->wingman;
 	if (game->wingmanControl != WINGMAN_CONTROL_PLAYER2)
 		return;
@@ -11037,16 +11094,29 @@ static void updateWingmanPlayer2Control(GameState* game, UBYTE** worldBuffers,
 	 * Maverick lock-on exists for the Wingman's weapon in this port (it
 	 * always reuses the player's plain, non-Maverick rocket art/behaviour),
 	 * so Left+Fire isn't given a separate meaning here. */
-	if (!wingman->rocket.active && Pressed(input2->fire, previousInput2->fire)) {
+	if (!wingman->rocket.active && game->rockets > 0 &&
+		Pressed(input2->fire, previousInput2->fire)) {
 		memset(&wingman->rocket, 0, sizeof(wingman->rocket));
 		wingman->rocket.active = 1;
 		wingman->rocket.x = wingman->interceptScreenX;
 		wingman->rocket.y = wingman->screenY;
+		wingman->rocket.worldX = (LONG)game->scrollX + wingman->rocket.x;
+		wingman->rocket.worldAnchored = 1;
 		wingman->rocket.dx = ROCKET_SPEED_PIXELS;
+		if (!debugInfiniteRockets)
+			game->rockets--;
+#if HAR_DEBUG_PERF_LOG
+		perfP2RocketLaunches++;
+#endif
+		updateHudValues(game);
+		*hudDirty = 1;
+		playSfxAt(SFX_FIRE, wingman->rocket.x);
 	}
-	/* CPC checklaunchbombwingmanpl2: Space drops the infinite-supply bomb -
-	 * same fields updateWingmanBombingRun() sets for the CPU's own bomb. */
-	if (!wingman->bomb.active && Pressed(input2->bomb, previousInput2->bomb)) {
+	/* Two human players share the aircraft's visible ordnance pool. CPU
+	 * Wingman keeps CPC's free support ordnance, but P2 must not gain an
+	 * invisible infinite inventory that the common HUD cannot represent. */
+	if (!wingman->bomb.active && game->bombs > 0 &&
+		Pressed(input2->bomb, previousInput2->bomb)) {
 		memset(&wingman->bomb, 0, sizeof(wingman->bomb));
 		wingman->bomb.active = 1;
 		wingman->bomb.x = (WORD)(wingman->interceptScreenX + 6);
@@ -11055,6 +11125,14 @@ static void updateWingmanPlayer2Control(GameState* game, UBYTE** worldBuffers,
 		wingman->bomb.worldAnchored = 1;
 		wingman->bomb.dy = BOMB_SPEED_Y_PIXELS;
 		wingman->bomb.timer = BOMB_FORWARD_MOMENTUM_FRAMES;
+		if (!debugInfiniteBombs)
+			game->bombs--;
+#if HAR_DEBUG_PERF_LOG
+		perfP2BombLaunches++;
+#endif
+		updateHudValues(game);
+		*hudDirty = 1;
+		playSfxAt(SFX_BOMB, wingman->bomb.x);
 	}
 }
 
@@ -11293,16 +11371,22 @@ static void startGroundTargetHitImpact(GameState* game, WORD x,
 			((LONG)tileY << 8) ^ frameCounter), x);
 }
 
-/* Sprint 15.28: a Player 2-dropped bomb has no target-lock to aim at (unlike
- * the CPU's own bombing run above, which only ever needs to check "have I
- * reached the one pre-selected target's height") - it needs the same kind of
- * generic "what's actually under me" object-map collision the player's own
- * bombShot already has in updateWeapons(). Deliberately a single centre-
- * bottom probe rather than that function's four redundant probe points -
- * this bomb has no forward launch momentum to land slightly off-centre from
- * (see the bomb-drop trigger in updateWingmanPlayer2Control(), which starts
- * it already falling straight down), so one probe is enough to be correct,
- * not just simpler. */
+/* Match collision to the one opaque pixel on the bomb's lowest row. CPC
+ * launch art ends at x+3 during the short diagonal phase; the descending
+ * silhouette is a vertical line at x+1. Earlier probes out to x+5 could hit
+ * the next tile before the visible bomb reached it, while an x+3 land probe
+ * could mask a real target contact at x+1 on the previous tile boundary. */
+static WORD bombShotContactX(const WeaponState* bomb) {
+	return (WORD)(bomb->x +
+		(bomb->timer < BOMB_FORWARD_MOMENTUM_FRAMES ? 3 : 1));
+}
+
+/* A Player 2-dropped bomb has no target lock (unlike the CPU bombing run),
+ * so it uses the player's generic world collision. Probe the complete narrow
+ * footprint and use the same near-cell helpers as P1: procedural town art is
+ * wider than a single object-map cell and a centre-only probe let P2 bombs
+ * pass through visible building edges. Resolve solid objects before the sea
+ * cutoff so a low building/ship contact cannot be turned into a splash. */
 static void updateWingmanPlayer2Bomb(GameState* game, UBYTE** worldBuffers, UBYTE* hudDirty) {
 	WingmanState* wingman = &game->wingman;
 	if (!wingman->bomb.active || game->wingmanControl != WINGMAN_CONTROL_PLAYER2)
@@ -11315,11 +11399,6 @@ static void updateWingmanPlayer2Bomb(GameState* game, UBYTE** worldBuffers, UBYT
 	if (wingman->bomb.timer < 255)
 		wingman->bomb.timer++;
 
-	if (wingman->bomb.y >= SEA_SURFACE_Y) {
-		startWaterSplash(game, wingman->bomb.x);
-		wingman->bomb.active = 0;
-		return;
-	}
 	if (wingman->bomb.x < -16) {
 		wingman->bomb.active = 0;
 		return;
@@ -11328,11 +11407,29 @@ static void updateWingmanPlayer2Bomb(GameState* game, UBYTE** worldBuffers, UBYT
 	ObjectCell cell;
 	LONG worldColumn = -1;
 	WORD tileY = -1;
-	if (!objectCellForWorldPoint(game, (WORD)(wingman->bomb.x + 3),
-			(WORD)(wingman->bomb.y + BOMB_SHOT_PIXEL_BOB_HEIGHT), &cell, &worldColumn, &tileY))
+	WORD probeX = bombShotContactX(&wingman->bomb);
+	WORD probeY = (WORD)(wingman->bomb.y + BOMB_SHOT_PIXEL_BOB_HEIGHT);
+	UBYTE bombHitObject = objectCellForWorldPoint(game,
+		probeX, probeY, &cell, &worldColumn, &tileY) &&
+		(cell.id == HAR_OBJ_LAND || cell.id == HAR_OBJ_GROUND_TARGET ||
+		 cell.id == HAR_OBJ_ENEMY_SHIP || cell.id == HAR_OBJ_FLAK ||
+		 cell.id == HAR_OBJ_SMOKE || cell.id == HAR_OBJ_OWN_FRIGATE ||
+		 cell.id == HAR_OBJ_PIER || cell.id == HAR_OBJ_TOWN_BLOCK);
+	if (!bombHitObject)
+		bombHitObject = ownFrigateCellNearWorldPoint(game,
+			probeX, probeY,
+			&cell, &worldColumn, &tileY);
+	if (!bombHitObject)
+		bombHitObject = townBlockCellNearWorldPoint(game,
+			probeX, probeY,
+			&cell, &worldColumn, &tileY);
+	if (!bombHitObject) {
+		if (wingman->bomb.y >= SEA_SURFACE_Y) {
+			startWaterSplash(game, wingman->bomb.x);
+			wingman->bomb.active = 0;
+		}
 		return;
-	if (cell.id == HAR_OBJ_SKY || cell.id == HAR_OBJ_CLOUD)
-		return;
+	}
 
 	if (cell.id == HAR_OBJ_GROUND_TARGET) {
 		game->bonusScore += GROUND_TARGET_SCORE_VALUE;
@@ -11377,9 +11474,9 @@ static void updateWingmanPlayer2Bomb(GameState* game, UBYTE** worldBuffers, UBYT
 		 * own bomb against the same object types. CPC's pier follows the
 		 * bombhitsealand path and does not damage the friendly carrier. */
 	} else if (objectUsesGroundTargetHitSfx(cell.id)) {
-		startGroundTargetHitImpact(game, wingman->bomb.x, worldColumn, tileY, cell.id);
+		startGroundTargetHitImpact(game, probeX, worldColumn, tileY, cell.id);
 	} else {
-		startWorldImpact(game, wingman->bomb.x, (WORD)(tileY * GAME_TILE_HEIGHT));
+		startWorldImpact(game, probeX, (WORD)(tileY * GAME_TILE_HEIGHT));
 	}
 	wingman->bomb.active = 0;
 }
@@ -11425,8 +11522,11 @@ static UBYTE launchRocket(GameState* game, UBYTE requestMaverick) {
 		/* CPC falls back to an ordinary rocket when Left+Fire has no lock. */
 		game->rocketShot.type = ROCKET_SHOT_STANDARD;
 		game->rocketShot.targetWorldX = 0;
-		game->rocketShot.targetY = 0;
+	game->rocketShot.targetY = 0;
 	}
+#if HAR_DEBUG_PERF_LOG
+	perfP1RocketLaunches++;
+#endif
 	playSfxAt(SFX_FIRE, game->rocketShot.x);
 	return 1;
 }
@@ -11510,6 +11610,9 @@ static UBYTE launchBomb(GameState* game) {
 	game->bombShot.worldAnchored = 0;
 	game->bombShot.dx = BOMB_SPEED_X_PIXELS;
 	game->bombShot.dy = BOMB_SPEED_Y_PIXELS;
+#if HAR_DEBUG_PERF_LOG
+	perfP1BombLaunches++;
+#endif
 	playSfxAt(SFX_BOMB, game->bombShot.x);
 	return 1;
 }
@@ -11692,21 +11795,17 @@ static UBYTE updateWeapons(GameState* game, UBYTE scrollPixels, UBYTE** worldBuf
 		ObjectCell bombCell;
 		LONG bombWorldColumn = -1;
 		WORD bombTileY = -1;
-		UBYTE bombHitObject = objectCellForWorldPoint(game, (WORD)(game->bombShot.x + 3), (WORD)(game->bombShot.y + BOMB_SHOT_PIXEL_BOB_HEIGHT), &bombCell, &bombWorldColumn, &bombTileY) &&
+		WORD bombProbeX = bombShotContactX(&game->bombShot);
+		WORD bombProbeY = (WORD)(game->bombShot.y + BOMB_SHOT_PIXEL_BOB_HEIGHT);
+		UBYTE bombHitObject = objectCellForWorldPoint(game, bombProbeX,
+			bombProbeY, &bombCell, &bombWorldColumn, &bombTileY) &&
 			(bombCell.id == HAR_OBJ_LAND || bombCell.id == HAR_OBJ_GROUND_TARGET || bombCell.id == HAR_OBJ_ENEMY_SHIP || bombCell.id == HAR_OBJ_FLAK || bombCell.id == HAR_OBJ_SMOKE || bombCell.id == HAR_OBJ_OWN_FRIGATE || bombCell.id == HAR_OBJ_PIER);
 		if (!bombHitObject)
-			bombHitObject = objectCellForWorldPoint(game, (WORD)(game->bombShot.x + 1), (WORD)(game->bombShot.y + BOMB_SHOT_PIXEL_BOB_HEIGHT), &bombCell, &bombWorldColumn, &bombTileY) &&
-				(bombCell.id == HAR_OBJ_LAND || bombCell.id == HAR_OBJ_GROUND_TARGET);
+			bombHitObject = ownFrigateCellNearWorldPoint(game, bombProbeX,
+				bombProbeY, &bombCell, &bombWorldColumn, &bombTileY);
 		if (!bombHitObject)
-			bombHitObject = objectCellForWorldPoint(game, (WORD)(game->bombShot.x + 5), (WORD)(game->bombShot.y + BOMB_SHOT_PIXEL_BOB_HEIGHT), &bombCell, &bombWorldColumn, &bombTileY) &&
-				(bombCell.id == HAR_OBJ_LAND || bombCell.id == HAR_OBJ_GROUND_TARGET);
-		if (!bombHitObject)
-			bombHitObject = objectCellForWorldPoint(game, (WORD)(game->bombShot.x + 3), (WORD)(game->bombShot.y + 1), &bombCell, &bombWorldColumn, &bombTileY) &&
-				(bombCell.id == HAR_OBJ_GROUND_TARGET);
-		if (!bombHitObject)
-			bombHitObject = ownFrigateCellNearWorldPoint(game, (WORD)(game->bombShot.x + 3), (WORD)(game->bombShot.y + BOMB_SHOT_PIXEL_BOB_HEIGHT), &bombCell, &bombWorldColumn, &bombTileY);
-		if (!bombHitObject)
-			bombHitObject = townBlockCellNearWorldPoint(game, (WORD)(game->bombShot.x + 3), (WORD)(game->bombShot.y + BOMB_SHOT_PIXEL_BOB_HEIGHT), &bombCell, &bombWorldColumn, &bombTileY);
+			bombHitObject = townBlockCellNearWorldPoint(game, bombProbeX,
+				bombProbeY, &bombCell, &bombWorldColumn, &bombTileY);
 		if (bombHitObject) {
 			if (bombCell.id == HAR_OBJ_GROUND_TARGET) {
 				game->bonusScore += GROUND_TARGET_SCORE_VALUE;
@@ -11761,13 +11860,13 @@ static UBYTE updateWeapons(GameState* game, UBYTE scrollPixels, UBYTE** worldBuf
 				game->bombShot.active = 0;
 			} else {
 				if (objectUsesGroundTargetHitSfx(bombCell.id))
-					startGroundTargetHitImpact(game, game->bombShot.x,
+					startGroundTargetHitImpact(game, bombProbeX,
 						bombWorldColumn, bombTileY, bombCell.id);
 				else if (game->bombShot.timer <= BOMB_IMPACT_SFX_GRACE_FRAMES)
-					startWorldImpactQuiet(game, game->bombShot.x,
+					startWorldImpactQuiet(game, bombProbeX,
 						(WORD)(bombTileY * GAME_TILE_HEIGHT));
 				else
-					startWorldImpact(game, game->bombShot.x,
+					startWorldImpact(game, bombProbeX,
 						(WORD)(bombTileY * GAME_TILE_HEIGHT));
 				game->bombShot.active = 0;
 			}
@@ -12342,7 +12441,10 @@ static void trySpawnPowerup(GameState* game) {
  * missionStartScore makes the threshold depend on this board's work rather
  * than the cumulative campaign score. */
 static void trySpawnExtraAircraftBonus(GameState* game) {
-	if (game->extraAircraftBonusSpawned || game->powerup.active ||
+	/* White extra-aircraft drops are an Enhanced-only reward. Classic never
+	 * creates the object, rather than spawning an inert pickup. */
+	if (game->gameMode != GAME_MODE_ENHANCED ||
+		game->extraAircraftBonusSpawned || game->powerup.active ||
 		game->gameOver || game->crashTimer || game->ejectState ||
 		game->missionComplete || game->landingState != LANDING_STATE_NONE ||
 		game->lives >= PLAYER_MAX_AIRCRAFT)
@@ -12418,6 +12520,10 @@ static void activatePowerup(GameState* game, UBYTE type) {
 			}
 			break;
 		case POWERUP_EXTRA_AIRCRAFT:
+			if (game->gameMode != GAME_MODE_ENHANCED) {
+				collected = 0;
+				break;
+			}
 			if (!debugInfiniteLives && game->lives < PLAYER_MAX_AIRCRAFT)
 				game->lives++;
 			break;
@@ -12456,8 +12562,22 @@ static UBYTE powerupHitsSolidWorld(const GameState* game, const PowerupState* p)
 
 static UBYTE powerupHitsPlayer(const GameState* game, const PowerupState* p) {
 	WORD screenX = (WORD)(p->worldX - (LONG)game->scrollX);
-	return rectsOverlap(screenX, p->y, POWERUP_COLLISION_WIDTH, POWERUP_SPRITE_HEIGHT,
-		game->playerX, game->playerY, PLAYER_SPRITE_WIDTH, PLAYER_SPRITE_HEIGHT);
+	if (rectsOverlap(screenX, p->y, POWERUP_COLLISION_WIDTH,
+		POWERUP_SPRITE_HEIGHT, game->playerX, game->playerY,
+		PLAYER_SPRITE_WIDTH, PLAYER_SPRITE_HEIGHT))
+		return 1;
+	/* In Enhanced two-player mode either aircraft may collect a pickup. Rockets and
+	 * bombs refill the shared HUD inventory; health remains the shared team
+	 * armour model already exposed by the game state. Classic retains CPC's
+	 * player-only pickup ownership. */
+	if (game->gameMode == GAME_MODE_ENHANCED &&
+		game->wingmanControl == WINGMAN_CONTROL_PLAYER2 &&
+		game->wingman.active && !game->wingman.destroyed)
+		return rectsOverlap(screenX, p->y, POWERUP_COLLISION_WIDTH,
+			POWERUP_SPRITE_HEIGHT, wingmanScreenX(game),
+			game->wingman.screenY, PLAYER_SPRITE_WIDTH,
+			PLAYER_SPRITE_HEIGHT);
+	return 0;
 }
 
 static UBYTE updatePowerup(GameState* game) {
@@ -12854,6 +12974,26 @@ static UBYTE spawnEnemyPlane(GameState* game, UWORD decisionColumn) {
 	return 1;
 }
 
+/* One Amiga frame is only one interpolated pixel of the CPC aircraft's 8px
+ * character move.  The CPC calls launchenemyplane once per such character
+ * gameplay pass, so testing once per streamed world column made Classic's
+ * admission rate depend on player speed.  Advance a private temporal state
+ * once per equivalent 8px logic tick instead.  This is deliberately not the
+ * Enhanced radar RNG and deliberately not the terrain's column-derived R. */
+static UBYTE classicEnemyPlaneSpawnRoll(GameState* game) {
+	game->classicEnemySpawnPhase++;
+	if (game->classicEnemySpawnPhase < GAME_TILE_WIDTH)
+		return 0;
+	game->classicEnemySpawnPhase = 0;
+
+	UWORD value = game->classicEnemySpawnRandomState;
+	value = (UWORD)((value >> 1) ^ (-(value & 1) & 0xb400));
+	if (!value)
+		value = 0x6d2b;
+	game->classicEnemySpawnRandomState = value;
+	return (UBYTE)((value & POWERUP_SPAWN_ROLL_MASK) == 0);
+}
+
 static UBYTE updateEnemyPlane(GameState* game) {
 	UBYTE logicalTick = 0;
 	UBYTE traceEvent = ENEMY_PLANE_TRACE_STEP;
@@ -12869,10 +13009,42 @@ static UBYTE updateEnemyPlane(GameState* game) {
 		game->landingState == LANDING_STATE_NONE);
 	UBYTE radarStage = (UBYTE)(stage >= HAR_STAGE_ENEMY_SHIP_FIRED_MISSILE &&
 		stage < HAR_STAGE_START_PIER);
-	updateRadarDetection(game, (UBYTE)(radarStage && playerAvailable &&
-		!game->enemyPlane.active));
 
 	if (!game->enemyPlane.active) {
+		if (game->gameMode == GAME_MODE_CLASSIC) {
+			/* CPC launchenemyplane uses the Harrier's absolute character row:
+			 * playerTileY < 11-skill, followed by the 1-in-16 R-register roll.
+			 * It does not accumulate terrain clearance over time. Keep the Amiga
+			 * radar gauge as a visual binary risk indicator only. */
+			UBYTE heightGate = playerHighEnoughForPowerup(game);
+			UBYTE eligible = (UBYTE)(radarStage && playerAvailable &&
+				!game->enemyMissile.active);
+			game->radarDetection = (eligible && heightGate) ?
+				RADAR_DETECTION_MAX : 0;
+			game->radarClearance = (UBYTE)(game->playerY >> 3);
+			game->radarThreshold = (UBYTE)(POWERUP_ALTITUDE_FLOOR_BASE -
+				game->skillLevel);
+			if (telemetryEnabled) {
+				telemetryRadarLevel = game->radarDetection;
+				telemetryRadarClearance = game->radarClearance;
+				telemetryRadarThreshold = game->radarThreshold;
+			}
+			/* Keep advancing the CPC-equivalent temporal phase while a plane is
+			 * inactive, even outside the eligible band. Entering the band must
+			 * not create a fixed spawn column. */
+			UBYTE spawnRoll = classicEnemyPlaneSpawnRoll(game);
+			if (!eligible || !heightGate || !spawnRoll)
+				return 0;
+			/* trySpawnPowerup() runs first. Suppress the aircraft only when that
+			 * same CPC decision produced a new drop; an older active drop does not
+			 * block CPC's enemy-plane branch. */
+			if (game->powerup.active &&
+				(UWORD)(game->powerup.worldX >> 3) == rightEdgeColumn)
+				return 0;
+			return spawnEnemyPlane(game, rightEdgeColumn);
+		}
+
+		updateRadarDetection(game, (UBYTE)(radarStage && playerAvailable));
 		if (!radarStage || !playerAvailable ||
 			game->radarDetection < RADAR_DETECTION_MAX ||
 			game->enemyMissile.active)
@@ -12880,6 +13052,10 @@ static UBYTE updateEnemyPlane(GameState* game) {
 
 		return spawnEnemyPlane(game, rightEdgeColumn);
 	}
+	/* An active interceptor owns the frame. Enhanced radar drains while it is
+	 * present as before; Classic has no accumulator to service. */
+	if (game->gameMode == GAME_MODE_ENHANCED)
+		updateRadarDetection(game, 0);
 
 	/* CPC enemyplanestatus 3 -> 4 -> 0 (asm enemyplanecollided /
 	 * enemyplanehit): on the update after a weapon hit, move one complete
@@ -13054,6 +13230,8 @@ static void launchEnemyMissile(GameState* game) {
 	game->enemyMissile.timer = 0;
 	game->enemyMissile.x = (WORD)(game->enemyPlane.x - 8);
 	game->enemyMissile.y = (WORD)(game->enemyPlane.y + 3);
+	game->enemyMissile.worldX = (LONG)game->scrollX +
+		game->enemyMissile.x;
 	game->enemyMissile.dx = -ENEMY_MISSILE_SPEED_X_PIXELS;
 	game->enemyMissile.dy = 0;
 }
@@ -13074,6 +13252,8 @@ static void launchEnemyShipMissile(GameState* game, UWORD triggerColumn) {
 	(void)triggerColumn;
 	game->enemyMissile.x = ENEMY_SHIP_MISSILE_START_X;
 	game->enemyMissile.y = ENEMY_SHIP_MISSILE_START_Y;
+	game->enemyMissile.worldX = (LONG)game->scrollX +
+		game->enemyMissile.x;
 	game->enemyMissile.dx = -ENEMY_MISSILE_SPEED_X_PIXELS;
 	game->enemyMissile.dy = -1;
 	playSfxAt(SFX_FIRE, game->enemyMissile.x);
@@ -13283,6 +13463,8 @@ static void updateWingmanIntercept(GameState* game) {
 			wingman->rocket.active = 1;
 			wingman->rocket.x = wingman->interceptScreenX;
 			wingman->rocket.y = wingman->screenY;
+			wingman->rocket.worldX = (LONG)game->scrollX + wingman->rocket.x;
+			wingman->rocket.worldAnchored = 1;
 			wingman->rocket.dx = ROCKET_SPEED_PIXELS;
 		}
 		wingman->mode = WINGMAN_INTERCEPT_APPROACH;
@@ -13345,7 +13527,8 @@ static void updateWingmanRocket(GameState* game, UBYTE* hudDirty, UBYTE* enemySp
 	if (!rocket->active)
 		return;
 
-	rocket->x = (WORD)(rocket->x + rocket->dx);
+	rocket->worldX += rocket->dx;
+	rocket->x = (WORD)(rocket->worldX - game->scrollX);
 	if (rocket->x > SCREEN_WIDTH) {
 		rocket->active = 0;
 		return;
@@ -13623,6 +13806,7 @@ static void updateWingmanLanding(GameState* game) {
 
 static UBYTE updateEnemyMissile(GameState* game, UBYTE scrollPixels) {
 	UBYTE changed = 0;
+	(void)scrollPixels;
 
 	if (updateEnemyShipMissileTrigger(game))
 		changed = 1;
@@ -13656,7 +13840,13 @@ static UBYTE updateEnemyMissile(GameState* game, UBYTE scrollPixels) {
 		} else {
 			game->enemyMissile.dy = 0;
 		}
-		game->enemyMissile.x += (WORD)(game->enemyMissile.dx - scrollPixels);
+		/* A ring-buffer BOB needs one authoritative world coordinate.  The
+		 * former screen-X += dx-scroll reconstruction could disagree by one
+		 * scroll phase at ring/fine-scroll boundaries and made the ship shot
+		 * blink. Derive screen X only from worldX and the current camera. */
+		game->enemyMissile.worldX += game->enemyMissile.dx;
+		game->enemyMissile.x = (WORD)(game->enemyMissile.worldX -
+			(LONG)game->scrollX);
 		game->enemyMissile.y += game->enemyMissile.dy;
 		game->enemyMissile.timer++;
 		if (game->enemyMissile.x < -ENEMY_MISSILE_SPRITE_WIDTH ||
@@ -13706,6 +13896,7 @@ static void triggerGameOver(GameState* game) {
 }
 
 static void losePlayerLife(GameState* game);
+static void startPlayerCrash(GameState* game, WORD x, WORD y);
 
 static void respawnPlayer(GameState* game) {
 	game->playerX = PLAYER_START_X;
@@ -13748,6 +13939,13 @@ static void startAircraftFailure(GameState* game, UBYTE cause) {
 		game->respawnSafeTimer > 0 ||
 		game->takeoffState != TAKEOFF_STATE_AIRBORNE)
 		return;
+	/* CPC has no recoverable failure descent: armour/fuel exhaustion, enemy
+	 * missile contact and aircraft contact all break the Harrier into its three
+	 * forward-moving parts and end the one-aircraft run. */
+	if (game->gameMode == GAME_MODE_CLASSIC) {
+		startPlayerCrash(game, game->playerX, game->playerY);
+		return;
+	}
 
 	game->aircraftFailureState = AIRCRAFT_FAILURE_DESCENT;
 	game->aircraftFailureCause = cause;
@@ -13784,6 +13982,9 @@ static void startAircraftFailure(GameState* game, UBYTE cause) {
 }
 
 static void startPlayerEject(GameState* game) {
+	/* Eject/rescue and voluntary abandonment are Enhanced gameplay rules. */
+	if (game->gameMode != GAME_MODE_ENHANCED)
+		return;
 	if (game->gameOver || game->crashTimer || game->ejectState ||
 		game->takeoffState != TAKEOFF_STATE_AIRBORNE ||
 		game->landingState != LANDING_STATE_NONE || game->missionComplete ||
@@ -14437,7 +14638,7 @@ static void startGameSession(GameState* game,
 	UBYTE* hudDirty,
 	ULONG highScore,
 	UBYTE skillLevel,
-	UBYTE livesSetting,
+	UBYTE gameModeSetting,
 	UBYTE wingmanControl) {
 	stopAllSfx();
 	/* Must be set before initGameState() below, not after: initGameState()
@@ -14452,18 +14653,28 @@ static void startGameSession(GameState* game,
 	game->scrollX = TAKEOFF_SCROLL_START_PIXELS;
 	setTakeoffDeckPosition(game);
 	game->skillLevel = skillLevel;
-	/* Menu review fix: must be set before drawHudBuffer() below, same reason
-	 * skillLevel is set here rather than by the caller afterward - the menu's
-	 * Lives toggle previously only took effect via `game.lives = livesSetting`
-	 * AFTER this function returned, so a "Lives: 1" session's first HUD draw
-	 * still baked in initGameState()'s PLAYER_START_LIVES(3) default. */
-	game->lives = livesSetting;
+	game->gameMode = gameModeSetting == GAME_MODE_CLASSIC ?
+		GAME_MODE_CLASSIC : GAME_MODE_ENHANCED;
+	/* Session-time seed mirrors the CPC R register's dependence on how long
+	 * the player remained in the menu, without coupling Classic spawns to
+	 * terrain columns or to Enhanced's radar accumulator. */
+	game->classicEnemySpawnRandomState =
+		(UWORD)(frameCounter ^ (frameCounter << 7) ^ 0x6d2b);
+	if (!game->classicEnemySpawnRandomState)
+		game->classicEnemySpawnRandomState = 0x6d2b;
+	game->classicEnemySpawnPhase = 0;
+	/* Resolve the mode once at session entry. Classic always owns exactly one
+	 * aircraft; Enhanced retains the three-aircraft Amiga campaign. */
+	game->lives = game->gameMode == GAME_MODE_CLASSIC ?
+		PLAYER_CLASSIC_LIVES : PLAYER_START_LIVES;
 	game->rocketHeightLock = menuRocketHeightLock;
 	/* Same reasoning as lives above - initGameState() set a flat 12/6
 	 * regardless of skill; ammoForSkill() gives the real CPC's
 	 * skill-scaled starting ammo instead. */
 	ammoForSkill(skillLevel, &game->bombs, &game->rockets);
-	game->wingmanControl = wingmanControl;
+	game->wingmanControl = (game->gameMode == GAME_MODE_CLASSIC &&
+		wingmanControl == WINGMAN_CONTROL_PLAYER2) ?
+		WINGMAN_CONTROL_CPU : wingmanControl;
 	/* CPC movesecondharrierlandingfrigate scrolls the grey second Harrier
 	 * with both the start and end carrier specifically when Wingman control
 	 * is OFF. CPU/Player 2 modes also begin with it parked, then remove the
@@ -14475,7 +14686,7 @@ static void startGameSession(GameState* game,
 	 * press Up while the carrier is already waiting in READY, so that earlier
 	 * input activated the Wingman from initGameState()'s zeroed (0,0)
 	 * coordinates and made it appear to be missing from the opening. */
-	if (wingmanControl != WINGMAN_CONTROL_OFF) {
+	if (game->wingmanControl != WINGMAN_CONTROL_OFF) {
 		game->wingman.mode = WINGMAN_ON_DECK;
 		game->wingman.interceptScreenX = WINGMAN_TAKEOFF_DECK_X;
 		game->wingman.screenY = WINGMAN_TAKEOFF_DECK_Y;
@@ -14721,7 +14932,7 @@ int main(void) {
 	short selected = MENU_ITEM_START;
 	UBYTE programRunning = 1;
 	short skillLevel = 1;
-	short livesSetting = PLAYER_START_LIVES;
+	short gameModeSetting = GAME_MODE_ENHANCED;
 	short wingmanControl = WINGMAN_CONTROL_OFF;
 	short inGameScene = 0;
 	GameState game;
@@ -14769,7 +14980,7 @@ int main(void) {
 	previousInput2 = input2;
 	ReadInput(&input, 0);
 	previousInput = input;
-	drawMenuScreen(screenBuffer, selected, skillLevel, livesSetting, wingmanControl, highScore);
+	drawMenuScreen(screenBuffer, selected, skillLevel, gameModeSetting, wingmanControl, highScore);
 	drawTelemetryMenuIndicator(screenBuffer);
 	drawInputDebugIfEnabled(screenBuffer, &input, 102, MENU_COLOR_PANEL);
 	lastInputMask = InputMask(&input);
@@ -14818,6 +15029,10 @@ int main(void) {
 #endif
 			debugInfiniteLives = 1;
 			debugInfiniteFuel = 1;
+#if HAR_HEADLESS_WEAPON_STRESS
+			debugInfiniteBombs = 1;
+			debugInfiniteRockets = 1;
+#endif
 			if (!headlessStartSent) {
 				skillLevel = HAR_HEADLESS_SKILL_LEVEL;
 				wingmanControl = HAR_HEADLESS_WINGMAN_CONTROL;
@@ -14863,6 +15078,20 @@ int main(void) {
 				if (game.scrollX < LANDING_APPROACH_SCROLL_X &&
 					game.speedLevel < HAR_HEADLESS_CRUISE_SPEED)
 					input.right = 1;
+#if HAR_HEADLESS_WEAPON_STRESS
+				/* Weapons are release-to-rearm in the real game. Alternate an
+				 * asserted and released frame so both players produce a valid
+				 * stream of fresh presses whenever their previous shot is free.
+				 * P2 also holds Up to leave the deck immediately and remain clear
+				 * of the terrain during the full-route renderer stress test. */
+				if ((frameCounter & 1) == 0) {
+					input.fire = 1;
+					input.bomb = 1;
+					input2.fire = 1;
+					input2.bomb = 1;
+				}
+				input2.up = 1;
+#endif
 			}
 #if HAR_HEADLESS_HIGHSCORE_TEST
 			/* Test-only, deterministic persistence exercise: create one completed
@@ -14908,7 +15137,7 @@ int main(void) {
 				if (input.any || menuTickerFinished) {
 					fieldGuideActive = 0;
 					drawMenuScreen(screenBuffer, selected, skillLevel,
-						livesSetting, wingmanControl, highScore);
+						gameModeSetting, wingmanControl, highScore);
 					drawTelemetryMenuIndicator(screenBuffer);
 					drawInputDebugIfEnabled(screenBuffer, &input, 102,
 						MENU_COLOR_PANEL);
@@ -14967,7 +15196,7 @@ int main(void) {
 				hideHardwareSprite(wingmanSprite);
 				hideHardwareSprite(unusedSprite7);
 				drawMenuScreen(screenBuffer, selected, skillLevel,
-					livesSetting, wingmanControl, highScore);
+					gameModeSetting, wingmanControl, highScore);
 				drawTelemetryMenuIndicator(screenBuffer);
 				buildMenuCopper(copper, screenBuffer, menuTickerBitmap,
 					menuPalette, nullSprite);
@@ -15063,7 +15292,7 @@ int main(void) {
 					} else {
 						controlsActive = 0;
 						drawMenuScreen(screenBuffer, selected, skillLevel,
-							livesSetting, wingmanControl, highScore);
+							gameModeSetting, wingmanControl, highScore);
 						drawTelemetryMenuIndicator(screenBuffer);
 						buildMenuCopper(copper, screenBuffer,
 							menuTickerBitmap, menuPalette, nullSprite);
@@ -15144,7 +15373,7 @@ int main(void) {
 						} else if (controlsSelected == CONTROL_MENU_BACK_ROW) {
 							controlsActive = 0;
 							drawMenuScreen(screenBuffer, selected, skillLevel,
-								livesSetting, wingmanControl, highScore);
+								gameModeSetting, wingmanControl, highScore);
 							drawTelemetryMenuIndicator(screenBuffer);
 							buildMenuCopper(copper, screenBuffer,
 								menuTickerBitmap, menuPalette, nullSprite);
@@ -15166,7 +15395,7 @@ int main(void) {
 					if (debugHubPage == DEBUG_HUB_OPTIONS) {
 						debugHubPage = DEBUG_HUB_CLOSED;
 						drawMenuScreen(screenBuffer, selected, skillLevel,
-							livesSetting, wingmanControl, highScore);
+							gameModeSetting, wingmanControl, highScore);
 						drawTelemetryMenuIndicator(screenBuffer);
 						buildMenuCopper(copper, screenBuffer,
 							menuTickerBitmap, menuPalette, nullSprite);
@@ -15265,7 +15494,7 @@ int main(void) {
 							default:
 								debugHubPage = DEBUG_HUB_CLOSED;
 								drawMenuScreen(screenBuffer, selected,
-									skillLevel, livesSetting,
+									skillLevel, gameModeSetting,
 									wingmanControl, highScore);
 								drawTelemetryMenuIndicator(screenBuffer);
 								buildMenuCopper(copper, screenBuffer,
@@ -15357,7 +15586,7 @@ int main(void) {
 					else
 						selected = (selected + 1) % MENU_ITEM_COUNT;
 					updateMenuSelection(screenBuffer, oldSelected, selected,
-						skillLevel, livesSetting, wingmanControl);
+						skillLevel, gameModeSetting, wingmanControl);
 					drawInputDebugIfEnabled(screenBuffer, &input, 102,
 						MENU_COLOR_PANEL);
 				}
@@ -15371,7 +15600,7 @@ int main(void) {
 					short direction = Pressed(input.left, previousInput.left)
 						? -1 : 1;
 					menuAdjusted = adjustSelectedMenuOption(screenBuffer,
-						selected, direction, &skillLevel, &livesSetting,
+						selected, direction, &skillLevel, &gameModeSetting,
 						&wingmanControl, highScore);
 					if (menuAdjusted) {
 						drawInputDebugIfEnabled(screenBuffer, &input, 102,
@@ -15396,7 +15625,7 @@ int main(void) {
 							&pendingEnemyMissileSpriteUpdate,
 							&pendingWingmanSpriteUpdate, &hudDirty,
 							highScore, (UBYTE)skillLevel,
-							(UBYTE)livesSetting,
+							(UBYTE)gameModeSetting,
 							(UBYTE)wingmanControl);
 						if (telemetryEnabled)
 							telemetryReset();
@@ -15421,7 +15650,7 @@ int main(void) {
 						stopModMusic();
 						programRunning = 0;
 					} else if (adjustSelectedMenuOption(screenBuffer,
-							selected, 1, &skillLevel, &livesSetting,
+							selected, 1, &skillLevel, &gameModeSetting,
 							&wingmanControl, highScore)) {
 						drawInputDebugIfEnabled(screenBuffer, &input, 102,
 							MENU_COLOR_PANEL);
@@ -15469,7 +15698,7 @@ int main(void) {
 					 * live Wingman sprite at the moment P2 presses Up. */
 					if (game.wingmanControl == WINGMAN_CONTROL_PLAYER2) {
 						updateWingmanPlayer2Control(&game, worldBuffers,
-							&input2, &previousInput2);
+							&input2, &previousInput2, &hudDirty);
 						if (game.wingman.active)
 							pendingWingmanSpriteUpdate = 1;
 					}
@@ -15543,6 +15772,7 @@ int main(void) {
 						ULONG rescuedMissionStartScore = game.missionStartScore;
 						UWORD rescuedHits = game.hitsCount;
 						UBYTE rescuedLives = game.lives;
+						UBYTE rescuedGameMode = game.gameMode;
 						UBYTE rescuedMissionNumber = game.missionNumber;
 						UBYTE rescuedExtraAircraftBonusSpawned =
 							game.extraAircraftBonusSpawned;
@@ -15575,11 +15805,12 @@ int main(void) {
 							&pendingEnemySpriteUpdate,
 							&pendingEnemyMissileSpriteUpdate,
 							&pendingWingmanSpriteUpdate, &hudDirty, highScore,
-							game.skillLevel, rescuedLives, game.wingmanControl);
+							game.skillLevel, rescuedGameMode, game.wingmanControl);
 						game.score = rescuedScore;
 						game.bonusScore = rescuedBonusScore;
 						game.missionStartScore = rescuedMissionStartScore;
 						game.hitsCount = rescuedHits;
+						game.lives = rescuedLives;
 						game.missionNumber = rescuedMissionNumber;
 						game.extraAircraftBonusSpawned =
 							rescuedExtraAircraftBonusSpawned;
@@ -15680,6 +15911,7 @@ int main(void) {
 						ULONG nextBonusScore = game.bonusScore;
 						UWORD nextHitsCount = game.hitsCount;
 						UBYTE nextLives = game.lives;
+						UBYTE nextGameMode = game.gameMode;
 						UBYTE nextSkill = game.skillLevel < 5
 							? (UBYTE)(game.skillLevel + 1) : 5;
 						UBYTE nextMissionNumber = game.missionNumber < 99
@@ -15701,12 +15933,13 @@ int main(void) {
 							&pendingEnemySpriteUpdate,
 							&pendingEnemyMissileSpriteUpdate,
 							&pendingWingmanSpriteUpdate, &hudDirty, highScore,
-							nextSkill, nextLives, nextWingmanControl);
+							nextSkill, nextGameMode, nextWingmanControl);
 						game.bonusScore = nextBonusScore;
 						game.score = nextBonusScore;
 						game.missionStartScore = nextBonusScore;
 						game.extraAircraftBonusSpawned = 0;
 						game.hitsCount = nextHitsCount;
+						game.lives = nextLives;
 						game.missionNumber = nextMissionNumber;
 						game.wingman.destroyed = nextWingmanDestroyed;
 						if (nextWingmanDestroyed)
@@ -15884,13 +16117,19 @@ int main(void) {
 			updateTargetLock(&game);
 			maybeStartWingmanBombingRun(&game);
 			updatePowerup(&game);
-				if (updateEnemyPlane(&game))
+				{
+					UWORD radarBeforeEnemyUpdate = game.radarDetection;
+					if (updateEnemyPlane(&game))
 					pendingEnemySpriteUpdate = 1;
+					if (game.radarDetection != radarBeforeEnemyUpdate)
+						hudDirty = 1;
+				}
 				if (updateEnemyMissile(&game, scrollPixels))
 					pendingEnemyMissileSpriteUpdate = 1;
 				updateWingmanFormationRow(&game);
 				updateWingmanTakeoff(&game);
-				updateWingmanPlayer2Control(&game, worldBuffers, &input2, &previousInput2);
+				updateWingmanPlayer2Control(&game, worldBuffers, &input2,
+					&previousInput2, &hudDirty);
 				updateWingmanPlayer2Bomb(&game, worldBuffers, &hudDirty);
 				updateWingmanIntercept(&game);
 				updateWingmanBombingRun(&game, worldBuffers, &hudDirty);
@@ -15962,7 +16201,7 @@ int main(void) {
 						enemySprite, enemyMissileSprite, wingmanSprite, unusedSprite7,
 						&pendingGameScrollCopperUpdate, &pendingPlayerSpriteUpdate,
 						&pendingCrashSpriteUpdate, &pendingEnemySpriteUpdate, &pendingEnemyMissileSpriteUpdate, &pendingWingmanSpriteUpdate,
-						&hudDirty, highScore, (UBYTE)skillLevel, (UBYTE)livesSetting, (UBYTE)wingmanControl);
+						&hudDirty, highScore, (UBYTE)skillLevel, (UBYTE)gameModeSetting, (UBYTE)wingmanControl);
 					if (telemetryEnabled)
 						telemetryReset();
 					lastInputMask = inputMask;

@@ -74,7 +74,9 @@ and accidentally shipped with autoplay enabled:
 | `HAR_HEADLESS_MAX_FRAMES` | Safety timeout if the route cannot reach its terminal condition. |
 | `HAR_HEADLESS_CRUISE_SPEED` | Selects a reproducible scroll-speed stress case. |
 | `HAR_HEADLESS_WINGMAN_CONTROL` | Selects Off, CPU or Player 2 for A/B workload measurements. |
+| `HAR_HEADLESS_WEAPON_STRESS` | With Player 2 selected, keeps both aircraft supplied/alive and alternates pressed/released rocket and bomb input for both players throughout the route. |
 | `HAR_VALIDATION_SESSION_SEED` | Pins the modeled CPC session RNG for true A/B runs. It defaults to `0` in F5/release builds, which keeps menu-time-derived random worlds. |
+| `PERF_LOG_INTERVAL_FRAMES` | Overrides the normal 500-frame CSV window. Use 100 frames for position-aligned city profiling. |
 | `HAR_DEBUG_HUD_GUARD` | Expensive per-frame HUD corruption scan. Keep this `0` for performance measurements; enable it only when diagnosing HUD memory corruption. |
 | `HAR_USE_RING_WORLD_SCROLL` | The actual scrolling strategy being tested - not test-only, but this is the flag these tests exist to evaluate. |
 
@@ -83,6 +85,19 @@ Use the checked-in runner instead of editing these flags by hand:
 ```powershell
 .\run-amiga-parity.ps1 -Skills 1,3,5 -CruiseSpeed 15 -WingmanControl 1 -SessionSeed 12040
 ```
+
+For the reproducible two-player weapon stress profile:
+
+```powershell
+.\run-amiga-parity.ps1 -Skills 1 -CruiseSpeed 15 -WingmanControl 2 `
+  -WeaponStress -ExtraCcFlags '-DPERF_LOG_INTERVAL_FRAMES=100' `
+  -ResultTag weapon_stress
+```
+
+`p1Rkt`, `p1Bmb`, `p2Rkt` and `p2Bmb` in `perf_log.csv` prove that
+all four launch paths actually fired inside each measurement window. Compare
+rows by `scroll`, not elapsed time; the current town occupies world columns
+411..610 (approximately scroll 3288..4880).
 
 The runner cleans and builds one test executable per skill, starts only the
 cycle-exact headless WinUAE process it owns, waits for the terminal CSV,
@@ -217,7 +232,7 @@ and must always be zero.
 (`PERF_LOG_INTERVAL_FRAMES = 500` frames @ 50 Hz PAL):
 
 ```
-frame,seconds,loops,minFps,maxFps,avgFps,hitches,maxVblDelta,scroll,speed,origin,job,stage,tileX,tileCols,objCols,pages,fuel,armour,rockets,bombs
+frame,seconds,loops,minFps,maxFps,avgFps,hitches,maxVblDelta,scroll,speed,origin,job,stage,tileX,tileCols,objCols,pages,fuel,armour,rockets,bombs,p1Rkt,p1Bmb,p2Rkt,p2Bmb,...
 ```
 
 The two fields that matter most for scrolling smoothness:

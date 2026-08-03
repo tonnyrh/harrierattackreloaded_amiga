@@ -106,22 +106,52 @@ def double_width_pixels(cpc_pixels: list[int]) -> list[int]:
     return amiga_pixels
 
 
-def pack_interleaved_bitplanes(pixels: list[int]) -> bytes:
+def pack_interleaved_bitplanes(pixels: list[int], planes: int = AMIGA_PLANES) -> bytes:
     expected = AMIGA_WIDTH * AMIGA_HEIGHT
     if len(pixels) != expected:
         raise ValueError(f"Expected {expected} Amiga pixels, got {len(pixels)}")
 
-    output = bytearray(AMIGA_HEIGHT * AMIGA_PLANES * AMIGA_ROW_BYTES)
+    output = bytearray(AMIGA_HEIGHT * planes * AMIGA_ROW_BYTES)
     for y in range(AMIGA_HEIGHT):
-        row_base = y * AMIGA_PLANES * AMIGA_ROW_BYTES
+        row_base = y * planes * AMIGA_ROW_BYTES
         for x in range(AMIGA_WIDTH):
             color = pixels[y * AMIGA_WIDTH + x]
             bit = 0x80 >> (x & 7)
             byte_index = x >> 3
-            for plane in range(AMIGA_PLANES):
+            for plane in range(planes):
                 if color & (1 << plane):
                     output[row_base + plane * AMIGA_ROW_BYTES + byte_index] |= bit
     return bytes(output)
+
+
+def make_loader_palette(pixels: list[int], palette: list[int]) -> tuple[list[int], list[int]]:
+    """Reduce the title page to a compact four-colour bootstrap image.
+
+    The bootstrap remains resident while AmigaDOS loads/runs the full game,
+    so retaining the normal five-plane 40 KiB page would consume most of the
+    game's remaining chip RAM.  Preserve the page's four semantic colours:
+    dark background, logo red, white highlights and sea blue; map every CPC
+    pen to its nearest of those four in 12-bit RGB space.
+    """
+    source_indices = (0, 1, 11, 14)
+    loader_palette = [palette[index] for index in source_indices]
+
+    def components(color: int) -> tuple[int, int, int]:
+        return ((color >> 8) & 0x0F, (color >> 4) & 0x0F, color & 0x0F)
+
+    loader_rgb = [components(color) for color in loader_palette]
+    pen_map: list[int] = []
+    for color in palette[:16]:
+        red, green, blue = components(color)
+        pen_map.append(min(
+            range(4),
+            key=lambda index: (
+                (red - loader_rgb[index][0]) ** 2
+                + (green - loader_rgb[index][1]) ** 2
+                + (blue - loader_rgb[index][2]) ** 2
+            ),
+        ))
+    return [pen_map[pixel & 0x0F] for pixel in pixels], loader_palette
 
 
 def write_palette(path: Path, colors: list[int]) -> None:
@@ -164,6 +194,9 @@ def main() -> None:
     parser.add_argument("--out-bpl", type=Path, default=Path("amiga/assets/loading_screen.bpl"))
     parser.add_argument("--out-pal", type=Path, default=Path("amiga/assets/loading_screen.pal"))
     parser.add_argument("--preview-bmp", type=Path, default=Path("amiga/assets/loading_screen_preview.bmp"))
+    parser.add_argument("--loader-bpl", type=Path, default=Path("amiga/assets/loading_screen_2plane.bpl"))
+    parser.add_argument("--loader-pal", type=Path, default=Path("amiga/assets/loading_screen_2plane.pal"))
+    parser.add_argument("--loader-preview-bmp", type=Path, default=Path("amiga/assets/loading_screen_2plane_preview.bmp"))
     args = parser.parse_args()
 
     cpc_data = args.input.read_bytes()
@@ -172,18 +205,29 @@ def main() -> None:
     cpc_pixels = decode_cpc_pixels(cpc_data)
     amiga_pixels = double_width_pixels(cpc_pixels)
     bitplanes = pack_interleaved_bitplanes(amiga_pixels)
+    loader_pixels, loader_palette = make_loader_palette(amiga_pixels, amiga_palette)
+    loader_bitplanes = pack_interleaved_bitplanes(loader_pixels, 2)
 
     args.out_bpl.parent.mkdir(parents=True, exist_ok=True)
     args.out_pal.parent.mkdir(parents=True, exist_ok=True)
     args.preview_bmp.parent.mkdir(parents=True, exist_ok=True)
+    args.loader_bpl.parent.mkdir(parents=True, exist_ok=True)
+    args.loader_pal.parent.mkdir(parents=True, exist_ok=True)
+    args.loader_preview_bmp.parent.mkdir(parents=True, exist_ok=True)
 
     args.out_bpl.write_bytes(bitplanes)
     write_palette(args.out_pal, amiga_palette)
     write_bmp(args.preview_bmp, amiga_pixels, amiga_palette)
+    args.loader_bpl.write_bytes(loader_bitplanes)
+    write_palette(args.loader_pal, loader_palette)
+    write_bmp(args.loader_preview_bmp, loader_pixels, loader_palette)
 
     print(f"Wrote {args.out_bpl} ({len(bitplanes)} bytes)")
     print(f"Wrote {args.out_pal} (32 colors)")
     print(f"Wrote {args.preview_bmp}")
+    print(f"Wrote {args.loader_bpl} ({len(loader_bitplanes)} bytes)")
+    print(f"Wrote {args.loader_pal} (4 colors)")
+    print(f"Wrote {args.loader_preview_bmp}")
 
 
 if __name__ == "__main__":
