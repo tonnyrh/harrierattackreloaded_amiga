@@ -15,7 +15,7 @@
 #include <string.h>
 #include "assets/harrier_menu_text.h"
 
-#define HAR_BUILD_LABEL "SPRINT 15.68.1"
+#define HAR_BUILD_LABEL "SPRINT 15.69.9"
 
 #define SCREEN_WIDTH 320
 #define LOADING_SCREEN_WIDTH 320
@@ -240,7 +240,7 @@
 #define TAKEOFF_SCROLL_START_PIXELS 96
 #define TAKEOFF_SCROLL_STEP_PIXELS 2
 #define TAKEOFF_PLAYER_DECK_X 81
-#define TAKEOFF_PLAYER_DECK_Y 103
+#define TAKEOFF_PLAYER_DECK_Y 104
 #define CARRIER_DECK_PIXEL_Y 113
 #define CARRIER_DECK_PIXEL_HEIGHT 7
 /* Was 104 - wider than the carrier composite actually renders
@@ -314,7 +314,11 @@
 #define WINGMAN_FORMATION_COLUMNS_BEHIND 3
 #define WINGMAN_FORMATION_ROWS_OFFSET 3
 #define WINGMAN_TAKEOFF_DECK_X 137
-#define WINGMAN_TAKEOFF_DECK_Y TAKEOFF_PLAYER_DECK_Y
+/* Wingman's extracted parked artwork already meets the deck at Y=103.
+ * Keep this independent of the player's landing-gear sprite: that sprite
+ * needs Y=104 during takeoff staging, while a completed landing continues
+ * to use the separate pixel-contact result at Y=105. */
+#define WINGMAN_TAKEOFF_DECK_Y 103
 #define WINGMAN_TAKEOFF_MOVE_PIXELS 2
 #define WINGMAN_MOVE_FRAME_INTERVAL 4
 #define WINGMAN_VISUAL_MOVE_PIXELS 2
@@ -375,6 +379,34 @@
 #define ENGINE_CHANNEL 3
 #define ENGINE_BUFFER_BYTES 2048
 #define ENGINE_MUTATE_BYTES 48
+
+/* Lightweight Amiga-only atmosphere.  None of these values feed gameplay:
+ * positions use their own fixed hashes/LFSRs and the Paula voice always has
+ * lower priority than weapons, impacts, player cues and the engine. */
+#define SEA_AMBIENCE_BUFFER_BYTES 4096
+#define SEA_AMBIENCE_PERIOD 430
+#define SEA_AMBIENCE_IDLE_VOLUME 11
+#define SEA_AMBIENCE_FLIGHT_VOLUME 5
+#define SEA_AMBIENCE_VOLUME_STEP_FRAMES 2
+
+#define SEA_WAVE_MAX 16
+#define SEA_WAVE_WIDTH 8
+#define SEA_WAVE_HEIGHT 2
+#define SEA_WAVE_MAX_PLACEMENTS 2
+#define SEA_WAVE_MAX_BYTES_PER_ROW 2
+#define SEA_WAVE_PHASE_FRAMES 6
+
+#define CARRIER_GULL_MAX 3
+#define CARRIER_GULL_WIDTH 16
+#define CARRIER_GULL_HEIGHT 9
+#define CARRIER_GULL_MAX_PLACEMENTS 2
+#define CARRIER_GULL_MAX_BYTES_PER_ROW 3
+#define CARRIER_GULL_IDLE_DELAY_FRAMES 100
+#define CARRIER_GULL_SPAWN_INTERVAL_MIN_FRAMES 60
+#define CARRIER_GULL_SPAWN_INTERVAL_VARIATION 127
+#define CARRIER_GULL_CRUISE_X256 77
+#define CARRIER_GULL_CRUISE_Y256 14
+#define CARRIER_GULL_FLAP_PHASE_FRAMES 9
 
 #define WEAPON_SPRITE_HEIGHT 8
 #define AUXILIARY_SPRITE_WORDS (2 + WEAPON_SPRITE_HEIGHT * 2 + 2)
@@ -561,11 +593,13 @@
  * needs another visible screen width plus 16px fine-scroll prefetch. The old
  * fixed 2048px buffer was shorter than a user-edited 2232px cycle, causing
  * Copper to display adjacent memory as garbage at the end of the ticker. */
-static const char menuTickerText[] = HAR_TEXT_TRIBUTE;
-static const char fieldGuideTickerText[] = HAR_TEXT_FIELD_GUIDE;
+static const char menuTickerClassicText[] = HAR_TEXT_TRIBUTE_CLASSIC;
+static const char menuTickerEnhancedText[] = HAR_TEXT_TRIBUTE_ENHANCED;
+static const char fieldGuideTickerClassicText[] = HAR_TEXT_FIELD_GUIDE_CLASSIC;
+static const char fieldGuideTickerEnhancedText[] = HAR_TEXT_FIELD_GUIDE_ENHANCED;
 #define MENU_TICKER_MAX_CHARS \
-	((sizeof(menuTickerText) > sizeof(fieldGuideTickerText) \
-		? sizeof(menuTickerText) : sizeof(fieldGuideTickerText)) - 1)
+	((sizeof(menuTickerEnhancedText) > sizeof(fieldGuideTickerEnhancedText) \
+		? sizeof(menuTickerEnhancedText) : sizeof(fieldGuideTickerEnhancedText)) - 1)
 #define MENU_TICKER_TEXT_WIDTH (MENU_TICKER_MAX_CHARS * FONT_WIDTH)
 #define MENU_TICKER_REQUIRED_WIDTH \
 	(MENU_TICKER_MARGIN_PIXELS + MENU_TICKER_TEXT_WIDTH + \
@@ -582,7 +616,7 @@ static const char fieldGuideTickerText[] = HAR_TEXT_FIELD_GUIDE;
 static UWORD menuTickerScrollX = 0;
 static UBYTE menuTickerFrameDivider = 0;
 static UBYTE menuTickerCompleted = 0;
-static const char* activeMenuTickerText = menuTickerText;
+static const char* activeMenuTickerText = menuTickerEnhancedText;
 static UBYTE* menuTickerBitmap = 0;
 
 /* CPC writecharf() keeps pen 1 on rows 0-1, maps it to pen 0 on
@@ -759,6 +793,11 @@ typedef struct InputState {
 	UBYTE right;
 	UBYTE fire;
 	UBYTE bomb;
+	/* Keep each physical bomb source separate through edge detection. A
+	 * floating/stuck POT line must not hide a fresh Space or mouse press. */
+	UBYTE bombKey;
+	UBYTE bombMouse;
+	UBYTE bombJoystick;
 	UBYTE eject;
 	UBYTE shift;
 	UBYTE control;
@@ -1206,7 +1245,9 @@ typedef struct SfxSample {
 #define AUDIO_MIX_VOLUME(volume) \
 	((UWORD)((((ULONG)(volume) * AUDIO_MIX_PERCENT) + 50UL) / 100UL))
 #define CARRIER_IDLE_DECODE_BUFFER_BYTES 44100
-#define CARRIER_IDLE_PCM_EDGE_FADE_SAMPLES 256
+#define CARRIER_IDLE_PCM_EDGE_FADE_SAMPLES 1024
+#define CARRIER_IDLE_DECODE_BYTES_PER_FRAME 48
+#define CARRIER_IDLE_FADE_PAIRS_PER_FRAME 64
 /* One frame beyond the rounded-up natural duration gives Paula time to
  * reload the queued silent word before software disables the channel. */
 #define SFX_FRAMES_FOR_BYTES(byteCount) \
@@ -1241,6 +1282,19 @@ static UBYTE carrierIdleAge = 0;
 static UBYTE carrierIdleForcedFade = 0;
 static UBYTE* carrierIdleDecodeBuffer = 0;
 static SfxSample carrierIdlePlaybackSample;
+static UBYTE carrierIdleNextVariant = 0xff;
+static UBYTE carrierIdlePreparedVariant = 0xff;
+static UWORD carrierIdlePreparedLength = 0;
+static UBYTE carrierIdleDecodeActive = 0;
+static UBYTE carrierIdleDecodeFading = 0;
+static const UBYTE* carrierIdleDecodeSource = 0;
+static ULONG carrierIdleDecodeSourceLength = 0;
+static ULONG carrierIdleDecodeInputIndex = 0;
+static ULONG carrierIdleDecodeOutputIndex = 0;
+static ULONG carrierIdleDecodeTargetLength = 0;
+static ULONG carrierIdleDecodeFadeIndex = 0;
+static LONG carrierIdleDecodePredictor = 0;
+static WORD carrierIdleDecodeStepIndex = 0;
 static UBYTE modPlaying = 0;
 /* CPC menu default is ON. This session setting is copied into GameState at
  * mission start so ordinary rockets can either follow the current Harrier Y
@@ -1294,6 +1348,11 @@ static UWORD engineLfsr = 0xace1;
 static UWORD engineWriteOffset = 0;
 static UBYTE engineActive = 0;
 static UBYTE engineLastSpeed = 0xff;
+static UBYTE* seaAmbienceBuffer = 0;
+static UBYTE seaAmbienceChannel = 0xff;
+static UBYTE seaAmbienceVolume = 0;
+static UBYTE seaAmbienceVolumeDivider = 0;
+static UBYTE seaAmbienceDriftPhase = 0;
 static UBYTE aircraftFailureAlarmDmaActive = 0;
 static TelemetrySample* telemetrySamples = 0;
 static UBYTE telemetryAvailable = 0;
@@ -2097,9 +2156,16 @@ static UWORD sfxDmaBit(UBYTE channel) {
 static void stopSfxChannel(UBYTE channel) {
 	if (channel >= SFX_CHANNEL_COUNT)
 		return;
+	if (channel == seaAmbienceChannel) {
+		seaAmbienceChannel = 0xff;
+		seaAmbienceVolume = 0;
+	}
 
-	custom->dmacon = sfxDmaBit(channel);
+	/* Pull the DAC to zero before disabling DMA. Reversing these writes can
+	 * leave Paula holding the final non-zero sample for a fraction of a frame,
+	 * heard as a click when a quiet ambience cue ends. */
 	custom->aud[channel].ac_vol = 0;
+	custom->dmacon = sfxDmaBit(channel);
 	sfxChannelFrames[channel] = 0;
 	sfxChannelStartDelay[channel] = 0;
 	sfxChannelSilenceQueueDelay[channel] = 0;
@@ -2118,6 +2184,10 @@ static void stopSfxChannel(UBYTE channel) {
 static void stopAllSfx(void) {
 	custom->dmacon = DMAF_AUDIO;
 	aircraftFailureAlarmDmaActive = 0;
+	seaAmbienceChannel = 0xff;
+	seaAmbienceVolume = 0;
+	seaAmbienceVolumeDivider = 0;
+	seaAmbienceDriftPhase = 0;
 	for (UBYTE channel = 0; channel < SFX_CHANNEL_COUNT; channel++) {
 		custom->aud[channel].ac_vol = 0;
 		sfxChannelFrames[channel] = 0;
@@ -2139,6 +2209,11 @@ static void stopAllSfx(void) {
 	carrierIdleAge = 0;
 	carrierIdleForcedFade = 0;
 	carrierIdleDelayFrames = CARRIER_IDLE_MIN_DELAY_FRAMES;
+	carrierIdleNextVariant = 0xff;
+	carrierIdlePreparedVariant = 0xff;
+	carrierIdlePreparedLength = 0;
+	carrierIdleDecodeActive = 0;
+	carrierIdleDecodeFading = 0;
 }
 
 static UBYTE sfxRetriggerGuardFrames(UBYTE sfxId) {
@@ -2316,6 +2391,108 @@ static UWORD decodeCarrierIdleSample(const UBYTE* encoded,
 	return (UWORD)outputIndex;
 }
 
+/* Prepare the next long deck cue during its 15-20 second idle delay. The old
+ * path decoded all 44 KB in the launch frame, visibly pausing animation on a
+ * stock 68000. Forty-eight packed bytes per frame keep the work bounded; the
+ * longer edge ramp is likewise spread over several frames. */
+static void beginCarrierIdleDecode(UBYTE variant) {
+	UBYTE sfxId = (UBYTE)(SFX_CARRIER_IDLE_1 + (variant & 1));
+	const SfxSample* sample = &sfxSamples[sfxId];
+	carrierIdlePreparedVariant = 0xff;
+	carrierIdlePreparedLength = 0;
+	carrierIdleDecodeActive = 0;
+	carrierIdleDecodeFading = 0;
+	if (!carrierIdleDecodeBuffer || sample->byteLength < 5)
+		return;
+	ULONG decodedLength = ((ULONG)sample->data[0] << 24) |
+		((ULONG)sample->data[1] << 16) |
+		((ULONG)sample->data[2] << 8) | sample->data[3];
+	if (decodedLength < 2 || decodedLength > CARRIER_IDLE_DECODE_BUFFER_BYTES ||
+		4 + ((decodedLength + 1) >> 1) > sample->byteLength)
+		return;
+	carrierIdleDecodeSource = sample->data;
+	carrierIdleDecodeSourceLength = sample->byteLength;
+	carrierIdleDecodeInputIndex = 4;
+	carrierIdleDecodeOutputIndex = 0;
+	carrierIdleDecodeTargetLength = decodedLength;
+	carrierIdleDecodeFadeIndex = 0;
+	carrierIdleDecodePredictor = 0;
+	carrierIdleDecodeStepIndex = 0;
+	carrierIdleDecodeActive = 1;
+}
+
+static void serviceCarrierIdleDecode(void) {
+	if (!carrierIdleDecodeActive)
+		return;
+	if (!carrierIdleDecodeFading) {
+		UBYTE budget = CARRIER_IDLE_DECODE_BYTES_PER_FRAME;
+		while (budget-- &&
+			carrierIdleDecodeInputIndex < carrierIdleDecodeSourceLength &&
+			carrierIdleDecodeOutputIndex < carrierIdleDecodeTargetLength) {
+			UBYTE packed = carrierIdleDecodeSource[carrierIdleDecodeInputIndex++];
+			for (UBYTE half = 0; half < 2 &&
+				carrierIdleDecodeOutputIndex < carrierIdleDecodeTargetLength; half++) {
+				UBYTE nibble = half == 0 ? packed >> 4 : packed & 15;
+				LONG step = imaStepTable[carrierIdleDecodeStepIndex];
+				LONG difference = step >> 3;
+				if (nibble & 1) difference += step >> 2;
+				if (nibble & 2) difference += step >> 1;
+				if (nibble & 4) difference += step;
+				carrierIdleDecodePredictor +=
+					(nibble & 8) ? -difference : difference;
+				if (carrierIdleDecodePredictor > 32767)
+					carrierIdleDecodePredictor = 32767;
+				if (carrierIdleDecodePredictor < -32768)
+					carrierIdleDecodePredictor = -32768;
+				carrierIdleDecodeStepIndex += imaIndexTable[nibble];
+				if (carrierIdleDecodeStepIndex < 0)
+					carrierIdleDecodeStepIndex = 0;
+				if (carrierIdleDecodeStepIndex > 88)
+					carrierIdleDecodeStepIndex = 88;
+				carrierIdleDecodeBuffer[carrierIdleDecodeOutputIndex++] =
+					(UBYTE)((BYTE)(carrierIdleDecodePredictor >> 8));
+			}
+		}
+		if (carrierIdleDecodeOutputIndex < carrierIdleDecodeTargetLength)
+			return;
+		if (carrierIdleDecodeOutputIndex & 1)
+			carrierIdleDecodeBuffer[carrierIdleDecodeOutputIndex++] = 0;
+		carrierIdleDecodeFading = 1;
+	}
+
+	ULONG fadeSamples = carrierIdleDecodeOutputIndex / 2;
+	if (fadeSamples > CARRIER_IDLE_PCM_EDGE_FADE_SAMPLES)
+		fadeSamples = CARRIER_IDLE_PCM_EDGE_FADE_SAMPLES;
+	UBYTE budget = CARRIER_IDLE_FADE_PAIRS_PER_FRAME;
+	while (budget-- && carrierIdleDecodeFadeIndex < fadeSamples) {
+		ULONG index = carrierIdleDecodeFadeIndex++;
+		LONG first = (BYTE)carrierIdleDecodeBuffer[index];
+		LONG last = (BYTE)carrierIdleDecodeBuffer[
+			carrierIdleDecodeOutputIndex - 1 - index];
+		/* The configured fade is 1024 samples, so the common path is a cheap
+		 * multiply/shift. Retain division for unusually short test assets. */
+		if (fadeSamples == 1024) {
+			carrierIdleDecodeBuffer[index] =
+				(UBYTE)((BYTE)((first * (LONG)index) >> 10));
+			carrierIdleDecodeBuffer[carrierIdleDecodeOutputIndex - 1 - index] =
+				(UBYTE)((BYTE)((last * (LONG)index) >> 10));
+		} else {
+			carrierIdleDecodeBuffer[index] =
+				(UBYTE)((BYTE)((first * (LONG)index) / (LONG)fadeSamples));
+			carrierIdleDecodeBuffer[carrierIdleDecodeOutputIndex - 1 - index] =
+				(UBYTE)((BYTE)((last * (LONG)index) / (LONG)fadeSamples));
+		}
+	}
+	if (carrierIdleDecodeFadeIndex < fadeSamples)
+		return;
+	carrierIdleDecodeBuffer[0] = 0;
+	carrierIdleDecodeBuffer[carrierIdleDecodeOutputIndex - 1] = 0;
+	carrierIdlePreparedVariant = carrierIdleNextVariant;
+	carrierIdlePreparedLength = (UWORD)carrierIdleDecodeOutputIndex;
+	carrierIdleDecodeActive = 0;
+	carrierIdleDecodeFading = 0;
+}
+
 static void playSfxAtTuned(UBYTE sfxId, WORD screenX, UWORD volume,
 	UWORD period) {
 	if (sfxId >= SFX_COUNT)
@@ -2340,8 +2517,10 @@ static void playSfxAtTuned(UBYTE sfxId, WORD screenX, UWORD volume,
 		return;
 
 	if (sfxId >= SFX_CARRIER_IDLE_1 && sfxId <= SFX_CARRIER_IDLE_2) {
-		UWORD decodedLength = decodeCarrierIdleSample(sample->data,
-			sample->byteLength);
+		UBYTE variant = (UBYTE)(sfxId - SFX_CARRIER_IDLE_1);
+		UWORD decodedLength = carrierIdlePreparedVariant == variant ?
+			carrierIdlePreparedLength :
+			decodeCarrierIdleSample(sample->data, sample->byteLength);
 		if (!decodedLength)
 			return;
 		carrierIdlePlaybackSample = *sample;
@@ -2412,6 +2591,11 @@ static void scheduleNextCarrierIdle(void) {
 	carrierIdleChannel = 0xff;
 	carrierIdleAge = 0;
 	carrierIdleForcedFade = 0;
+	carrierIdleNextVariant = 0xff;
+	carrierIdlePreparedVariant = 0xff;
+	carrierIdlePreparedLength = 0;
+	carrierIdleDecodeActive = 0;
+	carrierIdleDecodeFading = 0;
 }
 
 /* Sparse carrier-deck ambience. The WAV masters retain their own authored
@@ -2468,14 +2652,23 @@ static void updateCarrierIdleSfx(UBYTE eligible) {
 			scheduleNextCarrierIdle();
 		return;
 	}
+	if (carrierIdleNextVariant == 0xff) {
+		carrierIdleNextVariant = nextSfxVariant(&carrierIdleRandomState,
+			frameCounter, &carrierIdleLastVariant, 2);
+		beginCarrierIdleDecode(carrierIdleNextVariant);
+	}
+	serviceCarrierIdleDecode();
 	if (carrierIdleDelayFrames > 0) {
 		carrierIdleDelayFrames--;
 		return;
 	}
+	/* A malformed or unexpectedly long asset must never stall gameplay. It
+	 * merely postpones this optional cue until preparation has completed. */
+	if (carrierIdlePreparedVariant != carrierIdleNextVariant ||
+		!carrierIdlePreparedLength)
+		return;
 
-	UBYTE variant = nextSfxVariant(&carrierIdleRandomState, frameCounter,
-		&carrierIdleLastVariant, 2);
-	UBYTE sfxId = (UBYTE)(SFX_CARRIER_IDLE_1 + variant);
+	UBYTE sfxId = (UBYTE)(SFX_CARRIER_IDLE_1 + carrierIdleNextVariant);
 	playSfxAtTuned(sfxId, SFX_POSITION_CENTER, 0, SFX_PAULA_PERIOD);
 	for (UBYTE channel = 0; channel < SFX_CHANNEL_COUNT; channel++) {
 		if (sfxChannelCurrentId[channel] == sfxId) {
@@ -2565,6 +2758,11 @@ static void updateSfx(void) {
 			sfxRetriggerGuard[sfxId]--;
 	}
 	for (UBYTE channel = 0; channel < SFX_CHANNEL_COUNT; channel++) {
+		/* The generated sea bed is an intentional Paula loop.  It still marks
+		 * the channel as ambient-priority below, so any real effect may evict
+		 * it through selectSfxChannel()/stopSfxChannel(). */
+		if (channel == seaAmbienceChannel)
+			continue;
 		if (sfxChannelStartDelay[channel] > 0) {
 			sfxChannelStartDelay[channel]--;
 			if (sfxChannelStartDelay[channel] == 0)
@@ -2588,6 +2786,117 @@ static void updateSfx(void) {
 			}
 		}
 	}
+}
+
+static UWORD nextSeaAmbienceNoise(UWORD* state) {
+	*state = (UWORD)((*state >> 1) ^ (-(WORD)(*state & 1) & 0xb400));
+	if (!*state)
+		*state = 0x7d35;
+	return *state;
+}
+
+/* Build a quiet, deliberately bandwidth-limited wind/sea bed once.  The
+ * 128-sample edge fades force a zero crossing at the DMA loop boundary, so
+ * Paula can repeat the 4 KiB block without a click.  This is generated from
+ * a private fixed seed and therefore cannot perturb CPC/gameplay RNG. */
+static void buildSeaAmbienceBuffer(void) {
+	if (!seaAmbienceBuffer)
+		return;
+	UWORD lfsr = 0x4d2b;
+	LONG fast = 0;
+	LONG slow = 0;
+	for (UWORD index = 0; index < SEA_AMBIENCE_BUFFER_BYTES; index++) {
+		LONG noise = (BYTE)(nextSeaAmbienceNoise(&lfsr) >> 8);
+		fast += (noise - fast) >> 2;
+		slow += (noise - slow) >> 6;
+		/* Broad surf rather than the old strongly low-passed, motor-like
+		 * waveform. The slow component swells while fast-minus-slow supplies
+		 * the airy white-water edge; both remain cheap signed 8-bit Paula data. */
+		LONG sample = ((fast - slow) >> 1) + (slow >> 3) + (noise >> 4);
+		if (sample > 42) sample = 42;
+		if (sample < -42) sample = -42;
+		seaAmbienceBuffer[index] = (UBYTE)(BYTE)sample;
+	}
+	/* Crossfade the tail into the start instead of fading both ends to zero.
+	 * A periodic silence made the short sample announce every DMA wrap. */
+	for (UWORD edge = 0; edge < 256; edge++) {
+		UWORD tailIndex = (UWORD)(SEA_AMBIENCE_BUFFER_BYTES - 256 + edge);
+		LONG tail = (BYTE)seaAmbienceBuffer[tailIndex];
+		LONG head = (BYTE)seaAmbienceBuffer[(edge + 1) & 255];
+		seaAmbienceBuffer[tailIndex] = (UBYTE)(BYTE)(
+			(tail * (255 - edge) + head * edge) / 255);
+	}
+	seaAmbienceBuffer[SEA_AMBIENCE_BUFFER_BYTES - 1] = seaAmbienceBuffer[0];
+}
+
+static UBYTE findFreeSeaAmbienceChannel(void) {
+	/* Prefer a right-side Paula voice: the persistent engine owns left-side
+	 * channel 3.  Never evict another sound merely to start ambience. */
+	static const UBYTE preference[3] = { 2, 1, 0 };
+	for (UBYTE index = 0; index < 3; index++) {
+		UBYTE channel = preference[index];
+		if (!sfxChannelFrames[channel] &&
+			!sfxChannelStartDelay[channel] &&
+			!sfxPendingSample[channel])
+			return channel;
+	}
+	return 0xff;
+}
+
+static void startSeaAmbience(void) {
+	if (!seaAmbienceBuffer || modPlaying ||
+		seaAmbienceChannel < SFX_CHANNEL_COUNT)
+		return;
+	UBYTE channel = findFreeSeaAmbienceChannel();
+	if (channel >= SFX_CHANNEL_COUNT)
+		return;
+	custom->dmacon = sfxDmaBit(channel);
+	custom->aud[channel].ac_ptr = (volatile UWORD*)seaAmbienceBuffer;
+	custom->aud[channel].ac_len = SEA_AMBIENCE_BUFFER_BYTES >> 1;
+	custom->aud[channel].ac_per = SEA_AMBIENCE_PERIOD;
+	custom->aud[channel].ac_vol = 0;
+	sfxChannelFrames[channel] = 1; /* occupied; updateSfx() special-cases it */
+	sfxChannelCurrentId[channel] = 0xff;
+	sfxChannelPriority[channel] = SFX_PRIORITY_AMBIENT;
+	sfxChannelSequence[channel] = ++sfxVoiceSequence;
+	custom->dmacon = DMAF_SETCLR | sfxDmaBit(channel);
+	seaAmbienceChannel = channel;
+	seaAmbienceVolume = 0;
+}
+
+static void updateSeaAmbience(UBYTE targetVolume) {
+	if (modPlaying || !seaAmbienceBuffer)
+		targetVolume = 0;
+	if (targetVolume && seaAmbienceChannel >= SFX_CHANNEL_COUNT)
+		startSeaAmbience();
+	if (seaAmbienceChannel >= SFX_CHANNEL_COUNT)
+		return;
+	/* A slow ten-second swell and tiny period drift hide the short low-rate
+	 * DMA loop. Volume remains beneath weapons and engine at its crest. */
+	if ((frameCounter & 3) == 0) {
+		seaAmbienceDriftPhase = (UBYTE)((seaAmbienceDriftPhase + 1) & 127);
+		BYTE triangle = seaAmbienceDriftPhase < 64 ?
+			(BYTE)seaAmbienceDriftPhase :
+			(BYTE)(127 - seaAmbienceDriftPhase);
+		custom->aud[seaAmbienceChannel].ac_per = (UWORD)(
+			SEA_AMBIENCE_PERIOD - 3 + (triangle >> 4));
+	}
+	UBYTE pulse = (UBYTE)((seaAmbienceDriftPhase < 64 ?
+		seaAmbienceDriftPhase : 127 - seaAmbienceDriftPhase) >> 4);
+	UBYTE pulsedTarget = targetVolume ? (UBYTE)(
+		targetVolume > 3 ? targetVolume - 3 + pulse : targetVolume) : 0;
+
+	seaAmbienceVolumeDivider++;
+	if (seaAmbienceVolumeDivider >= SEA_AMBIENCE_VOLUME_STEP_FRAMES) {
+		seaAmbienceVolumeDivider = 0;
+		if (seaAmbienceVolume < pulsedTarget)
+			seaAmbienceVolume++;
+		else if (seaAmbienceVolume > pulsedTarget)
+			seaAmbienceVolume--;
+		custom->aud[seaAmbienceChannel].ac_vol = seaAmbienceVolume;
+	}
+	if (!targetVolume && !seaAmbienceVolume)
+		stopSfxChannel(seaAmbienceChannel);
 }
 
 /* --- Menu screen background music (ProTracker MOD playback) ---
@@ -3818,8 +4127,11 @@ static void ReadInput(InputState* input, UBYTE suppressMouse) {
 	 * field. There is no parallel legacy weapon signal to double-trigger. */
 	input->fire = controlProfileKeyDown(profile, CONTROL_ROCKET) || mouseLeft ||
 		controlJoystickButton(profile->joystickPort, profile->rocketButton);
-	input->bomb = controlProfileKeyDown(profile, CONTROL_BOMB) || mouseRight ||
-		controlJoystickButton(profile->joystickPort, profile->bombButton);
+	input->bombKey = controlProfileKeyDown(profile, CONTROL_BOMB);
+	input->bombMouse = mouseRight;
+	input->bombJoystick = controlJoystickButton(profile->joystickPort,
+		profile->bombButton);
+	input->bomb = input->bombKey || input->bombMouse || input->bombJoystick;
 	input->eject = controlProfileKeyDown(profile, CONTROL_EJECT);
 	input->shift = keyShift;
 	input->control = keyControl;
@@ -3872,6 +4184,17 @@ static void ReadPlayer2Input(Player2InputState* input) {
 
 static UBYTE Pressed(UBYTE now, UBYTE previous) {
 	return now && !previous;
+}
+
+static UBYTE BombPressed(const InputState* now,
+	const InputState* previous) {
+	/* The combined fallback keeps synthetic/headless input working. Normal
+	 * controls use their independent edges so one continuously asserted
+	 * hardware source cannot mask the keyboard or another controller. */
+	return Pressed(now->bombKey, previous->bombKey) ||
+		Pressed(now->bombMouse, previous->bombMouse) ||
+		Pressed(now->bombJoystick, previous->bombJoystick) ||
+		Pressed(now->bomb, previous->bomb);
 }
 
 static UBYTE InputMask(const InputState* input) {
@@ -4672,6 +4995,16 @@ static void drawMenuTickerText(UBYTE* bitmap, WORD x, const char* text) {
 	}
 }
 
+static const char* menuTickerTextForMode(short gameMode) {
+	return gameMode == GAME_MODE_CLASSIC ?
+		menuTickerClassicText : menuTickerEnhancedText;
+}
+
+static const char* fieldGuideTickerTextForMode(short gameMode) {
+	return gameMode == GAME_MODE_CLASSIC ?
+		fieldGuideTickerClassicText : fieldGuideTickerEnhancedText;
+}
+
 static void initMenuTickerForText(UBYTE* bitmap, const char* text) {
 	WORD cycleWidth = (WORD)(strlen(text) * FONT_WIDTH +
 		MENU_TICKER_GAP_PIXELS);
@@ -5439,6 +5772,10 @@ static void initGameState(GameState* game) {
 	game->playerFrigateStatus = PLAYER_FRIGATE_STATUS_CLEAR;
 	game->rockets = 12;
 	game->bombs = 6;
+	/* GameState lives on the 68000 stack and is not blanket-zeroed. Leaving
+	 * this byte untouched gave a new session an arbitrary bomb lockout which
+	 * only disappeared after that many gameplay frames had elapsed. */
+	game->bombLaunchCooldown = 0;
 	game->rocketHeightLock = menuRocketHeightLock;
 	game->missionNumber = 1;
 	game->extraAircraftBonusSpawned = 0;
@@ -5986,7 +6323,8 @@ static void drawMenuScreen(UBYTE* bitmap, short selected, short skillLevel, shor
 	/* Every entry to the menu is a fresh one-shot ticker pass.  Its text is
 	 * pre-rendered one full screen beyond the right edge, so the visible band
 	 * starts empty even when returning early from another page. */
-	initMenuTickerForText(menuTickerBitmap, menuTickerText);
+	initMenuTickerForText(menuTickerBitmap,
+		menuTickerTextForMode(gameModeSetting));
 	fillScreen(bitmap, MENU_COLOR_PANEL);
 	serviceModMusicToCurrentVbl();
 
@@ -6552,6 +6890,9 @@ static UBYTE adjustSelectedMenuOption(UBYTE* bitmap, short selected, short direc
 	if (selected == MENU_ITEM_GAME_MODE)
 		drawMenuItem(bitmap, MENU_ITEM_WINGMAN, 0, *skillLevel,
 			*gameModeSetting, *wingmanControl);
+	if (selected == MENU_ITEM_GAME_MODE)
+		initMenuTickerForText(menuTickerBitmap,
+			menuTickerTextForMode(*gameModeSetting));
 	return 1;
 }
 
@@ -6712,9 +7053,72 @@ static RocketShotFootprint rocketShotFootprints[GAME_WORLD_BUFFER_COUNT];
 static RocketShotFootprint wingmanRocketFootprints[GAME_WORLD_BUFFER_COUNT];
 static RocketShotFootprint enemyMissileFootprints[GAME_WORLD_BUFFER_COUNT];
 
-#define AIRCRAFT_FAILURE_SMOKE_MAX 10
-#define AIRCRAFT_FAILURE_SMOKE_LIFETIME 30
-#define AIRCRAFT_FAILURE_SMOKE_SPAWN_FRAMES 3
+typedef struct SeaWaveFootprint {
+	UBYTE valid;
+	UBYTE placementCount;
+	UBYTE phase;
+	WORD y;
+	LONG worldColumn;
+	UWORD byteX[SEA_WAVE_MAX_PLACEMENTS];
+	UBYTE byteCount[SEA_WAVE_MAX_PLACEMENTS];
+	UBYTE background[SEA_WAVE_MAX_PLACEMENTS][SEA_WAVE_HEIGHT]
+		[GAME_WORLD_DISPLAY_PLANES][SEA_WAVE_MAX_BYTES_PER_ROW];
+} SeaWaveFootprint;
+
+typedef struct CarrierGull {
+	UBYTE active;
+	UBYTE scattering;
+	UBYTE variant;
+	UBYTE flapOffset;
+	UBYTE scale;
+	UBYTE maxScale;
+	UBYTE scatterFrames;
+	LONG worldX256;
+	LONG y256;
+	WORD velocityX256;
+	WORD velocityY256;
+} CarrierGull;
+
+typedef struct CarrierGullFootprint {
+	UBYTE valid;
+	UBYTE placementCount;
+	UBYTE phase;
+	UBYTE variant;
+	UBYTE scale;
+	WORD y;
+	LONG worldX;
+	UWORD byteX[CARRIER_GULL_MAX_PLACEMENTS];
+	UBYTE byteCount[CARRIER_GULL_MAX_PLACEMENTS];
+	UBYTE background[CARRIER_GULL_MAX_PLACEMENTS][CARRIER_GULL_HEIGHT]
+		[GAME_WORLD_DISPLAY_PLANES][CARRIER_GULL_MAX_BYTES_PER_ROW];
+} CarrierGullFootprint;
+
+static SeaWaveFootprint seaWaveFootprints[GAME_WORLD_BUFFER_COUNT]
+	[SEA_WAVE_MAX];
+static CarrierGull carrierGulls[CARRIER_GULL_MAX];
+static CarrierGullFootprint carrierGullFootprints[GAME_WORLD_BUFFER_COUNT]
+	[CARRIER_GULL_MAX];
+static UBYTE carrierGullIdleFrames = 0;
+static UBYTE carrierGullSpawnFrames = 0;
+static UBYTE carrierGullSpawnInterval = CARRIER_GULL_SPAWN_INTERVAL_MIN_FRAMES;
+static UBYTE carrierGullTargetCount = 0;
+static UWORD carrierGullFlockFrames = 0;
+static UWORD carrierGullFlockLifetime = 0;
+static UWORD carrierGullLfsr = 0x593d;
+
+/* Dirty-BOB counters are deliberately kept outside TelemetrySample so the
+ * optional extended-memory telemetry ABI does not grow. They are process
+ * totals that can be inspected directly in the debugger. */
+static volatile ULONG bobWaveRedraws = 0;
+static volatile ULONG bobWaveUnchangedSkips = 0;
+static volatile ULONG bobGullRedraws = 0;
+static volatile ULONG bobGullUnchangedSkips = 0;
+static volatile ULONG bobImpactRedraws = 0;
+static volatile ULONG bobImpactUnchangedSkips = 0;
+
+#define AIRCRAFT_FAILURE_SMOKE_MAX 6
+#define AIRCRAFT_FAILURE_SMOKE_LIFETIME 22
+#define AIRCRAFT_FAILURE_SMOKE_SPAWN_FRAMES 4
 
 typedef struct AircraftFailureSmokeParticle {
 	UBYTE active;
@@ -6733,6 +7137,7 @@ typedef struct AircraftFailureSmokeFootprint {
 	UBYTE columnCount;
 	WORD firstTileRow;
 	UBYTE rowCount;
+	ULONG renderSignature;
 } AircraftFailureSmokeFootprint;
 
 static AircraftFailureSmokeParticle
@@ -7700,15 +8105,16 @@ static const FieldGuidePowerup fieldGuidePowerups[] = {
 	{ "YELLOW", MENU_COLOR_YELLOW, "FULL ARMOUR" },
 	{ "BLUE",   MENU_COLOR_CYAN,   "ROCKETS REFILLED" },
 	{ "GREEN",  MENU_COLOR_GREEN,  "BOMBS REFILLED" },
-	{ "WHITE",  MENU_COLOR_WHITE,  "EXTRA AIRCRAFT ENHANCED" }
+	{ "WHITE",  MENU_COLOR_WHITE,  "EXTRA AIRCRAFT (ENHANCED)" }
 };
 #define FIELD_GUIDE_POWERUP_COUNT \
 	(sizeof(fieldGuidePowerups) / sizeof(fieldGuidePowerups[0]))
 
-static void drawFieldGuideScreen(UBYTE* bitmap) {
+static void drawFieldGuideScreen(UBYTE* bitmap, short gameMode) {
 	/* Do not inherit the main ticker's pointer.  Start with a completely
 	 * empty band, then let the guide text enter smoothly from the right. */
-	initMenuTickerForText(menuTickerBitmap, fieldGuideTickerText);
+	initMenuTickerForText(menuTickerBitmap,
+		fieldGuideTickerTextForMode(gameMode));
 	fillScreen(bitmap, MENU_COLOR_PANEL);
 	serviceModMusicToCurrentVbl();
 	drawMenuTicker(bitmap);
@@ -7745,11 +8151,14 @@ static void drawFieldGuideScreen(UBYTE* bitmap) {
 	y += 6;
 	drawTextCentered(bitmap, y, "PARACHUTE DROP COLOURS", MENU_COLOR_CYAN);
 	y += 14;
-	for (UBYTE i = 0; i < FIELD_GUIDE_POWERUP_COUNT; i++) {
+	UBYTE powerupCount = gameMode == GAME_MODE_CLASSIC ?
+		FIELD_GUIDE_POWERUP_COUNT - 1 : FIELD_GUIDE_POWERUP_COUNT;
+	for (UBYTE i = 0; i < powerupCount; i++) {
 		const FieldGuidePowerup* powerup = &fieldGuidePowerups[i];
 		drawFieldGuideParachuteIcon(bitmap, 16, y, powerup->color);
 		drawText(bitmap, 40, (short)(y + 4), powerup->label, MENU_COLOR_WHITE);
-		drawText(bitmap, 100, (short)(y + 4), powerup->meaning, MENU_COLOR_WHITE);
+		drawText(bitmap, 100, (short)(y + 4), powerup->meaning,
+			MENU_COLOR_WHITE);
 		y += FIELD_GUIDE_ICON_BOX + 2;
 		serviceModMusicToCurrentVbl();
 	}
@@ -9995,8 +10404,41 @@ static void initRingWorldBuffer(UBYTE* bitmap, UWORD startColumn) {
  * renderWorldColumnRowsDirect()'s old per-row objectCellForWorldColumnTile()
  * calls. */
 static RenderColumn ringStreamTileColumn;
+static LONG ringStreamTouchedFirstColumn = -1;
+static LONG ringStreamTouchedLastColumn = -1;
+
+/* Conservative pre-stream test used by retained BOBs. It simulates only the
+ * columns the fixed row budget can touch this frame. False positives merely
+ * cause one harmless redraw; false negatives would leave a BOB partially
+ * overwritten by a recycled ring column. */
+static UBYTE ringStreamMayTouchColumnRange(const GameState* game,
+	LONG firstColumn, LONG lastColumn) {
+	if (useFixedTakeoffWorldWindow(game))
+		return 0;
+	UBYTE scrollPixels = (game->missionComplete ||
+		game->landingState == LANDING_STATE_HOVER) ? 0 :
+		scrollPixelsForSpeedLevel(game->speedLevel);
+	UWORD rows = (UWORD)((scrollPixels * GAME_OBJECT_MAP_HEIGHT_TILES +
+		(GAME_TILE_WIDTH - 1)) / GAME_TILE_WIDTH);
+	if (!rows)
+		return 0;
+	LONG streamFirst = ringStreamColumn >= 0 ? ringStreamColumn :
+		(LONG)ringWorldLastStreamedColumn + 1;
+	UWORD firstRows = ringStreamColumn >= 0 ?
+		(UWORD)(GAME_OBJECT_MAP_HEIGHT_TILES - ringStreamRow) :
+		GAME_OBJECT_MAP_HEIGHT_TILES;
+	LONG streamLast = streamFirst;
+	if (rows > firstRows) {
+		rows = (UWORD)(rows - firstRows);
+		streamLast += (LONG)((rows + GAME_OBJECT_MAP_HEIGHT_TILES - 1) /
+			GAME_OBJECT_MAP_HEIGHT_TILES);
+	}
+	return !(lastColumn < streamFirst || firstColumn > streamLast);
+}
 
 static void serviceRingWorldStream(UBYTE* bitmap, const GameState* game) {
+	ringStreamTouchedFirstColumn = -1;
+	ringStreamTouchedLastColumn = -1;
 	if (useFixedTakeoffWorldWindow(game))
 		return;
 
@@ -10026,6 +10468,11 @@ static void serviceRingWorldStream(UBYTE* bitmap, const GameState* game) {
 		drawWorldColumnRowsFromCache(bitmap, tileX, &ringStreamTileColumn, ringStreamRow, rowsThisStep);
 		if (hasDuplicate)
 			drawWorldColumnRowsFromCache(bitmap, duplicateTileX, &ringStreamTileColumn, ringStreamRow, rowsThisStep);
+		if (ringStreamTouchedFirstColumn < 0 ||
+			ringStreamColumn < ringStreamTouchedFirstColumn)
+			ringStreamTouchedFirstColumn = ringStreamColumn;
+		if (ringStreamColumn > ringStreamTouchedLastColumn)
+			ringStreamTouchedLastColumn = ringStreamColumn;
 
 		ringStreamRow = (UWORD)(ringStreamRow + rowsThisStep);
 		rowBudget = (UWORD)(rowBudget - rowsThisStep);
@@ -10083,6 +10530,576 @@ static void dirtyRedrawWorldTile(UBYTE** worldBuffers, LONG worldColumn, WORD ti
 		UWORD duplicateTileX = (UWORD)(tileX + GAME_WORLD_SCROLL_PAGE_BYTES);
 		drawGameScrollTile(worldBuffers[0], (short)duplicateTileX, (short)tileY, tile);
 	}
+}
+
+/* --- Lightweight sea/carrier ambience overlays -------------------------
+ * These are CPU-masked mini-BOBs.  At these tiny sizes the setup traffic for
+ * the Blitter costs more than the handful of bytes touched by the 68000.
+ * Saved backgrounds are kept per world buffer and erased before streaming,
+ * exactly like the projectile BOBs later in the frame. */
+static void eraseSeaWaves(UBYTE* bitmap, UBYTE bufferIndex) {
+	if (bufferIndex >= GAME_WORLD_BUFFER_COUNT)
+		return;
+	for (UBYTE index = 0; index < SEA_WAVE_MAX; index++) {
+		SeaWaveFootprint* footprint = &seaWaveFootprints[bufferIndex][index];
+		if (!footprint->valid)
+			continue;
+		for (UBYTE placement = 0; placement < footprint->placementCount;
+			placement++) {
+			for (UBYTE row = 0; row < SEA_WAVE_HEIGHT; row++) {
+				UBYTE* dest = bitmap +
+					(footprint->y + row) * SCREEN_PLANES * GAME_WORLD_ROW_BYTES +
+					footprint->byteX[placement];
+				for (UBYTE plane = 0; plane < GAME_WORLD_DISPLAY_PLANES; plane++)
+					for (UBYTE byte = 0;
+						byte < footprint->byteCount[placement]; byte++)
+						dest[plane * GAME_WORLD_ROW_BYTES + byte] =
+							footprint->background[placement][row][plane][byte];
+			}
+		}
+		footprint->valid = 0;
+	}
+}
+
+static void drawSeaWavePlacement(UBYTE* bitmap, SeaWaveFootprint* footprint,
+	UBYTE placement, UWORD bufferPixelX, WORD y, UBYTE phase) {
+	static const UBYTE shape[4][SEA_WAVE_HEIGHT] = {
+		{ 0x18, 0x00 }, { 0x3c, 0x08 },
+		{ 0x7e, 0x18 }, { 0x3c, 0x10 }
+	};
+	UBYTE bitOffset = (UBYTE)(bufferPixelX & 7);
+	UWORD byteX = bufferPixelX >> 3;
+	UBYTE byteCount = bitOffset ? 2 : 1;
+	if (byteX + byteCount > GAME_WORLD_ROW_BYTES)
+		byteCount = (UBYTE)(GAME_WORLD_ROW_BYTES - byteX);
+	if (!byteCount)
+		return;
+	footprint->byteX[placement] = byteX;
+	footprint->byteCount[placement] = byteCount;
+
+	for (UBYTE row = 0; row < SEA_WAVE_HEIGHT; row++) {
+		UWORD mask16 = (UWORD)shape[phase & 3][row] << (8 - bitOffset);
+		UBYTE masks[2] = { (UBYTE)(mask16 >> 8), (UBYTE)mask16 };
+		UBYTE color = row ? GAME_COLOR_LIGHT_GREY : GAME_COLOR_WHITE;
+		UBYTE* dest = bitmap + (y + row) * SCREEN_PLANES *
+			GAME_WORLD_ROW_BYTES + byteX;
+		for (UBYTE plane = 0; plane < GAME_WORLD_DISPLAY_PLANES; plane++) {
+			for (UBYTE byte = 0; byte < byteCount; byte++) {
+				UBYTE* target = dest + plane * GAME_WORLD_ROW_BYTES + byte;
+				UBYTE old = *target;
+				footprint->background[placement][row][plane][byte] = old;
+				*target = (UBYTE)((old & ~masks[byte]) |
+					((color & (1 << plane)) ? masks[byte] : 0));
+			}
+		}
+	}
+}
+
+static UWORD ambienceHashForColumn(LONG worldColumn) {
+	UWORD value = (UWORD)worldColumn;
+	value ^= (UWORD)(value << 7);
+	value ^= (UWORD)(value >> 9);
+	value = (UWORD)(value * 40503U + 21713U);
+	return value;
+}
+
+enum {
+	SEA_WAVE_UPDATE_NONE = 0,
+	SEA_WAVE_UPDATE_PHASE = 1,
+	SEA_WAVE_UPDATE_FULL = 2
+};
+
+static UBYTE seaWavesUpdateKind(const GameState* game) {
+	UBYTE count = 0;
+	UBYTE phaseChanged = 0;
+	LONG firstColumn = ((LONG)game->scrollX >> 3) - 2;
+	LONG lastColumn = firstColumn + GAME_FETCH_BYTES + 5;
+	UBYTE basePhase = (UBYTE)((frameCounter / SEA_WAVE_PHASE_FRAMES) & 3);
+	for (LONG worldColumn = firstColumn;
+		worldColumn <= lastColumn && count < SEA_WAVE_MAX; worldColumn++) {
+		UWORD hash = ambienceHashForColumn(worldColumn);
+		if ((hash & 3) != 0)
+			continue;
+		WORD y = (WORD)(SEA_SURFACE_Y + 4 + (((hash >> 4) & 3) * 8));
+		ObjectCell cell;
+		if (!objectCellForWorldColumnTile(worldColumn, y >> 3, &cell) ||
+			cell.id != HAR_OBJ_SEA)
+			continue;
+		SeaWaveFootprint* footprint = &seaWaveFootprints[0][count++];
+		UBYTE phase = (UBYTE)((basePhase + ((hash >> 2) & 3)) & 3);
+		if (!footprint->valid || footprint->worldColumn != worldColumn ||
+			footprint->y != y)
+			return SEA_WAVE_UPDATE_FULL;
+		if (footprint->phase != phase)
+			phaseChanged = 1;
+		LONG pixelOffset = (LONG)((hash >> 8) & 3);
+		LONG firstTouched = worldColumn;
+		LONG lastTouched = (worldColumn * GAME_TILE_WIDTH + pixelOffset +
+			SEA_WAVE_WIDTH - 1) >> 3;
+		if (ringStreamMayTouchColumnRange(game, firstTouched, lastTouched))
+			return SEA_WAVE_UPDATE_FULL;
+	}
+	for (; count < SEA_WAVE_MAX; count++)
+		if (seaWaveFootprints[0][count].valid)
+			return SEA_WAVE_UPDATE_FULL;
+	return phaseChanged ? SEA_WAVE_UPDATE_PHASE : SEA_WAVE_UPDATE_NONE;
+}
+
+/* Phase-only animation keeps each footprint's authoritative saved
+ * background and replaces old/new masks in one byte pass. The previous
+ * erase-whole-group/draw-whole-group sequence exposed bare sea to the beam
+ * and looked like a flash in the single-buffered playfield. */
+static void updateSeaWavePhasesInPlace(UBYTE* bitmap, UBYTE bufferIndex) {
+	static const UBYTE shape[4][SEA_WAVE_HEIGHT] = {
+		{ 0x18, 0x00 }, { 0x3c, 0x08 },
+		{ 0x7e, 0x18 }, { 0x3c, 0x10 }
+	};
+	UBYTE basePhase = (UBYTE)((frameCounter / SEA_WAVE_PHASE_FRAMES) & 3);
+	for (UBYTE index = 0; index < SEA_WAVE_MAX; index++) {
+		SeaWaveFootprint* footprint = &seaWaveFootprints[bufferIndex][index];
+		if (!footprint->valid)
+			continue;
+		UWORD hash = ambienceHashForColumn(footprint->worldColumn);
+		UBYTE phase = (UBYTE)((basePhase + ((hash >> 2) & 3)) & 3);
+		for (UBYTE placement = 0; placement < footprint->placementCount;
+			placement++) {
+			UBYTE bitOffset = (UBYTE)((footprint->worldColumn *
+				GAME_TILE_WIDTH + ((hash >> 8) & 3)) & 7);
+			for (UBYTE row = 0; row < SEA_WAVE_HEIGHT; row++) {
+				UWORD mask16 = (UWORD)shape[phase][row] << (8 - bitOffset);
+				UBYTE masks[2] = { (UBYTE)(mask16 >> 8), (UBYTE)mask16 };
+				UBYTE color = row ? GAME_COLOR_LIGHT_GREY : GAME_COLOR_WHITE;
+				UBYTE* dest = bitmap + (footprint->y + row) * SCREEN_PLANES *
+					GAME_WORLD_ROW_BYTES + footprint->byteX[placement];
+				for (UBYTE plane = 0; plane < GAME_WORLD_DISPLAY_PLANES; plane++)
+					for (UBYTE byte = 0;
+						byte < footprint->byteCount[placement]; byte++) {
+						UBYTE base = footprint->background[placement][row][plane][byte];
+						dest[plane * GAME_WORLD_ROW_BYTES + byte] =
+							(UBYTE)((base & ~masks[byte]) |
+							((color & (1 << plane)) ? masks[byte] : 0));
+					}
+			}
+		}
+		footprint->phase = phase;
+	}
+}
+
+static void drawSeaWaves(UBYTE* bitmap, UBYTE bufferIndex,
+	const GameState* game) {
+	if (bufferIndex >= GAME_WORLD_BUFFER_COUNT)
+		return;
+	UBYTE count = 0;
+	LONG firstColumn = ((LONG)game->scrollX >> 3) - 2;
+	LONG lastColumn = firstColumn + GAME_FETCH_BYTES + 5;
+	UBYTE phase = (UBYTE)((frameCounter / SEA_WAVE_PHASE_FRAMES) & 3);
+	const LONG pagePixels =
+		(LONG)GAME_WORLD_SCROLL_PAGE_BYTES * GAME_TILE_WIDTH;
+
+	for (LONG worldColumn = firstColumn;
+		worldColumn <= lastColumn && count < SEA_WAVE_MAX; worldColumn++) {
+		UWORD hash = ambienceHashForColumn(worldColumn);
+		if ((hash & 3) != 0)
+			continue;
+		WORD y = (WORD)(SEA_SURFACE_Y + 4 + (((hash >> 4) & 3) * 8));
+		ObjectCell cell;
+		if (!objectCellForWorldColumnTile(worldColumn, y >> 3, &cell) ||
+			cell.id != HAR_OBJ_SEA)
+			continue;
+
+		LONG worldPixelX = worldColumn * GAME_TILE_WIDTH +
+			((hash >> 8) & 3);
+		LONG localPixelX = worldPixelX % pagePixels;
+		if (localPixelX < 0)
+			localPixelX += pagePixels;
+		UWORD primaryPixelX =
+			(UWORD)(GAME_WORLD_BUFFER_MARGIN_PIXELS + localPixelX);
+		SeaWaveFootprint* footprint =
+			&seaWaveFootprints[bufferIndex][count++];
+		footprint->valid = 1;
+		footprint->placementCount = 1;
+		footprint->phase = (UBYTE)((phase + ((hash >> 2) & 3)) & 3);
+		footprint->y = y;
+		footprint->worldColumn = worldColumn;
+		drawSeaWavePlacement(bitmap, footprint, 0, primaryPixelX, y,
+			footprint->phase);
+		if (primaryPixelX <
+			(GAME_WORLD_BUFFER_MARGIN_TILES + GAME_FETCH_BYTES) *
+			GAME_TILE_WIDTH) {
+			footprint->placementCount = 2;
+			drawSeaWavePlacement(bitmap, footprint, 1,
+				(UWORD)(primaryPixelX + pagePixels), y,
+				footprint->phase);
+		}
+	}
+}
+
+static void eraseCarrierGulls(UBYTE* bitmap, UBYTE bufferIndex) {
+	if (bufferIndex >= GAME_WORLD_BUFFER_COUNT)
+		return;
+	/* Gulls can overlap. They are drawn from index 0 upwards, so restore in
+	 * reverse order. Forward restoration can copy pixels from a later gull
+	 * (captured as saved background) back into the sky as a white trail. */
+	for (UBYTE remaining = CARRIER_GULL_MAX; remaining > 0; remaining--) {
+		UBYTE index = (UBYTE)(remaining - 1);
+		CarrierGullFootprint* footprint =
+			&carrierGullFootprints[bufferIndex][index];
+		if (!footprint->valid)
+			continue;
+		for (UBYTE placement = 0; placement < footprint->placementCount;
+			placement++) {
+			for (UBYTE row = 0; row < CARRIER_GULL_HEIGHT; row++) {
+				UBYTE* dest = bitmap +
+					(footprint->y + row) * SCREEN_PLANES * GAME_WORLD_ROW_BYTES +
+					footprint->byteX[placement];
+				for (UBYTE plane = 0; plane < GAME_WORLD_DISPLAY_PLANES; plane++)
+					for (UBYTE byte = 0;
+						byte < footprint->byteCount[placement]; byte++)
+						dest[plane * GAME_WORLD_ROW_BYTES + byte] =
+							footprint->background[placement][row][plane][byte];
+			}
+		}
+		footprint->valid = 0;
+	}
+}
+
+static void resetCarrierGullActors(void) {
+	memset(carrierGulls, 0, sizeof(carrierGulls));
+	carrierGullIdleFrames = 0;
+	carrierGullSpawnFrames = 0;
+	carrierGullSpawnInterval = CARRIER_GULL_SPAWN_INTERVAL_MIN_FRAMES;
+	carrierGullTargetCount = 0;
+	carrierGullFlockFrames = 0;
+	carrierGullFlockLifetime = 0;
+	carrierGullLfsr = 0x593d;
+}
+
+static void resetCarrierAmbienceVisuals(void) {
+	memset(seaWaveFootprints, 0, sizeof(seaWaveFootprints));
+	memset(carrierGullFootprints, 0, sizeof(carrierGullFootprints));
+	resetCarrierGullActors();
+}
+
+static UBYTE carrierGullsNeedRedraw(const GameState* game) {
+	const LONG pagePixels =
+		(LONG)GAME_WORLD_SCROLL_PAGE_BYTES * GAME_TILE_WIDTH;
+	(void)pagePixels;
+	for (UBYTE index = 0; index < CARRIER_GULL_MAX; index++) {
+		CarrierGull* gull = &carrierGulls[index];
+		CarrierGullFootprint* footprint = &carrierGullFootprints[0][index];
+		LONG worldX = gull->worldX256 >> 8;
+		WORD y = (WORD)(gull->y256 >> 8);
+		LONG screenX = worldX - game->scrollX;
+		UBYTE visible = gull->active && screenX > -CARRIER_GULL_WIDTH &&
+			screenX < SCREEN_WIDTH && y >= 0 &&
+			y + CARRIER_GULL_HEIGHT <= GAME_WORLD_HEIGHT;
+		if (!visible) {
+			if (footprint->valid)
+				return 1;
+			continue;
+		}
+		UBYTE phase = gull->scattering ? 0 :
+			(UBYTE)(((frameCounter / CARRIER_GULL_FLAP_PHASE_FRAMES) +
+				gull->flapOffset) % 3);
+		if (!footprint->valid || footprint->worldX != worldX ||
+			footprint->y != y || footprint->phase != phase ||
+			footprint->variant != gull->variant ||
+			footprint->scale != gull->scale)
+			return 1;
+		if (ringStreamMayTouchColumnRange(game, worldX >> 3,
+			(worldX + CARRIER_GULL_WIDTH - 1) >> 3))
+			return 1;
+	}
+	return 0;
+}
+
+static UWORD nextCarrierGullRandom(void) {
+	carrierGullLfsr = (UWORD)((carrierGullLfsr >> 1) ^
+		(-(WORD)(carrierGullLfsr & 1) & 0xb400));
+	if (!carrierGullLfsr)
+		carrierGullLfsr = 0x593d;
+	return carrierGullLfsr;
+}
+
+static void spawnCarrierGull(const GameState* game, UBYTE index) {
+	CarrierGull* gull = &carrierGulls[index];
+	UWORD random = nextCarrierGullRandom();
+	/* Enter from outside the visible fetch instead of materialising around the
+	 * carrier. This also gives each deterministic bird a visibly different
+	 * travel distance before it settles into the carrier orbit. */
+	UBYTE enterFromRight = (UBYTE)((random >> 7) & 1);
+	WORD screenX = enterFromRight ? SCREEN_WIDTH : -CARRIER_GULL_WIDTH;
+	gull->active = 1;
+	gull->scattering = 0;
+	gull->variant = (UBYTE)((random >> 8) & 1);
+	gull->flapOffset = (UBYTE)((random >> 10) & 7);
+	/* Birds enter as distant silhouettes and grow only at two discrete
+	 * approach thresholds. Some remain mid-distance, which avoids a flock of
+	 * identical full-size BOBs and costs no runtime scaling. */
+	gull->scale = 0;
+	gull->maxScale = (UBYTE)(1 + ((random >> 12) & 1));
+	gull->scatterFrames = 0;
+	gull->worldX256 = ((LONG)game->scrollX + screenX) << 8;
+	gull->y256 = (LONG)(30 + ((random >> 2) & 55)) << 8;
+	gull->velocityX256 = enterFromRight ?
+		-CARRIER_GULL_CRUISE_X256 : CARRIER_GULL_CRUISE_X256;
+	gull->velocityY256 = (random & 0x100) ?
+		CARRIER_GULL_CRUISE_Y256 : -CARRIER_GULL_CRUISE_Y256;
+}
+
+static void updateCarrierGulls(const GameState* game, UBYTE idleEligible,
+	UBYTE sceneActive) {
+	if (!sceneActive || game->gameOver) {
+		/* Keep the old footprints valid until the late renderer restores them.
+		 * Clearing footprint metadata here used to strand the final gull pixels
+		 * in the single world buffer when Game Over deactivated the actors. */
+		resetCarrierGullActors();
+		return;
+	}
+	if (idleEligible) {
+		if (carrierGullIdleFrames < CARRIER_GULL_IDLE_DELAY_FRAMES)
+			carrierGullIdleFrames++;
+		else if (!carrierGullTargetCount) {
+			UWORD random = nextCarrierGullRandom();
+			/* An idle deck is allowed to have no birds at all. Zero restarts
+			 * the quiet wait; one to three build a temporary flock. */
+			carrierGullTargetCount =
+				(UBYTE)(random % (CARRIER_GULL_MAX + 1));
+			carrierGullSpawnInterval = (UBYTE)(
+				CARRIER_GULL_SPAWN_INTERVAL_MIN_FRAMES +
+				((random >> 4) & CARRIER_GULL_SPAWN_INTERVAL_VARIATION));
+			carrierGullFlockFrames = 0;
+			carrierGullFlockLifetime =
+				(UWORD)(400 + ((random >> 6) & 255));
+			if (!carrierGullTargetCount)
+				carrierGullIdleFrames = 0;
+		} else if (++carrierGullSpawnFrames >= carrierGullSpawnInterval) {
+			carrierGullSpawnFrames = 0;
+			UBYTE activeCount = 0;
+			for (UBYTE index = 0; index < CARRIER_GULL_MAX; index++)
+				if (carrierGulls[index].active)
+					activeCount++;
+			if (activeCount < carrierGullTargetCount) {
+				for (UBYTE index = 0; index < CARRIER_GULL_MAX; index++) {
+					if (!carrierGulls[index].active) {
+						spawnCarrierGull(game, index);
+						break;
+					}
+				}
+				carrierGullSpawnInterval = (UBYTE)(
+					CARRIER_GULL_SPAWN_INTERVAL_MIN_FRAMES +
+					(nextCarrierGullRandom() &
+					 CARRIER_GULL_SPAWN_INTERVAL_VARIATION));
+			}
+		}
+		if (carrierGullTargetCount) {
+			UBYTE activeCount = 0;
+			for (UBYTE index = 0; index < CARRIER_GULL_MAX; index++)
+				if (carrierGulls[index].active &&
+					!carrierGulls[index].scattering)
+					activeCount++;
+			if (activeCount >= carrierGullTargetCount &&
+				++carrierGullFlockFrames >= carrierGullFlockLifetime) {
+				/* Let the flock leave instead of orbiting forever. Reuse the
+				 * proven takeoff-scatter exit so footprints are retired safely. */
+				for (UBYTE index = 0; index < CARRIER_GULL_MAX; index++) {
+					CarrierGull* gull = &carrierGulls[index];
+					if (!gull->active || gull->scattering)
+						continue;
+					gull->scattering = 1;
+					gull->scatterFrames = 0;
+					gull->velocityX256 = gull->velocityX256 < 0 ? -192 : 192;
+					gull->velocityY256 = -96;
+				}
+				carrierGullTargetCount = 0;
+				carrierGullIdleFrames = 0;
+				carrierGullSpawnFrames = 0;
+			}
+		}
+	} else {
+		carrierGullIdleFrames = 0;
+		carrierGullSpawnFrames = 0;
+		carrierGullTargetCount = 0;
+		carrierGullFlockFrames = 0;
+		carrierGullFlockLifetime = 0;
+		for (UBYTE index = 0; index < CARRIER_GULL_MAX; index++) {
+			CarrierGull* gull = &carrierGulls[index];
+			if (!gull->active || gull->scattering)
+				continue;
+			gull->scattering = 1;
+			gull->scatterFrames = 0;
+			gull->velocityX256 =
+				((gull->worldX256 >> 8) <
+				 (LONG)game->scrollX + game->playerX) ? -384 : 384;
+			gull->velocityY256 = -256;
+		}
+	}
+
+	LONG anchor = (LONG)game->scrollX + game->playerX;
+	for (UBYTE index = 0; index < CARRIER_GULL_MAX; index++) {
+		CarrierGull* gull = &carrierGulls[index];
+		if (!gull->active)
+			continue;
+		gull->worldX256 += gull->velocityX256;
+		gull->y256 += gull->velocityY256;
+		if (!gull->scattering) {
+			LONG worldX = gull->worldX256 >> 8;
+			LONG distance = worldX - anchor;
+			if (distance < 0)
+				distance = -distance;
+			if (distance < 112 && gull->scale < 1)
+				gull->scale = 1;
+			if (distance < 56 && gull->maxScale > 1)
+				gull->scale = 2;
+			if (worldX < anchor - 72)
+				gull->velocityX256 = CARRIER_GULL_CRUISE_X256;
+			else if (worldX > anchor + 88)
+				gull->velocityX256 = -CARRIER_GULL_CRUISE_X256;
+			WORD y = (WORD)(gull->y256 >> 8);
+			if (y < 30)
+				gull->velocityY256 = CARRIER_GULL_CRUISE_Y256;
+			else if (y > 86)
+				gull->velocityY256 = -CARRIER_GULL_CRUISE_Y256;
+		} else {
+			gull->scatterFrames++;
+			/* Take-off scares the birds away into the distance: shrink in
+			 * stepped banks while accelerating upward and outward. */
+			if (gull->scatterFrames == 14 && gull->scale > 1)
+				gull->scale = 1;
+			else if (gull->scatterFrames == 30)
+				gull->scale = 0;
+			gull->velocityY256 -= 10;
+			LONG screenX = (gull->worldX256 >> 8) - game->scrollX;
+			if (screenX < -CARRIER_GULL_WIDTH ||
+				screenX > SCREEN_WIDTH || (gull->y256 >> 8) < -8)
+				gull->active = 0;
+		}
+	}
+}
+
+static void drawCarrierGullPlacement(UBYTE* bitmap,
+	CarrierGullFootprint* footprint, UBYTE placement, UWORD bufferPixelX,
+	WORD y, UBYTE phase, UBYTE variant, UBYTE scale) {
+	(void)variant;
+	/* Three hand-authored OCS banks: distant 8x4, middle 12x6 and near
+	 * 16x9. Long sparse wings and a 3-5px centre replace the former flat
+	 * 10px body. The banks are centred in one 16-bit word. */
+	static const UWORD shape[3][3][CARRIER_GULL_HEIGHT] = {
+		{
+			{ 0, 0, 0, 0x0810, 0x0420, 0x03c0, 0, 0, 0 },
+			{ 0, 0, 0, 0x0810, 0x0420, 0x0180, 0, 0, 0 },
+			{ 0, 0, 0, 0x03c0, 0x0420, 0x0810, 0, 0, 0 }
+		}, {
+			{ 0, 0, 0x2004, 0x1008, 0x0810, 0x07e0, 0, 0, 0 },
+			{ 0, 0, 0x2004, 0x1008, 0x0810, 0x03c0, 0, 0, 0 },
+			{ 0, 0, 0x07e0, 0x0810, 0x1008, 0x2004, 0, 0, 0 }
+		}, {
+			{ 0, 0x8001, 0x4002, 0x2004, 0x1008, 0x07e0, 0, 0, 0 },
+			{ 0, 0x8001, 0x4002, 0x2004, 0x1008, 0x07e0, 0, 0, 0 },
+			{ 0, 0x07e0, 0x1008, 0x2004, 0x4002, 0x8001, 0, 0 }
+		}
+	};
+	UBYTE bitOffset = (UBYTE)(bufferPixelX & 7);
+	UWORD byteX = bufferPixelX >> 3;
+	UBYTE byteCount = (UBYTE)(bitOffset ? 3 : 2);
+	if (byteX + byteCount > GAME_WORLD_ROW_BYTES)
+		byteCount = (UBYTE)(GAME_WORLD_ROW_BYTES - byteX);
+	if (!byteCount)
+		return;
+	footprint->byteX[placement] = byteX;
+	footprint->byteCount[placement] = byteCount;
+	for (UBYTE row = 0; row < CARRIER_GULL_HEIGHT; row++) {
+		ULONG shifted = (ULONG)shape[scale % 3][phase % 3][row] <<
+			(8 - bitOffset);
+		UBYTE masks[3] = {
+			(UBYTE)(shifted >> 16), (UBYTE)(shifted >> 8), (UBYTE)shifted
+		};
+		/* Distance is expressed by silhouette size, not a different palette
+		 * colour. The old per-bird grey variant made gull #2 look faded and its
+		 * sparse flap phase read as a blink against the bright sky. */
+		UBYTE color = GAME_COLOR_WHITE;
+		UBYTE* dest = bitmap + (y + row) * SCREEN_PLANES *
+			GAME_WORLD_ROW_BYTES + byteX;
+		for (UBYTE plane = 0; plane < GAME_WORLD_DISPLAY_PLANES; plane++) {
+			for (UBYTE byte = 0; byte < byteCount; byte++) {
+				UBYTE* target = dest + plane * GAME_WORLD_ROW_BYTES + byte;
+				UBYTE old = *target;
+				footprint->background[placement][row][plane][byte] = old;
+				*target = (UBYTE)((old & ~masks[byte]) |
+					((color & (1 << plane)) ? masks[byte] : 0));
+			}
+		}
+	}
+}
+
+static void drawCarrierGulls(UBYTE* bitmap, UBYTE bufferIndex,
+	const GameState* game) {
+	if (bufferIndex >= GAME_WORLD_BUFFER_COUNT)
+		return;
+	const LONG pagePixels =
+		(LONG)GAME_WORLD_SCROLL_PAGE_BYTES * GAME_TILE_WIDTH;
+	for (UBYTE index = 0; index < CARRIER_GULL_MAX; index++) {
+		CarrierGull* gull = &carrierGulls[index];
+		if (!gull->active)
+			continue;
+		LONG worldX = gull->worldX256 >> 8;
+		WORD y = (WORD)(gull->y256 >> 8);
+		LONG screenX = worldX - game->scrollX;
+		if (screenX <= -CARRIER_GULL_WIDTH || screenX >= SCREEN_WIDTH ||
+			y < 0 || y + CARRIER_GULL_HEIGHT > GAME_WORLD_HEIGHT)
+			continue;
+		LONG localPixelX = worldX % pagePixels;
+		if (localPixelX < 0)
+			localPixelX += pagePixels;
+		UWORD primaryPixelX =
+			(UWORD)(GAME_WORLD_BUFFER_MARGIN_PIXELS + localPixelX);
+		CarrierGullFootprint* footprint =
+			&carrierGullFootprints[bufferIndex][index];
+		footprint->valid = 1;
+		footprint->placementCount = 1;
+		footprint->y = y;
+		UBYTE phase = gull->scattering ? 0 :
+			(UBYTE)(((frameCounter / CARRIER_GULL_FLAP_PHASE_FRAMES) +
+				gull->flapOffset) % 3);
+		footprint->worldX = worldX;
+		footprint->phase = phase;
+		footprint->variant = gull->variant;
+		footprint->scale = gull->scale;
+		drawCarrierGullPlacement(bitmap, footprint, 0, primaryPixelX, y,
+			phase, gull->variant, gull->scale);
+		if (primaryPixelX <
+			(GAME_WORLD_BUFFER_MARGIN_TILES + GAME_FETCH_BYTES) *
+			GAME_TILE_WIDTH) {
+			footprint->placementCount = 2;
+			drawCarrierGullPlacement(bitmap, footprint, 1,
+				(UWORD)(primaryPixelX + pagePixels), y, phase,
+				gull->variant, gull->scale);
+		}
+	}
+}
+
+static UBYTE seaAmbienceTargetForGame(const GameState* game,
+	UBYTE carrierIdleEligible, UBYTE sceneActive) {
+	if (!sceneActive || game->gameOver || game->crashTimer)
+		return 0;
+	if (carrierIdleEligible)
+		return SEA_AMBIENCE_IDLE_VOLUME;
+	if (game->takeoffState != TAKEOFF_STATE_AIRBORNE ||
+		game->missionComplete)
+		return 0;
+	LONG worldColumn = ((LONG)game->scrollX + game->playerX +
+		(PLAYER_SPRITE_WIDTH / 2)) >> 3;
+	ObjectCell cell;
+	if (!objectCellForWorldColumnTile(worldColumn, GAME_SEA_TOP_TILE_Y,
+		&cell) || cell.id != HAR_OBJ_SEA)
+		return 0;
+	WORD clearance = (WORD)(SEA_SURFACE_Y -
+		(game->playerY + PLAYER_SPRITE_HEIGHT));
+	if (clearance <= 40)
+		return SEA_AMBIENCE_FLIGHT_VOLUME;
+	if (clearance <= 64)
+		return (UBYTE)(SEA_AMBIENCE_FLIGHT_VOLUME - 2);
+	return 0;
 }
 
 /* Sprint 15.2/15.3, generalised in 15.6: generic masked-Bob-over-ring-buffer
@@ -10204,13 +11221,52 @@ static void plotAircraftFailureSmokePixel(UBYTE* bitmap, LONG worldX,
 }
 
 static UBYTE aircraftFailureSmokeSize(UBYTE age) {
+	if (age < 10)
+		return 2;
+	return 3;
+}
+
+static UBYTE aircraftFailureSmokeVisualPhase(UBYTE age) {
 	if (age < 4)
-		return 2;
+		return age;
 	if (age < 12)
-		return 2;
+		return 4;
 	if (age < 21)
-		return 3;
-	return 4;
+		return (UBYTE)(5 + ((age - 12) >> 2));
+	return 8;
+}
+
+static ULONG aircraftFailureSmokeSignature(void) {
+	ULONG signature = 2166136261UL;
+	UBYTE any = 0;
+	for (UBYTE index = 0; index < AIRCRAFT_FAILURE_SMOKE_MAX; index++) {
+		const AircraftFailureSmokeParticle* particle =
+			&aircraftFailureSmoke[index];
+		signature ^= particle->active;
+		signature *= 16777619UL;
+		if (!particle->active)
+			continue;
+		any = 1;
+		signature ^= (ULONG)particle->worldX;
+		signature *= 16777619UL;
+		signature ^= (UWORD)particle->y;
+		signature *= 16777619UL;
+		signature ^= aircraftFailureSmokeVisualPhase(particle->age);
+		signature *= 16777619UL;
+	}
+	return any ? signature : 0;
+}
+
+static UBYTE aircraftFailureSmokeNeedsRedraw(const GameState* game) {
+	AircraftFailureSmokeFootprint* footprint =
+		&aircraftFailureSmokeFootprints[0];
+	ULONG signature = aircraftFailureSmokeSignature();
+	if (!footprint->valid)
+		return signature != 0;
+	if (footprint->renderSignature != signature)
+		return 1;
+	return ringStreamMayTouchColumnRange(game, footprint->firstWorldColumn,
+		footprint->firstWorldColumn + footprint->columnCount - 1);
 }
 
 static void drawAircraftFailureSmoke(UBYTE* bitmap, UBYTE bufferIndex) {
@@ -10253,7 +11309,8 @@ static void drawAircraftFailureSmoke(UBYTE* bitmap, UBYTE bufferIndex) {
 				/* Two alternating deterministic dither masks keep expanding smoke
 				 * irregular without consuming the CPC gameplay RNG sequence. */
 				if (particle->age >= 12 &&
-					(((x + y + particle->age + index) & 3) == 0))
+					(((x + y + aircraftFailureSmokeVisualPhase(
+						particle->age) + index) & 3) == 0))
 					continue;
 				plotAircraftFailureSmokePixel(bitmap,
 					particle->worldX + x, (WORD)(particle->y + y), color);
@@ -10272,6 +11329,7 @@ static void drawAircraftFailureSmoke(UBYTE* bitmap, UBYTE bufferIndex) {
 	footprint->columnCount = (UBYTE)(lastColumn - firstColumn + 1);
 	footprint->firstTileRow = firstRow;
 	footprint->rowCount = (UBYTE)(lastRow - firstRow + 1);
+	footprint->renderSignature = aircraftFailureSmokeSignature();
 }
 
 /* Sprint 15.6: bomb + impact rendering, as a single Bob "slot" - bombShot
@@ -10284,23 +11342,40 @@ static void drawAircraftFailureSmoke(UBYTE* bitmap, UBYTE bufferIndex) {
 static UBYTE bombImpactBobFootprintValid = 0;
 static LONG bombImpactBobFootprintWorldColumn = 0;
 static WORD bombImpactBobFootprintRow = 0;
+static UBYTE bombImpactBobFootprintKind = 0xff;
 
 static void eraseBombImpactBobFootprint(UBYTE* bitmap) {
 	if (!bombImpactBobFootprintValid)
 		return;
 	bobCompositorErase(bitmap, bombImpactBobFootprintWorldColumn, bombImpactBobFootprintRow, 1);
 	bombImpactBobFootprintValid = 0;
+	bombImpactBobFootprintKind = 0xff;
 }
 
 static void drawBombImpactBobAt(UBYTE* bitmap, LONG worldColumn, WORD row, UBYTE kind) {
 	buildBombImpactBobTileIfNeeded(kind);
 	if (bombImpactBobFootprintValid &&
-		(bombImpactBobFootprintWorldColumn != worldColumn || bombImpactBobFootprintRow != row))
+		(bombImpactBobFootprintWorldColumn != worldColumn ||
+		 bombImpactBobFootprintRow != row ||
+		 bombImpactBobFootprintKind != kind))
 		eraseBombImpactBobFootprint(bitmap);
+	else if (bombImpactBobFootprintValid &&
+		!(ringStreamTouchedFirstColumn >= 0 &&
+		  worldColumn >= ringStreamTouchedFirstColumn &&
+		  worldColumn <= ringStreamTouchedLastColumn)) {
+		bobImpactUnchangedSkips++;
+		return;
+	} else if (bombImpactBobFootprintValid) {
+		/* Streaming may have replaced only part of the masked tile. Rebuild it
+		 * from world truth before applying the same impact frame again. */
+		eraseBombImpactBobFootprint(bitmap);
+	}
 	bobCompositorDrawMasked(bitmap, worldColumn, row, bombImpactBobTile);
 	bombImpactBobFootprintWorldColumn = worldColumn;
 	bombImpactBobFootprintRow = row;
+	bombImpactBobFootprintKind = kind;
 	bombImpactBobFootprintValid = 1;
+	bobImpactRedraws++;
 }
 
 static void updateBombImpactBob(UBYTE* bitmap, const GameState* game) {
@@ -11500,7 +12575,16 @@ static UBYTE targetLockIsVisibleAhead(const GameState* game) {
 }
 
 static UBYTE launchRocket(GameState* game, UBYTE requestMaverick) {
-	if (game->rocketShot.active || game->rockets == 0 || playerOnOwnFrigateDeck(game))
+	/* CPC checkfireplayermissile/checklaunchbomb do not suppress weapons over
+	 * the start carrier. They stop them only from gamelevelprogress 11, when
+	 * the intact final carrier has started its landing approach. The former
+	 * playerOnOwnFrigateDeck() test covered the complete start-carrier deck and
+	 * made the weapon input appear dead until that carrier had scrolled away. */
+	UBYTE finalLandingWeaponsLocked =
+		game->playerFrigateStatus == PLAYER_FRIGATE_STATUS_CLEAR &&
+		game->landingState != LANDING_STATE_NONE;
+	if (game->rocketShot.active || game->rockets == 0 ||
+		finalLandingWeaponsLocked)
 		return 0;
 
 	if (!debugInfiniteRockets)
@@ -11596,7 +12680,14 @@ static void moveGuidedMaverick(WeaponState* rocket, UBYTE lockStillActive) {
 }
 
 static UBYTE launchBomb(GameState* game) {
-	if (game->bombLaunchCooldown > 0 || game->bombShot.active || game->bombs == 0 || playerOnOwnFrigateDeck(game))
+	/* Match CPC checklaunchbomb: bombing is legal from the first airborne
+	 * frame, including while the start carrier is still beneath the Harrier.
+	 * Only the intact final-carrier landing approach locks the weapon. */
+	UBYTE finalLandingWeaponsLocked =
+		game->playerFrigateStatus == PLAYER_FRIGATE_STATUS_CLEAR &&
+		game->landingState != LANDING_STATE_NONE;
+	if (game->bombLaunchCooldown > 0 || game->bombShot.active ||
+		game->bombs == 0 || finalLandingWeaponsLocked)
 		return 0;
 
 	if (!debugInfiniteBombs)
@@ -13886,6 +14977,7 @@ static void triggerGameOver(GameState* game) {
 	game->crashTimer = 0;
 	game->rocketShot.active = 0;
 	game->bombShot.active = 0;
+	game->bombLaunchCooldown = 0;
 	game->enemyPlane.active = 0;
 	game->enemyMissile.active = 0;
 	game->enemyMissileFromShip = 0;
@@ -14696,6 +15788,7 @@ static void startGameSession(GameState* game,
 	resetBombShotPixelBobFootprints();
 	resetRocketShotPixelBobFootprints();
 	resetAircraftFailureSmoke();
+	resetCarrierAmbienceVisuals();
 	bombImpactBobFootprintValid = 0;
 	powerupBobFootprintValid = 0;
 	initRingWorldBuffer(worldBuffers[0], 0);
@@ -14844,6 +15937,8 @@ int main(void) {
 	UWORD* wingmanSprite = (UWORD*)AllocMem(PLAYER_SPRITE_WORDS * sizeof(UWORD), MEMF_CHIP | MEMF_CLEAR);
 	UWORD* unusedSprite7 = (UWORD*)AllocMem(PLAYER_SPRITE_WORDS * sizeof(UWORD), MEMF_CHIP | MEMF_CLEAR);
 	engineBuffer = (UBYTE*)AllocMem(ENGINE_BUFFER_BYTES, MEMF_CHIP | MEMF_CLEAR);
+	seaAmbienceBuffer = (UBYTE*)AllocMem(SEA_AMBIENCE_BUFFER_BYTES,
+		MEMF_CHIP | MEMF_CLEAR);
 	carrierIdleDecodeBuffer = (UBYTE*)AllocMem(
 		CARRIER_IDLE_DECODE_BUFFER_BYTES, MEMF_CHIP | MEMF_CLEAR);
 	telemetrySamples = (TelemetrySample*)AllocMem(sizeof(TelemetrySample) * TELEMETRY_SAMPLE_COUNT, MEMF_FAST | MEMF_CLEAR);
@@ -14851,7 +15946,7 @@ int main(void) {
 		telemetrySamples = (TelemetrySample*)AllocMem(sizeof(TelemetrySample) * TELEMETRY_SAMPLE_COUNT, MEMF_PUBLIC | MEMF_CLEAR);
 	telemetryAvailable = telemetrySamples ? 1 : 0;
 	telemetryEnabled = 0;
-	if (!menuTickerBitmap || !worldBuffers[0] || !hudBuffer || !playerSprite || !playerAttachSprite || !crashPart1Sprite || !enemyAttachSprite || !enemySprite || !enemyMissileSprite || !wingmanSprite || !unusedSprite7 || !engineBuffer || !carrierIdleDecodeBuffer) {
+	if (!menuTickerBitmap || !worldBuffers[0] || !hudBuffer || !playerSprite || !playerAttachSprite || !crashPart1Sprite || !enemyAttachSprite || !enemySprite || !enemyMissileSprite || !wingmanSprite || !unusedSprite7 || !engineBuffer || !seaAmbienceBuffer || !carrierIdleDecodeBuffer) {
 		FreeSystem();
 		if (telemetrySamples)
 			FreeMem(telemetrySamples, sizeof(TelemetrySample) * TELEMETRY_SAMPLE_COUNT);
@@ -14886,6 +15981,9 @@ int main(void) {
 		if (engineBuffer)
 			FreeMem(engineBuffer, ENGINE_BUFFER_BYTES);
 		engineBuffer = 0;
+		if (seaAmbienceBuffer)
+			FreeMem(seaAmbienceBuffer, SEA_AMBIENCE_BUFFER_BYTES);
+		seaAmbienceBuffer = 0;
 		if (carrierIdleDecodeBuffer)
 			FreeMem(carrierIdleDecodeBuffer,
 				CARRIER_IDLE_DECODE_BUFFER_BYTES);
@@ -14908,6 +16006,7 @@ int main(void) {
 	hideHardwareSprite(enemySprite);
 	hideHardwareSprite(enemyMissileSprite);
 
+	buildSeaAmbienceBuffer();
 	initSfx();
 
 	if (HAR_DEBUG_REGISTER_RESOURCES) {
@@ -14956,6 +16055,7 @@ int main(void) {
 	 * session: arm cancellation only after Escape has been observed up. */
 	UBYTE gameCancelArmed = 0;
 	UBYTE debugHubPage = DEBUG_HUB_CLOSED;
+	UBYTE debugHubBackArmed = 0;
 	UBYTE controlsActive = 0;
 	UBYTE controlsPlayer = 0;
 	UBYTE controlsSelected = CONTROL_MENU_PLAYER_ROW;
@@ -14993,12 +16093,19 @@ int main(void) {
 		menuTickerFinished = 0;
 		serviceModMusicToCurrentVbl();
 		updateSfx();
-		updateCarrierIdleSfx(
+		UBYTE carrierAmbienceEligible =
 			inGameScene && !telemetryStatsPaused && !gamePaused &&
 			!modPlaying && !game.gameOver &&
-			(game.takeoffState == TAKEOFF_STATE_ROLLING_IN ||
-			 game.takeoffState == TAKEOFF_STATE_READY ||
-			 (game.missionComplete && game.postLandingSlide)));
+			(game.takeoffState == TAKEOFF_STATE_READY ||
+			 game.missionComplete);
+		updateCarrierIdleSfx(carrierAmbienceEligible);
+		updateSeaAmbience(seaAmbienceTargetForGame(&game,
+			carrierAmbienceEligible,
+			(UBYTE)(inGameScene && !telemetryStatsPaused && !gamePaused)));
+		if (inGameScene && !telemetryStatsPaused && !gamePaused)
+			updateCarrierGulls(&game, carrierAmbienceEligible, 1);
+		else if (!inGameScene)
+			resetCarrierAmbienceVisuals();
 		if (!inGameScene && !telemetryStatsPaused && !controlsActive &&
 			debugHubPage == DEBUG_HUB_CLOSED)
 			menuTickerFinished = updateMenuTicker();
@@ -15150,7 +16257,7 @@ int main(void) {
 			}
 			if (menuTickerFinished) {
 				fieldGuideActive = 1;
-				drawFieldGuideScreen(screenBuffer);
+				drawFieldGuideScreen(screenBuffer, gameModeSetting);
 				buildMenuCopper(copper, screenBuffer, menuTickerBitmap, menuPalette,
 					nullSprite);
 				custom->copjmp1 = 0x7fff;
@@ -15389,8 +16496,14 @@ int main(void) {
 					}
 				}
 			} else if (debugHubPage != DEBUG_HUB_CLOSED) {
-				UBYTE debugBack = input.cancel ||
-					(input.shift && Pressed(input.d, previousInput.d));
+				/* Enter and exit share Shift+D. Require a complete release after
+				 * opening so the entry make-code (or a stale Escape level) cannot
+				 * close the modal hub on its first displayed frame. */
+				if (!debugHubBackArmed && !input.cancel &&
+					!(input.shift && input.d))
+					debugHubBackArmed = 1;
+				UBYTE debugBack = debugHubBackArmed && (input.cancel ||
+					(input.shift && Pressed(input.d, previousInput.d)));
 				if (debugBack) {
 					if (debugHubPage == DEBUG_HUB_OPTIONS) {
 						debugHubPage = DEBUG_HUB_CLOSED;
@@ -15572,6 +16685,7 @@ int main(void) {
 			} else if (input.shift &&
 				Pressed(input.d, previousInput.d)) {
 				debugHubPage = DEBUG_HUB_OPTIONS;
+				debugHubBackArmed = 0;
 				drawDebugHub(screenBuffer, debugHubSelected);
 				buildDisplayCopper(copper, screenBuffer, menuPalette,
 					nullSprite);
@@ -16101,7 +17215,7 @@ int main(void) {
 					}
 				}
 				if (game.landingState != LANDING_STATE_HOVER &&
-					Pressed(input.bomb, previousInput.bomb)) {
+					BombPressed(&input, &previousInput)) {
 					if (launchBomb(&game)) {
 						hudDirty = 1;
 						pendingCrashSpriteUpdate = 1;
@@ -16253,13 +17367,41 @@ int main(void) {
 			 * the ring buffer may have recycled those columns since the previous
 			 * frame.  Erase before streaming, then composite the new plume after
 			 * persistent impacts/powerups and before the foreground projectiles. */
-			eraseAircraftFailureSmokeFootprint(worldBuffers[activeWorldBuffer],
-				activeWorldBuffer);
+			UBYTE redrawFailureSmoke = aircraftFailureSmokeNeedsRedraw(&game);
+			if (redrawFailureSmoke)
+				eraseAircraftFailureSmokeFootprint(
+					worldBuffers[activeWorldBuffer], activeWorldBuffer);
+			UBYTE redrawCarrierGulls = carrierGullsNeedRedraw(&game);
+			UBYTE seaWaveUpdate = seaWavesUpdateKind(&game);
+			if (redrawCarrierGulls) {
+				eraseCarrierGulls(worldBuffers[activeWorldBuffer],
+					activeWorldBuffer);
+				bobGullRedraws++;
+			} else {
+				bobGullUnchangedSkips++;
+			}
+			if (seaWaveUpdate == SEA_WAVE_UPDATE_FULL) {
+				eraseSeaWaves(worldBuffers[activeWorldBuffer],
+					activeWorldBuffer);
+				bobWaveRedraws++;
+			} else {
+				bobWaveUnchangedSkips++;
+			}
 			serviceRingWorldStream(worldBuffers[0], &game);
+			if (seaWaveUpdate == SEA_WAVE_UPDATE_FULL)
+				drawSeaWaves(worldBuffers[activeWorldBuffer], activeWorldBuffer,
+					&game);
+			else if (seaWaveUpdate == SEA_WAVE_UPDATE_PHASE)
+				updateSeaWavePhasesInPlace(worldBuffers[activeWorldBuffer],
+					activeWorldBuffer);
+			if (redrawCarrierGulls)
+				drawCarrierGulls(worldBuffers[activeWorldBuffer],
+					activeWorldBuffer, &game);
 			updateBombImpactBob(worldBuffers[0], &game);
 			updatePowerupBob(worldBuffers[0], &game);
-			drawAircraftFailureSmoke(worldBuffers[activeWorldBuffer],
-				activeWorldBuffer);
+			if (redrawFailureSmoke)
+				drawAircraftFailureSmoke(worldBuffers[activeWorldBuffer],
+					activeWorldBuffer);
 			drawBombPixelBob(worldBuffers[activeWorldBuffer],
 				activeWorldBuffer, &game.bombShot, bombShotFootprints,
 				game.scrollX);
@@ -16317,6 +17459,8 @@ int main(void) {
 	FreeMem(worldBuffers[0], GAME_WORLD_BITMAP_BYTES);
 	FreeMem(engineBuffer, ENGINE_BUFFER_BYTES);
 	engineBuffer = 0;
+	FreeMem(seaAmbienceBuffer, SEA_AMBIENCE_BUFFER_BYTES);
+	seaAmbienceBuffer = 0;
 	FreeMem(carrierIdleDecodeBuffer, CARRIER_IDLE_DECODE_BUFFER_BYTES);
 	carrierIdleDecodeBuffer = 0;
 	if (telemetrySamples)

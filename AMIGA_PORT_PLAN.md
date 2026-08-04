@@ -5593,3 +5593,115 @@ After each sprint: build cleanly, report changed CPC rules/functions, list the
 exact debug/telemetry observation to test, and wait for player verification
 before beginning the next sprint. Do not combine terrain RNG, city generation
 and Wingman AI into one large change; their telemetry must isolate regressions.
+
+## Sprint 15.69 - Sea and carrier ambience
+
+Status: implemented; interactive visual/audio validation remains.
+
+- The Amiga presentation layer adds deterministic, world-anchored animated
+  sea ripples throughout authoritative sea cells. It does not modify CPC
+  terrain, objects, collisions or random state.
+- One to three small CPU-masked gull BOBs appear only after a carrier-idle delay.
+  Starting takeoff scatters the existing flock outward; menu/session changes
+  reset it without leaving ring-buffer footprints.
+- A 4096-byte Paula sea/wind bed is generated once in Chip RAM from a private
+  fixed-seed LFSR. It is strongest on deck, weaker during low sea flight,
+  yields to every higher-priority effect, and is silent whenever MOD music owns
+  the four channels.
+- No sprite channel, Copper instruction, extra bitplane, gameplay rule or PCM
+  asset was added. Architecture, draw order, channel policy and resource
+  budget are documented in `amiga/assets/SEA_AND_CARRIER_AMBIENCE.md`.
+- Fixed-seed cycle-exact A500 validation completed the route. Both gameplay
+  measurement windows held 50 FPS, zero hitches and maximum VBL delta 1; the
+  startup/emulator interval is excluded from gameplay assessment.
+- 15.69.1 restores overlapping gull BOB footprints in reverse draw order,
+  removes detached head-like pixels from the flap silhouettes and gives the
+  gulls a clearer gliding movement.
+- 15.69.2 keeps keyboard, mouse and joystick bomb edges independent. A noisy
+  or continuously asserted second-button POT line can no longer mask Space
+  until an unrelated later point on the route.
+- 15.69.3 limits carrier gulls to a deterministic flock of one to three,
+  spaces their arrivals irregularly, brings them in through an off-screen edge
+  and reduces cruise/flap cadence. This removes mid-screen popping and lowers
+  ambience work without changing gameplay or sprite allocation.
+- 15.69.4 reduces a failing aircraft's smoke pool from ten to six particles,
+  emits every four rather than three frames, expires each puff after 22 rather
+  than 30 frames and caps expansion at 3 x 3 pixels. Failure/eject physics and
+  impact behaviour are unchanged.
+- 15.69.5 introduces retained/dirty rendering for the low-risk CPU BOB groups.
+  Carrier gulls are erased and redrawn as one overlap-safe group only when an
+  integer position, visibility, flap phase or colour variant changes. Sea
+  ripples update only when their visible set/phase changes or the ring streamer
+  is about to recycle a column beneath them. Bomb impact/splash tiles retain an
+  explicit visual-kind signature and skip identical frames while still forcing
+  a world-truth rebuild when streaming intersects the footprint. Camera fine
+  scrolling alone no longer causes these world-anchored overlays to redraw.
+  Volatile debugger counters (`bob*Redraws`, `bob*UnchangedSkips`) measure the
+  saved work without growing the extended-memory telemetry sample format.
+- 15.69.6 extends the retained presentation layer without changing CPC
+  gameplay. Sea-wave phase changes now replace their masks in place from the
+  saved background, eliminating the single-buffer erase flash. Aircraft
+  failure smoke uses a group render signature and skips frames where neither
+  its quantised position nor visual phase changed. Carrier gulls use three
+  hand-authored distance banks, approach at varied apparent depth and shrink
+  while scattering on takeoff; no runtime scaling or sprite channels are
+  added. Classic and Enhanced own separate editable menu/guide ticker strings,
+  and the guide hides/labels the Enhanced-only extra-aircraft drop correctly.
+  Shift+D now has a release gate so its entry event cannot immediately close
+  the debug hub. The generated Paula sea bed uses broad surf noise, a seamless
+  crossfade and a slow volume swell instead of a short motor-like pulse.
+  The fixed-seed cycle-exact A500 route still reached the final carrier. Its
+  two gameplay windows held 50 FPS minimum/average, zero hitches and maximum
+  VBL delta 1; the first sample contains emulator/bootstrap startup and is not
+  a gameplay result.
+- 15.69.7 initializes the stack-resident bomb cooldown on every new session
+  and player respawn. Its previous indeterminate byte could suppress Space
+  for an arbitrary number of frames, often until around the first enemy
+  frigate. It also fixes the opening weapon lock to match CPC
+  `checkfireplayermissile`/`checklaunchbomb`. Weapons are available from the
+  first airborne frame even while the start carrier remains beneath the
+  Harrier; only the intact final carrier's active landing approach suppresses
+  launches. Bomb physics, inventory, collision and friendly-carrier damage
+  rules are unchanged.
+- 15.69.8 makes carrier ambience intermittent and bounded. A deck can remain
+  empty or host a temporary flock of one to three gulls which later leaves;
+  all distance banks use stable white silhouettes and fuller intermediate
+  wing phases. Carrier-idle ADPCM is decoded incrementally during the long
+  pre-play delay rather than as one 44 KB start-frame job. Its decoded PCM has
+  a longer incrementally-applied zero-edge ramp, and Paula volume is cleared
+  before DMA is disabled to suppress start/stop clicks.
+
+## Planned Classic-parity sprints after 15.69
+
+These remain isolated so a CPC-rule regression can be tied to one telemetry
+change. `Classic` means behavioural CPC parity; it is not cycle-exact while the
+route and shared R-register model remain approximations.
+
+1. **15.70.0 - powerup refill correctness.** Rocket and bomb drops refill to
+   CPC's literal 16 in both profiles. Start/landing ammunition remains
+   skill-dependent through `ammoForSkill()`.
+2. **15.70.1 - one Classic air-admission decision.** Replace the independent
+   Classic enemy-plane LFSR and column powerup decision with one ordered,
+   mutually exclusive CPC-shaped decision. Enhanced radar admission remains
+   untouched. Fixed-seed telemetry must prove that an active enemy prevents a
+   drop and that one tick produces at most one outcome.
+3. **15.70.2 - CPC Player 2 in Classic.** Restore Off/CPU/Player 2 in the
+   Classic menu, while keeping shared inventory, rebind/eject extensions behind
+   the Enhanced profile.
+4. **15.70.3 - Wingman world collision.** Add one existing-object-map probe
+   after Wingman movement: sky/cloud/FLAK/player/powerup pass, enemy aircraft
+   destroys both, and other solid cells destroy the Wingman. Measure the added
+   lookup on a stock cycle-exact A500 route run.
+5. **15.70.4 - Classic logical cadence.** Give Classic CPC bomb and powerup
+   world-step timing while retaining Amiga pixel interpolation for display.
+   Enhanced keeps its faster bomb and smooth pickup behaviour.
+6. **15.71+ - route/R/city calibration.** Treat variable CPC land length, one
+   continuous R stream, town selection and full nine-direction Wingman logic
+   as separate telemetry-led work, not as part of the admission refactor.
+# Sprint 15.69.9 - Player Harrier start-deck alignment
+
+- Moved only the player's staged takeoff position one pixel down, from
+  Y=103 to Y=104, so the landing-gear artwork rests on the carrier deck.
+- Kept Wingman's already-correct deck position at Y=103.
+- Kept completed landing contact at Y=105; the earlier landing correction
+  is therefore unchanged.
