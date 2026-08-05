@@ -74,6 +74,7 @@ and accidentally shipped with autoplay enabled:
 | `HAR_HEADLESS_MAX_FRAMES` | Safety timeout if the route cannot reach its terminal condition. |
 | `HAR_HEADLESS_CRUISE_SPEED` | Selects a reproducible scroll-speed stress case. |
 | `HAR_HEADLESS_WINGMAN_CONTROL` | Selects Off, CPU or Player 2 for A/B workload measurements. |
+| `HAR_HEADLESS_GAME_MODE` | Selects Classic (`0`) or Enhanced (`1`, default) so profile-specific admission rules can be measured independently. |
 | `HAR_HEADLESS_WEAPON_STRESS` | With Player 2 selected, keeps both aircraft supplied/alive and alternates pressed/released rocket and bomb input for both players throughout the route. |
 | `HAR_VALIDATION_SESSION_SEED` | Pins the modeled CPC session RNG for true A/B runs. It defaults to `0` in F5/release builds, which keeps menu-time-derived random worlds. |
 | `PERF_LOG_INTERVAL_FRAMES` | Overrides the normal 500-frame CSV window. Use 100 frames for position-aligned city profiling. |
@@ -210,9 +211,11 @@ The Amiga writes `perf_log.csv`, `land_log.csv`, `parity_log.csv` and the
 diagnostic `enemy_plane_log.csv` once at
 the end via the `DH1:` mount. The runner moves named copies to
 `.tmp/amiga-parity-results` using skill, speed and Wingman mode in each name.
-`parity_log.csv` is the single-row completion oracle: terrain min/max and
-transition counts, target/enemy/flak/Wingman events, pier events, final scroll,
-landing state and whether the final carrier was reached.
+`parity_log.csv` is the single-row completion oracle. Its leading fields now
+separate selected `skill`, effective CPC `difficulty`, `mission` and generated
+`landLength`; the remaining fields cover terrain min/max and transition counts,
+target/enemy/flak/Wingman events, pier events, final scroll, landing state and
+whether the final carrier was reached.
 
 `enemy_plane_log.csv` records spawn, logical step, fire, blocked step and
 despawn events, including visual/logical/target coordinates, tile distance,
@@ -227,6 +230,11 @@ state-7 building. State 7 completes its last block after the 200-column timer,
 so `townLength` may be 200..204 and the complete post-town route moves by
 `townOverflowCols`. `townClippedCols` is retained for result-file compatibility
 and must always be zero.
+
+Sprint 15.71.0 additionally records `townRStart`, `townREnd` and
+`townRChecksum`. For a fixed session seed all three must remain stable. Across
+varied seeds the checksum should vary, while `townBuildingCols + townFlatCols
+== townLength` and `townOverflowCols == max(townLength - 200, 0)` remain true.
 
 `perf_log.csv` has one header row plus one row per completed 10-second interval
 (`PERF_LOG_INTERVAL_FRAMES = 500` frames @ 50 Hz PAL):
@@ -249,6 +257,28 @@ The two fields that matter most for scrolling smoothness:
 `scroll` (world scrollX), `origin` (which world-buffer page is active) and
 `job`/`stage`/`tileX` (background world-render job progress) let you correlate
 a hitch with "was this at a page turnover."
+
+`wingWorldProbes` and `wingWorldHits` audit Sprint 15.70.3's CPC Wingman world
+collision. A live Wingman normally contributes two probes per gameplay frame;
+`wingWorldHits` increments only when solid geometry destroys it. These counters
+reset for each 10-second performance window.
+
+## Sprint 15.70.4 Classic cadence result
+
+The cycle-exact A500 + 512 KiB weapon-stress route was run with Classic,
+skill 1, Player 2, cruise 15 and seed 12040. It reached the final carrier.
+After the emulator/bootstrap sample, both moving gameplay windows reported
+50 FPS min/max/average, zero hitches and `maxVblDelta=1`. P1/P2 rocket and
+bomb launch counters were all non-zero. The result files are tagged
+`sprint_15_70_4_classic` under `.tmp/amiga-parity-results`.
+
+## Sprint 15.70.5 shared-cadence result
+
+The matching cycle-exact Enhanced weapon-stress route used skill 1, Player 2,
+cruise 15 and seed 12040. It reached the final carrier at `scrollX=5352`.
+After bootstrap, both moving windows held 50 FPS minimum/maximum/average,
+zero hitches and `maxVblDelta=1`; all four P1/P2 weapon counters were non-zero.
+The result files are tagged `sprint_15_70_5_enhanced`.
 
 ## Known limitations
 
@@ -284,6 +314,23 @@ It reaches the same final scroll and retains the skill-3 terrain fingerprint
 `min=9,max=14,flat=153,climb=47,descend=47,targets=48`. This is deliberately a
 low-speed worst case; no Copper, ring-buffer, object decision or collision
 rule changed, and the cache adds only four small fields to `WingmanState`.
+
+Sprint 15.72.0 keeps this CPU-Wingman profile as the regression route for the
+complete CPC 0..8 formation direction model. Run with Wingman control `1`, a
+fixed seed and cycle-exact timing; it must reach the final carrier without a
+formation/world collision, preserve moving-window performance, and never
+stall in the bounded eight-neighbor obstruction fallback.
+
+Fixed-seed result for skill 1, speed 15, seed 12040: final carrier reached at
+scroll 5160; both steady moving intervals were 50 FPS with maximum VBL delta
+1, and 2000 Wingman world probes produced zero solid contacts.
+
+For an explicit nine-direction exercise, add
+`-WingmanFormationExercise` together with `-WingmanControl 1`. The autoplay
+alternates between two safe heights while accelerating and parity CSV adds
+`wingFormationStops`, `wingFormationCardinal`, `wingFormationDiagonal` and
+`wingFormationEvasive`. A valid direction audit must reach the final carrier,
+record both cardinal and diagonal movement and keep `wingWorldHits` at zero.
 
 ## Sprint 15.41 baseline and target
 

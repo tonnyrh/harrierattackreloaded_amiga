@@ -15,7 +15,7 @@
 #include <string.h>
 #include "assets/harrier_menu_text.h"
 
-#define HAR_BUILD_LABEL "SPRINT 15.69.9"
+#define HAR_BUILD_LABEL "SPRINT 15.75.0"
 
 #define SCREEN_WIDTH 320
 #define LOADING_SCREEN_WIDTH 320
@@ -109,8 +109,16 @@
 #ifndef HAR_HEADLESS_WINGMAN_CONTROL
 #define HAR_HEADLESS_WINGMAN_CONTROL WINGMAN_CONTROL_CPU
 #endif
+#ifndef HAR_HEADLESS_GAME_MODE
+/* 0=Classic, 1=Enhanced. Kept numeric because the GameMode enum is declared
+ * later in this translation unit. */
+#define HAR_HEADLESS_GAME_MODE 1
+#endif
 #ifndef HAR_HEADLESS_ENEMY_PLANE_EXERCISE
 #define HAR_HEADLESS_ENEMY_PLANE_EXERCISE 0
+#endif
+#ifndef HAR_HEADLESS_WINGMAN_FORMATION_EXERCISE
+#define HAR_HEADLESS_WINGMAN_FORMATION_EXERCISE 0
 #endif
 #ifndef HAR_HEADLESS_WEAPON_STRESS
 #define HAR_HEADLESS_WEAPON_STRESS 0
@@ -130,7 +138,11 @@
 #define GAME_TILE_COUNT 102
 #define GAME_MAP_WIDTH (SCREEN_WIDTH / GAME_TILE_WIDTH)
 #define GAME_MAP_HEIGHT 25
-#define GAME_LEVEL_WIDTH_TILES 709
+#define GAME_LEVEL_BASE_WIDTH_TILES 709
+#define CPC_LEVEL_DIFFICULTY_MAX 5
+#define CPC_LAND_EXTENSION_PER_DIFFICULTY 256
+#define CPC_LAND_MAX_EXTENSION (CPC_LEVEL_DIFFICULTY_MAX * CPC_LAND_EXTENSION_PER_DIFFICULTY)
+#define GAME_LEVEL_WIDTH_TILES (GAME_LEVEL_BASE_WIDTH_TILES + CPC_LAND_MAX_EXTENSION)
 #define GAME_WORLD_WIDTH_TILES 128
 #define GAME_WORLD_BUFFER_MARGIN_TILES 2
 #define GAME_WORLD_BUFFER_MARGIN_PIXELS (GAME_WORLD_BUFFER_MARGIN_TILES * GAME_TILE_WIDTH)
@@ -160,7 +172,6 @@
 #define TELEMETRY_INTERVAL_FRAMES 100
 #define TELEMETRY_GAME_EVENT_COUNT 16
 #define TELEMETRY_GAME_EVENT_CODE_COUNT 17
-#define GAME_SCROLL_MAX_PIXELS ((GAME_LEVEL_WIDTH_TILES - GAME_MAP_WIDTH) * GAME_TILE_WIDTH)
 #define GAME_SCROLL_SPEED_MIN_PIXELS 1
 #define GAME_SCROLL_SPEED_MAX_PIXELS 4
 #define GAME_SPEED_LEVEL_MIN 0
@@ -190,8 +201,8 @@
  * screen x=144. CPC can move its hardware-sprite carrier independently of
  * scenery; these two scroll positions reproduce that staging for Amiga's
  * world-anchored carrier. */
-#define LANDING_APPROACH_SCROLL_X (((663 + cpcTownRouteOverflow) * GAME_TILE_WIDTH) - SCREEN_WIDTH)
-#define LANDING_HOVER_SCROLL_X (((663 + cpcTownRouteOverflow) * GAME_TILE_WIDTH) - 144)
+#define LANDING_APPROACH_SCROLL_X (((663 + cpcLandRouteExtension + cpcTownRouteOverflow) * GAME_TILE_WIDTH) - SCREEN_WIDTH)
+#define LANDING_HOVER_SCROLL_X (((663 + cpcLandRouteExtension + cpcTownRouteOverflow) * GAME_TILE_WIDTH) - 144)
 #define LANDING_SLOWDOWN_REPEAT_FRAMES 3
 #define LANDING_STATE_NONE 0
 #define LANDING_STATE_SLOWING 1
@@ -225,7 +236,8 @@
 #define GAME_LAND_CRATER_TILE 97
 #define GAME_HORIZON_TILE_Y 14
 #define GAME_SEA_TOP_TILE_Y 15
-#define CPC_LAND_PROCEDURAL_LENGTH 295
+#define CPC_LAND_PROCEDURAL_BASE_LENGTH 295
+#define CPC_LAND_PROCEDURAL_MAX_LENGTH (CPC_LAND_PROCEDURAL_BASE_LENGTH + CPC_LAND_MAX_EXTENSION)
 #define CPC_LAND_PROCEDURAL_BASELINE 14
 #define CPC_LAND_PROCEDURAL_FLOOR 11
 
@@ -441,6 +453,13 @@
  * bombmomentum=3 over three more horizontal updates. Only after that does
  * playerbombstatus change to the descending state. */
 #define BOMB_FORWARD_MOMENTUM_FRAMES 4
+/* Both profiles keep CPC's four complete horizontal character steps followed
+ * by complete vertical character steps. Five half-pixels per PAL frame gives
+ * the already-approved 2/3-pixel visual cadence (2.5 px/frame), while object
+ * collision is sampled only when another 8-pixel CPC step is completed. */
+#define BOMB_HALF_PIXELS_PER_FRAME 5
+#define BOMB_LOGICAL_STEP_PIXELS GAME_TILE_WIDTH
+#define BOMB_FORWARD_LOGICAL_STEPS 4
 #define BOMB_LAUNCH_COOLDOWN_FRAMES 18
 #define BOMB_IMPACT_SFX_GRACE_FRAMES 8
 #define IMPACT_FRAMES 12
@@ -465,11 +484,9 @@
 #define POWERUP_SPRITE_HEIGHT 8
 #define POWERUP_SPRITE_WORDS (2 + POWERUP_SPRITE_HEIGHT * 2 + 2)
 #define POWERUP_COLLISION_WIDTH 8
-/* A consistent one-pixel fall each PAL frame is visually steadier than the
- * old 1,1,0 cadence. It is still far smoother than CPC's 8px tile steps and
- * removes the tiny periodic judder that made the canopy appear to flicker. */
-#define POWERUP_FALL_PHASE_ADD 1
-#define POWERUP_FALL_PHASE_PIXEL 1
+/* Both profiles use CPC's five-tick/eight-pixel logical descent with smooth
+ * Amiga presentation between rows. */
+#define POWERUP_LOGICAL_STEP_FRAMES 5
 #define POWERUP_SPAWN_COLUMN 38
 #define POWERUP_SPAWN_MAX_ROW 3
 #define POWERUP_DESPAWN_LEFT_X (-16)
@@ -593,13 +610,12 @@
  * needs another visible screen width plus 16px fine-scroll prefetch. The old
  * fixed 2048px buffer was shorter than a user-edited 2232px cycle, causing
  * Copper to display adjacent memory as garbage at the end of the ticker. */
-static const char menuTickerClassicText[] = HAR_TEXT_TRIBUTE_CLASSIC;
-static const char menuTickerEnhancedText[] = HAR_TEXT_TRIBUTE_ENHANCED;
+static const char menuTickerText[] = HAR_TEXT_TRIBUTE;
 static const char fieldGuideTickerClassicText[] = HAR_TEXT_FIELD_GUIDE_CLASSIC;
 static const char fieldGuideTickerEnhancedText[] = HAR_TEXT_FIELD_GUIDE_ENHANCED;
 #define MENU_TICKER_MAX_CHARS \
-	((sizeof(menuTickerEnhancedText) > sizeof(fieldGuideTickerEnhancedText) \
-		? sizeof(menuTickerEnhancedText) : sizeof(fieldGuideTickerEnhancedText)) - 1)
+	((sizeof(menuTickerText) > sizeof(fieldGuideTickerEnhancedText) \
+		? sizeof(menuTickerText) : sizeof(fieldGuideTickerEnhancedText)) - 1)
 #define MENU_TICKER_TEXT_WIDTH (MENU_TICKER_MAX_CHARS * FONT_WIDTH)
 #define MENU_TICKER_REQUIRED_WIDTH \
 	(MENU_TICKER_MARGIN_PIXELS + MENU_TICKER_TEXT_WIDTH + \
@@ -616,7 +632,7 @@ static const char fieldGuideTickerEnhancedText[] = HAR_TEXT_FIELD_GUIDE_ENHANCED
 static UWORD menuTickerScrollX = 0;
 static UBYTE menuTickerFrameDivider = 0;
 static UBYTE menuTickerCompleted = 0;
-static const char* activeMenuTickerText = menuTickerEnhancedText;
+static const char* activeMenuTickerText = menuTickerText;
 static UBYTE* menuTickerBitmap = 0;
 
 /* CPC writecharf() keeps pen 1 on rows 0-1, maps it to pen 0 on
@@ -645,12 +661,10 @@ static UBYTE* menuTickerBitmap = 0;
 /* Real CPC Mode 1 per-band copper palette (re-derived after the game tile
  * assets were found to have been extracted as Mode 0 instead of Mode 1 and
  * re-extracted correctly) - COLOR00/15 change across the 4 screen bands:
- * upper sky, mid sky, lower play area, instrument panel. COLOR05 (land) and
- * COLOR10 (black) are NOT overridden per-band despite the CPC reference
- * table specifying panel-band values for them: both double as HUD gauge
- * semantics here (HUD_COLOR_BACKGROUND/HUD_COLOR_SAFE) that retinting them
- * away from their bulk-loaded game_palette.pal values would break - see the
- * comment at the panel-band writes in buildGameHudCopper(). COLOR15 doubles
+ * upper sky, mid sky, lower play area, instrument panel. COLOR05 (land)
+ * follows CPC's campaign phase in the world and is restored before HUD DMA
+ * because it doubles as HUD_COLOR_SAFE. COLOR10 (black) never changes.
+ * COLOR15 doubles
  * as "clouds" (white) in the sky bands and "sea" (blue) once the lower play
  * area starts, then a third accent value for the panel band (not currently
  * visible in any HUD graphics, kept only for parity with the reference
@@ -697,12 +711,38 @@ static UBYTE* menuTickerBitmap = 0;
  * tuning pass once seen in motion. */
 #define CITY_FADE_STEP_COUNT 5
 #define CITY_FADE_STEP_FRAMES 13
-#define GAME_SKY_TOP_DUSK_RGB 0x0624
-#define GAME_SKY_MID_DUSK_RGB 0x0836
-#define GAME_SKY_LOW_DUSK_RGB 0x0a41
-#define GAME_SKY_TOP_CLOUD_DUSK_RGB 0x0fa6
+#define GAME_SKY_TOP_DUSK_RGB 0x0a36
+#define GAME_SKY_MID_DUSK_RGB 0x0b47
+#define GAME_SKY_LOW_DUSK_RGB 0x0c58
+#define GAME_SKY_TOP_CLOUD_DUSK_RGB 0x0dfa
 #define GAME_SKY_LOW_SEA_DUSK_RGB GAME_SKY_LOW_SEA_RGB
 #define GAME_HUD_PANEL_SEA_DUSK_RGB GAME_HUD_PANEL_SEA_RGB
+/* CPC advances its day/dusk/night/dawn palette sequence twice per completed
+ * route: once at the next takeoff and once when Port Stanley is built.
+ * Mission 2 therefore opens at night (the green cast in the CPC reference),
+ * then moves toward dawn in town; mission 3 returns to day. These values are
+ * Amiga 12-bit approximations. Sea and HUD colours deliberately stay fixed. */
+#define GAME_SKY_TOP_NIGHT_RGB 0x0031
+#define GAME_SKY_MID_NIGHT_RGB 0x0042
+#define GAME_SKY_LOW_NIGHT_RGB 0x0053
+#define GAME_SKY_TOP_CLOUD_NIGHT_RGB 0x0aa5
+#define GAME_SKY_TOP_DAWN_RGB 0x0565
+#define GAME_SKY_MID_DAWN_RGB 0x0576
+#define GAME_SKY_LOW_DAWN_RGB 0x0587
+#define GAME_SKY_TOP_CLOUD_DAWN_RGB 0x0dfa
+#define GAME_LAND_DAY_RGB 0x06a0
+#define GAME_LAND_DUSK_RGB 0x0650
+#define GAME_LAND_NIGHT_RGB 0x0010
+#define GAME_LAND_DAWN_RGB 0x0650
+#define MISSION_PALETTE_DAY 0
+#define MISSION_PALETTE_DUSK 1
+#define MISSION_PALETTE_NIGHT 2
+#define MISSION_PALETTE_DAWN 3
+#define MISSION_PALETTE_SKY_TOP 0
+#define MISSION_PALETTE_SKY_MID 1
+#define MISSION_PALETTE_SKY_LOW 2
+#define MISSION_PALETTE_CLOUD 3
+#define MISSION_PALETTE_LAND 4
 
 #define RAWKEY_E 0x12
 #define RAWKEY_W 0x11
@@ -766,21 +806,25 @@ static UWORD* activeMenuTickerBplcon1 = 0;
  * just those words later without rebuilding the copper list (which, unlike
  * the scroll-pointer patching this mirrors, is only ever built once per
  * session, not every frame). current*Rgb hold what's currently baked into
- * those words - reset to the day values in resetCityFade() so a session
- * that starts partway through a previous session's dusk state doesn't bake
- * stale dusk colours into the fresh copper list. */
+ * those words; resetCityFade() selects the campaign mission's day or night
+ * start phase so stale colours can never leak between sessions. */
 static UWORD* activeCopperSkyTopColor = 0;
 static UWORD* activeCopperSkyMidColor = 0;
 static UWORD* activeCopperSkyLowColor = 0;
 static UWORD* activeCopperCloudTopColor = 0;
+static UWORD* activeCopperLandColor = 0;
 static UWORD* activeCopperSeaLowColor = 0;
 static UWORD* activeCopperPanelSeaColor = 0;
 static UWORD currentSkyTopRgb = GAME_SKY_TOP_RGB;
 static UWORD currentSkyMidRgb = GAME_SKY_MID_RGB;
 static UWORD currentSkyLowRgb = GAME_SKY_LOW_RGB;
 static UWORD currentCloudTopRgb = GAME_SKY_TOP_CLOUD_RGB;
+static UWORD currentLandRgb = GAME_LAND_DAY_RGB;
 static UWORD currentSeaLowRgb = GAME_SKY_LOW_SEA_RGB;
 static UWORD currentPanelSeaRgb = GAME_HUD_PANEL_SEA_RGB;
+static UBYTE currentMissionOpeningPalettePhase = MISSION_PALETTE_DAY;
+static UBYTE currentMissionFlightPalettePhase = MISSION_PALETTE_DAY;
+static UBYTE currentMissionTownPalettePhase = MISSION_PALETTE_DUSK;
 
 #define COPPER_TRACK_NONE 0
 #define COPPER_TRACK_SCROLL 1
@@ -971,8 +1015,8 @@ typedef struct WeaponState {
  * pixel coordinate (so it scrolls left naturally as game->scrollX grows),
  * y is a screen-space pixel coordinate (the powerup doesn't scroll
  * vertically with the world - only falls under its own slow gravity).
- * fallCounter is retained as the integer phase accumulator used by the
- * consistent one-pixel PAL-frame descent (no CPC-style tile jumps).
+ * fallCounter is the shared presentation phase which interpolates between
+ * CPC logical rows in both profiles.
  * spawnId tracks position in
  * the deterministic 1..6 type-rotation sequence (1=health, 2=rockets,
  * 3=bombs, 4=rockets, 5=bombs, 6=skip-and-spawn-enemy-plane). */
@@ -980,7 +1024,8 @@ typedef struct {
 	UBYTE active;
 	UBYTE type;
 	LONG worldX;
-	WORD y;
+	WORD y;             /* interpolated display Y */
+	WORD logicalY;      /* CPC collision row; advances 8px every five ticks */
 	UBYTE fallCounter;
 	UBYTE spawnId;
 	UWORD lastSpawnCheckColumn;
@@ -1045,9 +1090,9 @@ typedef enum WingmanMode {
  * shared block" decision) and AI/landing fields arrive with the sprints that
  * actually use them, not ahead of time.
  *
- * Movement is tile-grid-locked (row steps by one 8px GAME_TILE_HEIGHT at a
- * time) - matching CPC's own "Flyet beveger seg en CPC-tile per
- * oppdatering" (the wingman moves one CPC tile per update).
+ * Logical formation movement is tile-grid-locked in both axes - matching
+ * CPC's 0..8 direction table - while screenX/screenY interpolate the accepted
+ * cells for an Amiga-smooth presentation.
  *
  * The Wingman body uses hardware sprite channel 6, while its missile and
  * bomb use their own pixel-BOB footprints. */
@@ -1060,6 +1105,7 @@ typedef struct WingmanState {
 	                             * the screen (see updateWingmanFormationTarget()) */
 	WORD row;                   /* current tile-row, 0..(GAME_WORLD_HEIGHT/GAME_TILE_HEIGHT)-1 */
 	WORD screenY;               /* pixel-precise presentation position; follows row smoothly */
+	WORD formationLogicalX;     /* CPC 8px formation coordinate; presentation glides toward it */
 	UBYTE moveTimer;             /* throttles row movement to roughly the player's own vertical speed */
 	/* Formation safety depends on tile coordinates, not sub-tile pixels.
 	 * Reuse it until either the visible world column or player tile row
@@ -1133,6 +1179,11 @@ typedef struct GameState {
 	UBYTE rocketHeightLock;      /* CPC lockinmissileheighttoplayer menu option */
 	WeaponState rocketShot;
 	WeaponState bombShot;
+	LONG bombLogicalWorldX;
+	WORD bombLogicalY;
+	UBYTE bombHalfPixelPhase;
+	UBYTE bombStepPixels;
+	UBYTE bombMomentumSteps;
 	WeaponState impact;
 	WeaponState enemyPlane;
 	WeaponState enemyMissile;
@@ -1182,8 +1233,11 @@ typedef struct GameState {
 	UBYTE throttleRepeatTimer;
 	UBYTE bombLaunchCooldown;
 	UBYTE skillLevel;
+	UBYTE levelDifficulty; /* CPC leveldifficulty: selected skill + completed boards, capped at 5 */
 	UBYTE missionNumber;
 	UBYTE extraAircraftBonusSpawned;
+	UBYTE takeoffPaletteFadeStep;
+	UBYTE takeoffPaletteFadeTimer;
 	UBYTE cityFadeStep;
 	UBYTE cityFadeTimer;
 	UWORD hitsCount;
@@ -1343,6 +1397,9 @@ static UWORD cpcTownGeneratedBuildingColumns = 0;
 static UWORD cpcTownGeneratedFlatColumns = 0;
 static UWORD cpcTownGeneratedLength = 0;
 static UBYTE cpcTownRouteOverflow = 0;
+static UBYTE cpcTownRStart = 0;
+static UBYTE cpcTownREnd = 0;
+static UWORD cpcTownRSelectionChecksum = 0;
 static UBYTE* engineBuffer = 0;
 static UWORD engineLfsr = 0xace1;
 static UWORD engineWriteOffset = 0;
@@ -1421,6 +1478,18 @@ static UWORD telemetryRadarAlarmPulses = 0;
 static UWORD telemetryRadarLevel = 0;
 static UBYTE telemetryRadarClearance = 0;
 static UBYTE telemetryRadarThreshold = 0;
+/* Classic's air-admission audit.  A fixed-seed parity run must show that one
+ * qualifying CPC-shaped decision produces at most one enemy/drop outcome,
+ * and that no drop was admitted while an enemy aircraft already existed. */
+static UWORD telemetryClassicAirAdmissionTicks = 0;
+static UWORD telemetryClassicAirEnemyOutcomes = 0;
+static UWORD telemetryClassicAirPowerupOutcomes = 0;
+static UWORD telemetryClassicPowerupWhileEnemy = 0;
+static UWORD telemetryEnhancedPowerupWhileEnemy = 0;
+static UWORD telemetryWingFormationStops = 0;
+static UWORD telemetryWingFormationCardinal = 0;
+static UWORD telemetryWingFormationDiagonal = 0;
+static UWORD telemetryWingFormationEvasive = 0;
 
 enum EnemyPlaneTraceEvent {
 	ENEMY_PLANE_TRACE_SPAWN = 1,
@@ -1506,6 +1575,8 @@ static UWORD perfP1RocketLaunches = 0;
 static UWORD perfP1BombLaunches = 0;
 static UWORD perfP2RocketLaunches = 0;
 static UWORD perfP2BombLaunches = 0;
+static UWORD perfWingmanWorldProbes = 0;
+static UWORD perfWingmanWorldHits = 0;
 #define PERF_LOG_BUFFER_BYTES 4096
 static char perfLogBuffer[PERF_LOG_BUFFER_BYTES];
 static UWORD perfLogBufferUsed = 0;
@@ -1597,10 +1668,11 @@ static UWORD hudGuard2HitFrames = 0;
 static UBYTE hudGuard2DetailLogged = 0;
 #endif
 
-static const EnemyShipGroupDef enemyShipGroups[GAME_ENEMY_SHIP_GROUP_COUNT] = {
+static const EnemyShipGroupDef enemyShipGroupsSource[GAME_ENEMY_SHIP_GROUP_COUNT] = {
 	{ 50, 53 },
 	{ 625, 628 }
 };
+static EnemyShipGroupDef enemyShipGroups[GAME_ENEMY_SHIP_GROUP_COUNT];
 
 enum HarObjectId {
 	HAR_OBJ_CLOUD = 0,
@@ -1698,6 +1770,11 @@ enum PowerupType {
 static LevelSegmentDef harLevelRoute[HAR_LEVEL_SEGMENT_COUNT];
 static LevelObjectDef harLevelObjects[HAR_LEVEL_OBJECT_COUNT];
 static UWORD harEnemyShipMissileTriggers[HAR_ENEMY_SHIP_TRIGGER_COUNT];
+static UWORD currentGameLevelWidthTiles = GAME_LEVEL_BASE_WIDTH_TILES;
+static UWORD cpcLandRouteExtension = 0;
+static UWORD gameScrollMaxPixels(void) {
+	return (UWORD)((currentGameLevelWidthTiles - GAME_MAP_WIDTH) * GAME_TILE_WIDTH);
+}
 #define HAR_LEVEL_OBJECT_COLUMN_INDEX_NONE 0xff
 
 /* Sprint 14.94 Part 3: harLevelObjects (95 entries) was linearly scanned in
@@ -1724,38 +1801,65 @@ static UBYTE harWideObjectIndex[HAR_LEVEL_OBJECT_COUNT];
 static UBYTE harWideObjectCount;
 static UBYTE harLevelObjectIndexReady = 0;
 
-/* CPC checks the 200-column town timer only while it is in state 6. If the
- * timer expires immediately after choosing a building, state 7 still draws
- * that whole building before the pier begins. Keep the authored route as an
- * immutable baseline, then move every post-town segment, object and one-shot
- * ship-missile trigger by the same measured overflow (0..5 columns). */
-static void configureRuntimeLevelRoute(UBYTE townOverflow) {
+/* The authored route is the compact coordinate baseline. CPC keeps land state
+ * 3 active until enemyshiptimer reaches 0x012c + leveldifficulty*0x100, then
+ * checks the 200-column town timer only in state 6. Expand the procedural land
+ * by 256 columns per difficulty and move every later segment/object/trigger
+ * together; then add the measured 0..5-column whole-building town overflow. */
+static void configureRuntimeLevelRoute(UWORD landExtension, UBYTE townOverflow) {
 	memcpy(harLevelRoute, harLevelRouteSource, sizeof(harLevelRoute));
 	memcpy(harLevelObjects, harLevelObjectsSource, sizeof(harLevelObjects));
 	memcpy(harEnemyShipMissileTriggers, harEnemyShipMissileTriggersSource,
 		sizeof(harEnemyShipMissileTriggers));
+	memcpy(enemyShipGroups, enemyShipGroupsSource, sizeof(enemyShipGroups));
 
 	for (UWORD index = 0; index < HAR_LEVEL_SEGMENT_COUNT; index++) {
 		LevelSegmentDef* segment = &harLevelRoute[index];
-		if (segment->terrainKind == HAR_TERRAIN_TOWN) {
+		const LevelSegmentDef* source = &harLevelRouteSource[index];
+		if (source->terrainKind == HAR_TERRAIN_CPC_RANDOM_LAND) {
+			segment->endColumn = (WORD)(segment->endColumn + landExtension);
+		} else if (source->startColumn > 400) {
+			segment->startColumn = (WORD)(segment->startColumn + landExtension);
+			segment->endColumn = (WORD)(segment->endColumn + landExtension);
+		}
+		if (source->terrainKind == HAR_TERRAIN_TOWN) {
 			segment->endColumn = (WORD)(segment->endColumn + townOverflow);
-		} else if (segment->startColumn > 610) {
+		} else if (source->startColumn > 610) {
 			segment->startColumn = (WORD)(segment->startColumn + townOverflow);
 			segment->endColumn = (WORD)(segment->endColumn + townOverflow);
 		}
 	}
 	for (UWORD index = 0; index < HAR_LEVEL_OBJECT_COUNT; index++) {
-		if (harLevelObjects[index].column > 610)
+		WORD sourceColumn = harLevelObjectsSource[index].column;
+		if (sourceColumn > 400)
+			harLevelObjects[index].column =
+				(WORD)(harLevelObjects[index].column + landExtension);
+		if (sourceColumn > 610)
 			harLevelObjects[index].column =
 				(WORD)(harLevelObjects[index].column + townOverflow);
 	}
 	for (UWORD index = 0; index < HAR_ENEMY_SHIP_TRIGGER_COUNT; index++) {
-		if (harEnemyShipMissileTriggers[index] > 610)
+		UWORD sourceColumn = harEnemyShipMissileTriggersSource[index];
+		if (sourceColumn > 400)
+			harEnemyShipMissileTriggers[index] =
+				(UWORD)(harEnemyShipMissileTriggers[index] + landExtension);
+		if (sourceColumn > 610)
 			harEnemyShipMissileTriggers[index] =
 				(UWORD)(harEnemyShipMissileTriggers[index] + townOverflow);
 	}
+	for (UWORD index = 0; index < GAME_ENEMY_SHIP_GROUP_COUNT; index++) {
+		if (enemyShipGroupsSource[index].startColumn > 400) {
+			enemyShipGroups[index].startColumn = (UWORD)(
+				enemyShipGroups[index].startColumn + landExtension + townOverflow);
+			enemyShipGroups[index].endColumn = (UWORD)(
+				enemyShipGroups[index].endColumn + landExtension + townOverflow);
+		}
+	}
 
+	cpcLandRouteExtension = landExtension;
 	cpcTownRouteOverflow = townOverflow;
+	currentGameLevelWidthTiles = (UWORD)(GAME_LEVEL_BASE_WIDTH_TILES +
+		landExtension);
 	/* Object columns changed, so the lazy per-column index must be rebuilt. */
 	harLevelObjectIndexReady = 0;
 }
@@ -1809,6 +1913,7 @@ static void resetTargetLock(void);
 static void resetCpcRandomSequence(void);
 static void ammoForSkill(UBYTE skillLevel, UBYTE* bombs, UBYTE* rockets);
 static void resetDestroyedShipColumns(void);
+static UBYTE isShipCellDestroyed(LONG worldColumn, WORD tileY);
 static void resetLandCraters(void);
 static void resetCityFade(GameState* game);
 static void resetPowerup(GameState* game);
@@ -3317,7 +3422,7 @@ static void perfLogOpen(void) {
 #endif
 	{
 		static const char header[] =
-			"frame,seconds,loops,minFps,maxFps,avgFps,hitches,maxVblDelta,scroll,speed,origin,job,stage,tileX,tileCols,objCols,pages,fuel,armour,rockets,bombs,p1Rkt,p1Bmb,p2Rkt,p2Bmb,hudCalls,hudArmChg,hudFuelChg,hudScoreChg,hudSpdChg,hudRktChg,hudBmbChg,hudGuardHits,hudGuard2Hits,hudRegHits,hudCollisionFires,livBplcon0,expBplcon0,livDdfstrt,expDdfstrt,livDdfstop,expDdfstop,livBpl5pt,expBpl5pt\n";
+			"frame,seconds,loops,minFps,maxFps,avgFps,hitches,maxVblDelta,scroll,speed,origin,job,stage,tileX,tileCols,objCols,pages,fuel,armour,rockets,bombs,p1Rkt,p1Bmb,p2Rkt,p2Bmb,wingWorldProbes,wingWorldHits,hudCalls,hudArmChg,hudFuelChg,hudScoreChg,hudSpdChg,hudRktChg,hudBmbChg,hudGuardHits,hudGuard2Hits,hudRegHits,hudCollisionFires,livBplcon0,expBplcon0,livDdfstrt,expDdfstrt,livDdfstop,expDdfstop,livBpl5pt,expBpl5pt\n";
 		perfLogAppend(header, sizeof(header) - 1);
 	}
 	perfLastLoopFrame = frameCounter;
@@ -3347,6 +3452,8 @@ static void perfLogResetInterval(void) {
 	perfP1BombLaunches = 0;
 	perfP2RocketLaunches = 0;
 	perfP2BombLaunches = 0;
+	perfWingmanWorldProbes = 0;
+	perfWingmanWorldHits = 0;
 }
 
 static UWORD perfFpsForVblDelta(UWORD delta) {
@@ -3639,6 +3746,10 @@ static void perfLogFrame(const GameState* game, UBYTE activeWorldBuffer) {
 		c = appendUnsignedLong(c, perfP2RocketLaunches);
 		*c++ = ',';
 		c = appendUnsignedLong(c, perfP2BombLaunches);
+		*c++ = ',';
+		c = appendUnsignedLong(c, perfWingmanWorldProbes);
+		*c++ = ',';
+		c = appendUnsignedLong(c, perfWingmanWorldHits);
 		*c++ = ',';
 		c = appendUnsignedLong(c, hudDrawCalls);
 		*c++ = ',';
@@ -4165,7 +4276,26 @@ static void ReadInput(InputState* input, UBYTE suppressMouse) {
  * this restores that same flexibility rather than hard-requiring a second
  * physical controller, which most players (and this exact bug report)
  * won't have to hand. */
-static void ReadPlayer2Input(Player2InputState* input) {
+static void ReadPlayer2Input(Player2InputState* input, UBYTE gameMode) {
+	/* Classic restores CPC's fixed second-player path.  The Enhanced profile
+	 * keeps this port's rebindable controls and eject extension. */
+	if (gameMode == GAME_MODE_CLASSIC) {
+		input->up = KeyDown(RAWKEY_KP_8) ||
+			controlJoystickDirection(CONTROL_JOY_PORT_1, CONTROL_UP);
+		input->down = KeyDown(RAWKEY_KP_2) ||
+			controlJoystickDirection(CONTROL_JOY_PORT_1, CONTROL_DOWN);
+		input->left = KeyDown(RAWKEY_KP_4) ||
+			controlJoystickDirection(CONTROL_JOY_PORT_1, CONTROL_LEFT);
+		input->right = KeyDown(RAWKEY_KP_6) ||
+			controlJoystickDirection(CONTROL_JOY_PORT_1, CONTROL_RIGHT);
+		input->fire = KeyDown(RAWKEY_KP_0) ||
+			controlJoystickButton(CONTROL_JOY_PORT_1, CONTROL_BUTTON_PRIMARY);
+		input->bomb = KeyDown(RAWKEY_KP_ENTER) ||
+			controlJoystickButton(CONTROL_JOY_PORT_1, CONTROL_BUTTON_SECONDARY);
+		input->eject = 0;
+		return;
+	}
+
 	const ControlProfile* profile = &controlProfiles[1];
 	input->up = controlProfileKeyDown(profile, CONTROL_UP) ||
 		controlJoystickDirection(profile->joystickPort, CONTROL_UP);
@@ -4340,6 +4470,8 @@ static USHORT* copWaitDisplayY(USHORT* copListEnd, USHORT displayY) {
 static USHORT* copSetGameSkyGradient(USHORT* copListEnd, const UWORD* palette) {
 	activeCopperSkyTopColor = (UWORD*)(copListEnd + 1);
 	copListEnd = copSetColor(copListEnd, GAME_COLOR_SKY, currentSkyTopRgb);
+	activeCopperLandColor = (UWORD*)(copListEnd + 1);
+	copListEnd = copSetColor(copListEnd, GAME_COLOR_LAND, currentLandRgb);
 	activeCopperCloudTopColor = (UWORD*)(copListEnd + 1);
 	copListEnd = copSetColor(copListEnd, GAME_COLOR_SEA, currentCloudTopRgb);
 	copListEnd = copWaitDisplayY(copListEnd, GAME_SKY_MID_Y);
@@ -4627,12 +4759,13 @@ static void buildGameHudCopper(USHORT* copper, const UBYTE* world, const UBYTE* 
 	 * there's no further timing pressure before end of frame. GAME_COLOR_SEA
 	 * isn't one of the pens (0/1/5/6/9) the HUD's own graphics use, so this
 	 * has no visible effect today - kept only for parity with the reference
-	 * table. GAME_COLOR_LAND is NOT overridden here (unlike the reference
-	 * table's instrument-panel value) - it doubles as HUD_COLOR_SAFE (the
-	 * FUEL/LIVES "ok" green), and retinting it away from green broke that
-	 * distinction from HUD_COLOR_VALUE's yellow. COLOR10 (black) isn't
+	 * table. GAME_COLOR_LAND is restored to the base palette here because its
+	 * world-band value now follows CPC's later-mission palette phases while it
+	 * still doubles as HUD_COLOR_SAFE (the FUEL/LIVES "ok" green). COLOR10
+	 * (black) isn't
 	 * written here either - identical to the bulk-loaded value at every
 	 * band, never actually changes. */
+	copPtr = copSetColor(copPtr, GAME_COLOR_LAND, palette[GAME_COLOR_LAND]);
 	activeCopperPanelSeaColor = (UWORD*)(copPtr + 1);
 	copPtr = copSetColor(copPtr, GAME_COLOR_SEA, currentPanelSeaRgb);
 
@@ -4993,11 +5126,6 @@ static void drawMenuTickerText(UBYTE* bitmap, WORD x, const char* text) {
 		 * for the complete off-screen string. */
 		serviceModMusicToCurrentVbl();
 	}
-}
-
-static const char* menuTickerTextForMode(short gameMode) {
-	return gameMode == GAME_MODE_CLASSIC ?
-		menuTickerClassicText : menuTickerEnhancedText;
 }
 
 static const char* fieldGuideTickerTextForMode(short gameMode) {
@@ -5741,7 +5869,6 @@ static void initGameState(GameState* game) {
 	resetTargetLock();
 	resetDestroyedShipColumns();
 	resetLandCraters();
-	resetCityFade(game);
 	resetPowerup(game);
 	game->scrollX = 0;
 	game->playerX = PLAYER_START_X;
@@ -5778,6 +5905,7 @@ static void initGameState(GameState* game) {
 	game->bombLaunchCooldown = 0;
 	game->rocketHeightLock = menuRocketHeightLock;
 	game->missionNumber = 1;
+	resetCityFade(game);
 	game->extraAircraftBonusSpawned = 0;
 	memset(&game->rocketShot, 0, sizeof(game->rocketShot));
 	memset(&game->bombShot, 0, sizeof(game->bombShot));
@@ -5981,8 +6109,6 @@ static UBYTE updateLandingApproach(GameState* game) {
 			game->wingman.mode = WINGMAN_LANDING_APPROACH;
 			game->wingman.returningToFormation = 0;
 			game->wingman.interceptReason = 0;
-			game->wingman.interceptScreenX = (WORD)(game->playerX -
-				WINGMAN_FORMATION_COLUMNS_BEHIND * GAME_TILE_WIDTH);
 			game->wingman.landingTargetSet = 0;
 			game->wingman.rocket.active = 0;
 			game->wingman.bomb.active = 0;
@@ -6158,7 +6284,7 @@ static void drawHudValues(UBYTE* hud, const GameState* game, ULONG highScore, UB
 	HudRenderState* state = &hudRenderState[hudBufferIndex];
 	UBYTE fullBombs;
 	UBYTE fullRockets;
-	ammoForSkill(game->skillLevel, &fullBombs, &fullRockets);
+	ammoForSkill(game->levelDifficulty, &fullBombs, &fullRockets);
 	UBYTE armourColor = (UBYTE)(game->armour == 0 ? HUD_COLOR_WARN : HUD_COLOR_VALUE);
 	UBYTE fuelColor = (UBYTE)(game->fuel < 100 ? HUD_COLOR_WARN :
 		HUD_COLOR_POWERUP_HEALTH);
@@ -6324,7 +6450,7 @@ static void drawMenuScreen(UBYTE* bitmap, short selected, short skillLevel, shor
 	 * pre-rendered one full screen beyond the right edge, so the visible band
 	 * starts empty even when returning early from another page. */
 	initMenuTickerForText(menuTickerBitmap,
-		menuTickerTextForMode(gameModeSetting));
+		menuTickerText);
 	fillScreen(bitmap, MENU_COLOR_PANEL);
 	serviceModMusicToCurrentVbl();
 
@@ -6470,6 +6596,15 @@ static void telemetryReset(void) {
 	telemetryRadarLevel = 0;
 	telemetryRadarClearance = 0;
 	telemetryRadarThreshold = 0;
+	telemetryClassicAirAdmissionTicks = 0;
+	telemetryClassicAirEnemyOutcomes = 0;
+	telemetryClassicAirPowerupOutcomes = 0;
+	telemetryClassicPowerupWhileEnemy = 0;
+	telemetryEnhancedPowerupWhileEnemy = 0;
+	telemetryWingFormationStops = 0;
+	telemetryWingFormationCardinal = 0;
+	telemetryWingFormationDiagonal = 0;
+	telemetryWingFormationEvasive = 0;
 	telemetryResetInterval();
 }
 
@@ -6866,18 +7001,11 @@ static UBYTE adjustSelectedMenuOption(UBYTE* bitmap, short selected, short direc
 	} else if (selected == MENU_ITEM_GAME_MODE) {
 		*gameModeSetting = (*gameModeSetting == GAME_MODE_ENHANCED) ?
 			GAME_MODE_CLASSIC : GAME_MODE_ENHANCED;
-		/* Player 2 is an Enhanced co-op extension. Preserve a selected helper
-		 * when moving to Classic by resolving P2 to CPC's CPU Wingman. */
-		if (*gameModeSetting == GAME_MODE_CLASSIC &&
-			*wingmanControl == WINGMAN_CONTROL_PLAYER2)
-			*wingmanControl = WINGMAN_CONTROL_CPU;
 	} else if (selected == MENU_ITEM_WINGMAN) {
 		*wingmanControl += direction;
 		if (*wingmanControl < WINGMAN_CONTROL_OFF)
-			*wingmanControl = (*gameModeSetting == GAME_MODE_CLASSIC) ?
-				WINGMAN_CONTROL_CPU : WINGMAN_CONTROL_PLAYER2;
-		else if (*wingmanControl > ((*gameModeSetting == GAME_MODE_CLASSIC) ?
-			WINGMAN_CONTROL_CPU : WINGMAN_CONTROL_PLAYER2))
+			*wingmanControl = WINGMAN_CONTROL_PLAYER2;
+		else if (*wingmanControl > WINGMAN_CONTROL_PLAYER2)
 			*wingmanControl = WINGMAN_CONTROL_OFF;
 	} else if (selected == MENU_ITEM_LOCK_HEIGHT) {
 		menuRocketHeightLock = !menuRocketHeightLock;
@@ -6890,9 +7018,6 @@ static UBYTE adjustSelectedMenuOption(UBYTE* bitmap, short selected, short direc
 	if (selected == MENU_ITEM_GAME_MODE)
 		drawMenuItem(bitmap, MENU_ITEM_WINGMAN, 0, *skillLevel,
 			*gameModeSetting, *wingmanControl);
-	if (selected == MENU_ITEM_GAME_MODE)
-		initMenuTickerForText(menuTickerBitmap,
-			menuTickerTextForMode(*gameModeSetting));
 	return 1;
 }
 
@@ -7928,11 +8053,9 @@ static void drawDebugGraphicsBrowser(UBYTE* bitmap, UWORD index) {
  * contact except flak (Sprint 14.91/14.95): flak absorbs the player's own
  * weapons harmlessly (never destroyed) and instead chips armour per contact
  * frame up to flakDamageThresholdForSkill()'s skill-scaled hit budget, and
- * the gunship is currently fixed background geometry with no weapon
- * interaction in this port (isWideLevelObject()). The player-facing guide
- * nevertheless documents the intended CPC target behaviour and 500 points;
- * the missing Amiga interaction remains an implementation task, not a rule
- * players should be taught. Powerup
+ * the promoted gunship is only a presentation overlay: its destructible CPC
+ * enemyshipsprite cells remain authoritative for weapon contact, 500-point
+ * scoring, persistent smoke and removal of the struck visual section. Powerup
  * colours match buildPowerupBobTileIfNeeded()'s typeColor[] table exactly.
  *
  * Icons reuse the exact same graphics the game actually draws in the world,
@@ -8228,10 +8351,18 @@ static void drawDebugMusicBrowser(UBYTE* bitmap, UBYTE index,
  * caller) - the gunship canvas has no vertical shift baked in (unlike the
  * carrier's +16px/2-tile one), since both pieces share the same y in the
  * original per-pixel calls. */
-static void drawPromotedCpcGunshipRangeAt(UBYTE* bitmap, UWORD physicalTileX, UWORD compositeColumn, short baseTileRow) {
+static void drawPromotedCpcGunshipRangeAt(UBYTE* bitmap, UWORD physicalTileX,
+	UWORD worldColumn, UWORD compositeColumn, short baseTileRow) {
 	if (compositeColumn >= HAR_GUNSHIP_TILES_WIDE)
 		return;
 	for (UBYTE row = 0; row < HAR_GUNSHIP_TILES_TALL; row++) {
+		/* enemyshipsprite supplies the collision cells behind this CPC+ sprite
+		 * pair. A hit replaces exactly one such cell with persistent smoke, so
+		 * omit the matching presentation tile rather than drawing an apparently
+		 * indestructible gunship over the damaged object map. */
+		if (isShipCellDestroyed((LONG)worldColumn,
+			(WORD)(baseTileRow + row)))
+			continue;
 		UWORD gridIndex = (UWORD)(row * HAR_GUNSHIP_TILES_WIDE + compositeColumn);
 		if (harGunshipTileSkip[gridIndex])
 			continue;
@@ -8374,7 +8505,7 @@ typedef struct CpcLandGameplayState {
 	UBYTE target;
 	UBYTE transition;
 } CpcLandGameplayState;
-static CpcLandGameplayState cpcLandGameplayTable[CPC_LAND_PROCEDURAL_LENGTH];
+static CpcLandGameplayState cpcLandGameplayTable[CPC_LAND_PROCEDURAL_MAX_LENGTH];
 /* Cosmetic surface tile chosen after gameplay generation for each column,
  * stored directly instead of re-derived later by comparing
  * neighbouring columns' heights (landSurfaceTileForColumn()'s old approach)
@@ -8383,7 +8514,8 @@ static CpcLandGameplayState cpcLandGameplayTable[CPC_LAND_PROCEDURAL_LENGTH];
  * both the transition column and the column after it), which the real CPC
  * never does (only the column where the height dispatcher's mode 1/2 branch
  * actually fires gets a slope tile). */
-static UBYTE cpcLandSurfaceTable[CPC_LAND_PROCEDURAL_LENGTH];
+static UBYTE cpcLandSurfaceTable[CPC_LAND_PROCEDURAL_MAX_LENGTH];
+static UWORD cpcLandProceduralLength = CPC_LAND_PROCEDURAL_BASE_LENGTH;
 
 /* Sprint 14.103: records which transition the height dispatcher actually
  * took for each column, purely for validation/diagnostics - doesn't change
@@ -8456,6 +8588,19 @@ static UBYTE cosmeticVariantForColumn(UWORD column, UWORD salt) {
 static UBYTE cpcLandMinimumRow(UBYTE skillLevel) {
 	UBYTE row = (UBYTE)(12 - skillLevel);
 	return row < 2 ? 2 : row;
+}
+
+/* CPC keeps the menu choice as the campaign's starting difficulty, then
+ * increments leveldifficulty after every successful landing, capped at 5.
+ * Do not mutate the menu option itself: rescue and retry must reconstruct the
+ * same effective board difficulty from the selected skill and mission number. */
+static UBYTE cpcDifficultyForMission(UBYTE selectedSkill, UBYTE missionNumber) {
+	UWORD difficulty = selectedSkill;
+	if (missionNumber > 1)
+		difficulty += (UWORD)(missionNumber - 1);
+	if (difficulty > CPC_LEVEL_DIFFICULTY_MAX)
+		difficulty = CPC_LEVEL_DIFFICULTY_MAX;
+	return (UBYTE)difficulty;
 }
 
 /* Set by startGameSession() from the menu's skillLevel before (re-)triggering
@@ -8558,11 +8703,23 @@ static void generateCpcTownBlockTable(void);
  * HarrierAttackSourceNew2_alt_CRTC_CART16.asm - buildportstanley - it just
  * hasn't been reached by a session yet without the log filling up first). */
 #define CPC_R_COST_SEA 7        /* measured (asm:drawseatiles, n=100, mean 7.2) */
-#define CPC_R_COST_DEFAULT 63  /* town only now - UNMEASURED, assumed */
+#define CPC_R_COST_DEFAULT 63  /* non-town fallback - UNMEASURED, assumed */
 #define CPC_R_COST_FLAT 63     /* land: flat, or a blocked hill/target degenerating to flat */
 #define CPC_R_COST_HILL 63     /* land: hill up/down actually stepping */
 #define CPC_R_COST_TARGET 63   /* land: successful target insertion */
 #define CPC_R_COST_TANK_REAR 63 /* CPC's next-tick continuation of the tank sprite block */
+/* Sprint 15.71.0: town R ownership is modeled explicitly. CPC reads R only
+ * in buildportstanley/state 6, after its flat-column work; state 7 then
+ * streams every column of the selected building before another choice is
+ * made. The existing LOGGEN land sample found a median column cost of 60
+ * and a rounded representative cost of 63. Until a town-only LOGGEN trace
+ * supplies separate measured values, retain that calibrated land magnitude
+ * for both town paths, but expose one persistent town-local R stream rather
+ * than hiding its progression behind absolute per-column lookups. This makes
+ * the state-6/state-7 ownership auditable and gives town-specific
+ * start/end/checksum telemetry for later calibration. */
+#define CPC_R_COST_TOWN_FLAT_CHOICE 63
+#define CPC_R_COST_TOWN_BUILDING_COLUMN 63
 
 /* CPC clouds are streamed multi-column tile blocks, not moving sprites.
  * Store only the chosen top row and block column for each world column;
@@ -8602,7 +8759,7 @@ static void generateCpcCloudTable(void) {
 	memset(cpcCloudTopRowByColumn, CPC_CLOUD_NONE, sizeof(cpcCloudTopRowByColumn));
 	memset(cpcCloudBlockColumnByColumn, 0, sizeof(cpcCloudBlockColumnByColumn));
 
-	for (UWORD column = 0; column < GAME_LEVEL_WIDTH_TILES; column++) {
+	for (UWORD column = 0; column < currentGameLevelWidthTiles; column++) {
 		UBYTE terrainKind = terrainKindForCloudColumn((LONG)column);
 		UWORD rng = cpcGameplayStateByColumn[column].randomState;
 
@@ -8684,7 +8841,7 @@ static void landLogBuild(void) {
 		static const char header[] = "index,height,surfaceTile,transition,target\n";
 		landLogAppend(header, sizeof(header) - 1);
 	}
-	for (UWORD i = 0; i < CPC_LAND_PROCEDURAL_LENGTH; i++) {
+	for (UWORD i = 0; i < cpcLandProceduralLength; i++) {
 		char line[24];
 		char* out = line;
 		out = appendUnsignedLong(out, i);
@@ -8711,7 +8868,7 @@ static void resetCpcRandomSequence(void) {
 	/* A retry may produce a different final town block. Restore the authored
 	 * coordinates before generating the new session, then apply its measured
 	 * overflow after the CPC state tables are complete. */
-	configureRuntimeLevelRoute(0);
+	configureRuntimeLevelRoute(cpcLandRouteExtension, 0);
 	/* Clear positive answers before procedural terrain is rebuilt. A retry may
 	 * use a different session seed, so carrying safe cells across games could
 	 * otherwise let Wingman pass through a newly generated block. */
@@ -8756,7 +8913,7 @@ static void resetCpcRandomSequence(void) {
 	 * removed now that the actual bug is fixed, restoring the generator to
 	 * an unmodified reproduction of l9134/l9167/l9181's real mode dispatch. */
 
-	for (UWORD column = 0; column < GAME_LEVEL_WIDTH_TILES; column++) {
+	for (UWORD column = 0; column < currentGameLevelWidthTiles; column++) {
 		/* CPC calls genrandomhl before generating the newly revealed column,
 		 * unconditionally, every tick regardless of sea/land/town stage. */
 		state = (UWORD)(state * 1509U + 0x0029U);
@@ -8765,7 +8922,7 @@ static void resetCpcRandomSequence(void) {
 			? CPC_R_COST_SEA : CPC_R_COST_DEFAULT;
 
 		LONG landLocalColumn = (LONG)column - CPC_LAND_PROCEDURAL_WORLD_START;
-		if (landLocalColumn >= 0 && landLocalColumn < CPC_LAND_PROCEDURAL_LENGTH) {
+		if (landLocalColumn >= 0 && landLocalColumn < cpcLandProceduralLength) {
 			UWORD i = (UWORD)landLocalColumn;
 			UBYTE transition = CPC_LAND_FLAT;
 			/* Sprint 14.105: landHeight is l885d, the *persisted* state read
@@ -8852,7 +9009,7 @@ static void resetCpcRandomSequence(void) {
 					 * successful insertion is always forced flat too -
 					 * landJustInserted enforces that above. */
 					UBYTE type = cpcTargetTypeForRState(rState);
-					if (type == 3 && i + 1 < CPC_LAND_PROCEDURAL_LENGTH) {
+					if (type == 3 && i + 1 < cpcLandProceduralLength) {
 						cpcLandGameplayTable[i].target = CPC_LAND_TARGET_TANK_FRONT;
 						landPendingTankRear = 1;
 					} else {
@@ -8885,7 +9042,7 @@ static void resetCpcRandomSequence(void) {
 	/* Cosmetic pass runs only after every gameplay decision is complete.
 	 * Its seed and queries therefore cannot feed back into height, target
 	 * placement, R costs, flak gates or the event sequence. */
-	for (UWORD i = 0; i < CPC_LAND_PROCEDURAL_LENGTH; i++) {
+	for (UWORD i = 0; i < cpcLandProceduralLength; i++) {
 		UBYTE variant = cosmeticVariantForColumn(i, 0x134bU);
 		switch (cpcLandGameplayTable[i].transition) {
 			case CPC_LAND_CLIMB:
@@ -8902,7 +9059,7 @@ static void resetCpcRandomSequence(void) {
 	cpcRandomSequenceReady = 1;
 	resetCpcTownBlockTable();
 	generateCpcTownBlockTable();
-	configureRuntimeLevelRoute(cpcTownRouteOverflow);
+	configureRuntimeLevelRoute(cpcLandRouteExtension, cpcTownRouteOverflow);
 	generateCpcCloudTable();
 #if HAR_DEBUG_LAND_LOG
 	landLogBuild();
@@ -8912,7 +9069,7 @@ static void resetCpcRandomSequence(void) {
 	/* Sanity check: CPC's real height table only ever steps by 1 per
 	 * column (hill up/down), so any larger jump means this reconstruction
 	 * has a bug - not something that should ever legitimately fire. */
-	for (UWORD i = 1; i < CPC_LAND_PROCEDURAL_LENGTH; i++) {
+	for (UWORD i = 1; i < cpcLandProceduralLength; i++) {
 		WORD delta = (WORD)cpcLandGameplayTable[i].height - (WORD)cpcLandGameplayTable[i - 1].height;
 		if (delta > 1 || delta < -1) {
 			char line[64];
@@ -8952,7 +9109,7 @@ static void resetCpcRandomSequence(void) {
 	 * caused it, so a delta-based check here would misfire on every real
 	 * descend. The explicit transition table isn't affected by that timing
 	 * shift - it's set at the same index as the tile choice either way. */
-	for (UWORD i = 0; i < CPC_LAND_PROCEDURAL_LENGTH; i++) {
+	for (UWORD i = 0; i < cpcLandProceduralLength; i++) {
 		UBYTE transition = cpcLandGameplayTable[i].transition;
 		UBYTE tile = cpcLandSurfaceTable[i];
 		const char* problem = 0;
@@ -8992,7 +9149,7 @@ static void parityLogFlushToDisk(const GameState* game) {
 	UWORD climbs = 0;
 	UWORD descends = 0;
 	UWORD targets = 0;
-	for (UWORD i = 0; i < CPC_LAND_PROCEDURAL_LENGTH; i++) {
+	for (UWORD i = 0; i < cpcLandProceduralLength; i++) {
 		const CpcLandGameplayState* state = &cpcLandGameplayTable[i];
 		if (state->height < minHeight)
 			minHeight = state->height;
@@ -9008,14 +9165,17 @@ static void parityLogFlushToDisk(const GameState* game) {
 			targets++;
 	}
 
-	char report[512];
+	char report[896];
 	char* out = report;
 	static const char header[] =
-		"skill,minY,maxY,flat,climb,descend,targets,enemySpawnOk,enemySpawnNo,enemyMissiles,flakSpawns,wingInterceptOk,wingInterceptNo,wingBombOk,wingBombNo,terrainEvents,pierEvents,townBlocks,townBuildingCols,townFlatCols,townLength,townOverflowCols,townClippedCols,finalScroll,landingState,missionComplete,reachedFinalCarrier\n";
+		"skill,difficulty,mission,landLength,minY,maxY,flat,climb,descend,targets,enemySpawnOk,enemySpawnNo,enemyMissiles,flakSpawns,wingInterceptOk,wingInterceptNo,wingBombOk,wingBombNo,terrainEvents,pierEvents,enemyPlaneBlocked,townBlocks,townBuildingCols,townFlatCols,townLength,townOverflowCols,townRStart,townREnd,townRChecksum,townClippedCols,classicAirTicks,classicEnemyOutcomes,classicPowerupOutcomes,classicPowerupWhileEnemy,enhancedPowerupWhileEnemy,wingFormationStops,wingFormationCardinal,wingFormationDiagonal,wingFormationEvasive,finalScroll,landingState,missionComplete,reachedFinalCarrier\n";
 	for (UWORD i = 0; i < sizeof(header) - 1; i++)
 		*out++ = header[i];
 #define PARITY_VALUE(value) do { out = appendUnsignedLong(out, (ULONG)(value)); *out++ = ','; } while (0)
 	PARITY_VALUE(game->skillLevel);
+	PARITY_VALUE(game->levelDifficulty);
+	PARITY_VALUE(game->missionNumber);
+	PARITY_VALUE(cpcLandProceduralLength);
 	PARITY_VALUE(minHeight);
 	PARITY_VALUE(maxHeight);
 	PARITY_VALUE(flat);
@@ -9038,7 +9198,19 @@ static void parityLogFlushToDisk(const GameState* game) {
 	PARITY_VALUE(cpcTownGeneratedFlatColumns);
 	PARITY_VALUE(cpcTownGeneratedLength);
 	PARITY_VALUE(cpcTownRouteOverflow);
+	PARITY_VALUE(cpcTownRStart);
+	PARITY_VALUE(cpcTownREnd);
+	PARITY_VALUE(cpcTownRSelectionChecksum);
 	PARITY_VALUE(0);
+	PARITY_VALUE(telemetryClassicAirAdmissionTicks);
+	PARITY_VALUE(telemetryClassicAirEnemyOutcomes);
+	PARITY_VALUE(telemetryClassicAirPowerupOutcomes);
+	PARITY_VALUE(telemetryClassicPowerupWhileEnemy);
+	PARITY_VALUE(telemetryEnhancedPowerupWhileEnemy);
+	PARITY_VALUE(telemetryWingFormationStops);
+	PARITY_VALUE(telemetryWingFormationCardinal);
+	PARITY_VALUE(telemetryWingFormationDiagonal);
+	PARITY_VALUE(telemetryWingFormationEvasive);
 	PARITY_VALUE(game->scrollX);
 	PARITY_VALUE(game->landingState);
 	PARITY_VALUE(game->missionComplete);
@@ -9132,8 +9304,8 @@ static UWORD cpcRandomStateForWorldColumn(LONG worldColumn) {
 		resetCpcRandomSequence();
 	if (worldColumn < 0)
 		worldColumn = 0;
-	if (worldColumn >= GAME_LEVEL_WIDTH_TILES)
-		worldColumn = GAME_LEVEL_WIDTH_TILES - 1;
+	if (worldColumn >= currentGameLevelWidthTiles)
+		worldColumn = currentGameLevelWidthTiles - 1;
 	return cpcGameplayStateByColumn[worldColumn].randomState;
 }
 
@@ -9147,8 +9319,8 @@ static UBYTE cpcRStateForWorldColumn(LONG worldColumn) {
 		resetCpcRandomSequence();
 	if (worldColumn < 0)
 		worldColumn = 0;
-	if (worldColumn >= GAME_LEVEL_WIDTH_TILES)
-		worldColumn = GAME_LEVEL_WIDTH_TILES - 1;
+	if (worldColumn >= currentGameLevelWidthTiles)
+		worldColumn = currentGameLevelWidthTiles - 1;
 	return cpcGameplayStateByColumn[worldColumn].rState;
 }
 
@@ -9159,7 +9331,7 @@ static UBYTE cpcCloudTileAtColumnRow(LONG worldColumn, WORD tileY) {
 	UBYTE row;
 	if (!cpcRandomSequenceReady)
 		resetCpcRandomSequence();
-	if (worldColumn < 0 || worldColumn >= GAME_LEVEL_WIDTH_TILES)
+	if (worldColumn < 0 || worldColumn >= currentGameLevelWidthTiles)
 		return 0;
 	topRow = cpcCloudTopRowByColumn[worldColumn];
 	if (topRow == CPC_CLOUD_NONE || tileY < topRow || tileY >= topRow + 3)
@@ -9222,15 +9394,19 @@ static void resetCpcTownBlockTable(void) {
 	cpcTownGeneratedFlatColumns = 0;
 	cpcTownGeneratedLength = 0;
 	cpcTownRouteOverflow = 0;
+	cpcTownRStart = 0;
+	cpcTownREnd = 0;
+	cpcTownRSelectionChecksum = 0;
 }
 
 static void generateCpcTownBlockTable(void) {
-	/* Sprint 14.97 PRI 5: CPC selects town buildings from R:
+	/* CPC selects town buildings from R:
 	 * `ld a,r; rra; rra; and #07` → blockId = (R >> 2) & 7.
 	 * Previously used a separate local LCG (seed 0x3c91, * 25173 + 13849),
 	 * which was Amiga-specific and had no correlation to CPC's R-driven
-	 * sequence. Now uses the same modeled R state as all other R-based
-	 * decisions, keyed by the world column of each town position. */
+	 * sequence. Sprint 15.71 makes the town's single sequential R ownership
+	 * explicit: initialise it once from the shared mission stream, then advance
+	 * it for every state-6/state-7 town tick. */
 	memset(townBlockForColumn, CPC_TOWN_BLOCK_NONE, sizeof(townBlockForColumn));
 	memset(townBlockLocalColumnForColumn, 0, sizeof(townBlockLocalColumnForColumn));
 	cpcTownGeneratedBlockCount = 0;
@@ -9238,23 +9414,26 @@ static void generateCpcTownBlockTable(void) {
 	cpcTownGeneratedFlatColumns = 0;
 	cpcTownGeneratedLength = 0;
 	cpcTownRouteOverflow = 0;
+	cpcTownRSelectionChecksum = 0;
 
-	/* Town segment starts at column 411 in the current route. Sample modeled R
-	 * on the state-6 flat column, exactly where CPC executes `ld a,r`. The
-	 * opcode-level R advance between choices remains an approximation until a
-	 * CPC LOGGEN capture exists, but spacing and selected block identity no
-	 * longer contain Amiga-only density rules. */
-	const LONG townWorldStart = 411;
+	/* Town segment starts at column 411 in the authored route. The R value at
+	 * that absolute column already contains all preceding sea/land opcode
+	 * costs. From here the town owns one continuous local cursor. */
+	const LONG townWorldStart = (LONG)(411 + cpcLandRouteExtension);
+	UBYTE townRState = cpcRStateForWorldColumn(townWorldStart);
+	cpcTownRStart = townRState;
 
 	UWORD i = 0;
 	while (i < CPC_TOWN_TIMER_LENGTH) {
 		/* State 6: drawflatterrain. NONE leaves the already generated flat town
 		 * surface visible for exactly one column, including at town entry. */
-		UBYTE rState = cpcRStateForWorldColumn(townWorldStart + i);
-		UBYTE blockId = (UBYTE)((rState >> 2) & 7);
+		UBYTE blockId = (UBYTE)((townRState >> 2) & 7);
+		cpcTownRSelectionChecksum = (UWORD)(
+			(cpcTownRSelectionChecksum * 33U) ^ townRState ^ blockId);
 		i++;
 		cpcTownGeneratedFlatColumns++;
 		cpcTownGeneratedBlockCount++;
+		townRState = (UBYTE)((townRState + CPC_R_COST_TOWN_FLAT_CHOICE) & CPC_R_MASK);
 		UBYTE width = harCpcTownBlockWidths[blockId];
 		/* State 7: CPC finishes the chosen sprite block without another timer
 		 * check. Preserve every column, including those beyond the timer. */
@@ -9263,9 +9442,11 @@ static void generateCpcTownBlockTable(void) {
 			townBlockForColumn[i] = blockId;
 			townBlockLocalColumnForColumn[i] = col;
 			cpcTownGeneratedBuildingColumns++;
+			townRState = (UBYTE)((townRState + CPC_R_COST_TOWN_BUILDING_COLUMN) & CPC_R_MASK);
 		}
 	}
 	cpcTownGeneratedLength = i;
+	cpcTownREnd = townRState;
 	cpcTownRouteOverflow = (i > CPC_TOWN_TIMER_LENGTH) ?
 		(UBYTE)(i - CPC_TOWN_TIMER_LENGTH) : 0;
 	townBlockTableReady = 1;
@@ -9308,8 +9489,8 @@ static UBYTE terrainYForWorldColumn(LONG worldColumn, const LevelSegmentDef* seg
 				return 14;
 			return 255;
 		case HAR_TERRAIN_CPC_RANDOM_LAND: {
-			if (localColumn >= CPC_LAND_PROCEDURAL_LENGTH)
-				localColumn = CPC_LAND_PROCEDURAL_LENGTH - 1;
+			if (localColumn >= cpcLandProceduralLength)
+				localColumn = cpcLandProceduralLength - 1;
 			return cpcLandProceduralProfile((UWORD)localColumn);
 		}
 		case HAR_TERRAIN_CPC_DESCEND_TO_TOWN: {
@@ -9319,7 +9500,7 @@ static UBYTE terrainYForWorldColumn(LONG worldColumn, const LevelSegmentDef* seg
 			 * adapts to how high the terrain was when land ended - skill 5
 			 * with row 7 terrain needs 7 descend columns, not the same 3
 			 * that skill 1 with row 11 terrain does. */
-			UBYTE lastLandHeight = cpcLandProceduralProfile(CPC_LAND_PROCEDURAL_LENGTH - 1);
+			UBYTE lastLandHeight = cpcLandProceduralProfile(cpcLandProceduralLength - 1);
 			UBYTE descendTo = (UBYTE)(lastLandHeight + localColumn);
 			if (descendTo > CPC_LAND_PROCEDURAL_BASELINE)
 				descendTo = CPC_LAND_PROCEDURAL_BASELINE;
@@ -9346,8 +9527,8 @@ static UBYTE landSurfaceTileForColumn(LONG worldColumn, UBYTE terrainKind) {
 		LONG localColumn = segment ? worldColumn - segment->startColumn : worldColumn;
 		if (localColumn < 0)
 			localColumn = 0;
-		if (localColumn >= CPC_LAND_PROCEDURAL_LENGTH)
-			localColumn = CPC_LAND_PROCEDURAL_LENGTH - 1;
+		if (localColumn >= cpcLandProceduralLength)
+			localColumn = cpcLandProceduralLength - 1;
 		return cpcLandProceduralSurface((UWORD)localColumn);
 	}
 	/* CPC's coast-rise sequence starts with one solid block on row 15 and
@@ -9644,7 +9825,7 @@ static UBYTE objectCellForWorldColumnTile(LONG worldColumn, WORD tileY, ObjectCe
 
 	if (terrainKind == HAR_TERRAIN_CPC_RANDOM_LAND && terrainY != 255 && !isTargetDestroyedAtColumn(worldColumn)) {
 		LONG localColumn = segment ? worldColumn - segment->startColumn : worldColumn;
-		if (localColumn >= 0 && localColumn < CPC_LAND_PROCEDURAL_LENGTH) {
+		if (localColumn >= 0 && localColumn < cpcLandProceduralLength) {
 			UBYTE target = cpcLandProceduralTarget((UWORD)localColumn);
 			if (target != CPC_LAND_TARGET_NONE && tileY == terrainY - 1) {
 				static const UBYTE targetTiles[] = { 42, 43, 44, 45, 46 };
@@ -9948,7 +10129,7 @@ static UBYTE replenishPlayerFromFrigate(GameState* game) {
 	}
 	{
 		UBYTE fullBombs, fullRockets;
-		ammoForSkill(game->skillLevel, &fullBombs, &fullRockets);
+		ammoForSkill(game->levelDifficulty, &fullBombs, &fullRockets);
 		if (game->rockets != fullRockets) {
 			game->rockets = fullRockets;
 			changed = 1;
@@ -10122,7 +10303,7 @@ static void buildWorldTileColumn(LONG worldColumn, RenderColumn* outColumn) {
 	/* Priority 5: procedural land target (CPC_RANDOM_LAND terrain). */
 	if (terrainKind == HAR_TERRAIN_CPC_RANDOM_LAND && terrainY != 255 && !isTargetDestroyedAtColumn(worldColumn)) {
 		LONG localColumn = segment ? worldColumn - segment->startColumn : worldColumn;
-		if (localColumn >= 0 && localColumn < CPC_LAND_PROCEDURAL_LENGTH) {
+		if (localColumn >= 0 && localColumn < cpcLandProceduralLength) {
 			UBYTE target = cpcLandProceduralTarget((UWORD)localColumn);
 			WORD targetRow = (WORD)(terrainY - 1);
 			if (target != CPC_LAND_TARGET_NONE && targetRow >= 0 && targetRow < GAME_OBJECT_MAP_HEIGHT_TILES && !claimed[targetRow]) {
@@ -10173,7 +10354,7 @@ static void buildWorldTileColumn(LONG worldColumn, RenderColumn* outColumn) {
 	 * claim their row above. Clouds deliberately remain unclaimed because the
 	 * CPC obstruction test accepts both object IDs 0 and 1. Store only the
 	 * upper playfield rows; sea and anything below it are never valid lanes. */
-	if (worldColumn >= 0 && worldColumn < GAME_LEVEL_WIDTH_TILES) {
+	if (worldColumn >= 0 && worldColumn < currentGameLevelWidthTiles) {
 		UWORD passableMask = 0;
 		for (UBYTE tileY = 0; tileY < GAME_SEA_TOP_TILE_Y; tileY++) {
 			if (!claimed[tileY])
@@ -10253,7 +10434,9 @@ static void drawDirectColumnRangeObjects(UBYTE* bitmap, UWORD physicalTileX, LON
 			row = levelObjectRowForColumnObject(object);
 			if (row < 0)
 				continue;
-			drawPromotedCpcGunshipRangeAt(bitmap, physicalTileX, (UWORD)(worldColumn - objectColumn), row);
+			drawPromotedCpcGunshipRangeAt(bitmap, physicalTileX,
+				(UWORD)worldColumn,
+				(UWORD)(worldColumn - objectColumn), row);
 			continue;
 		}
 	}
@@ -11971,21 +12154,94 @@ static void updateWingmanFormationRow(GameState* game) {
 	if (wingman->mode != WINGMAN_FORMATION)
 		return;
 
-	WORD screenOffsetPixels = (WORD)(game->playerX -
+	WORD targetX = (WORD)(game->playerX -
 		WINGMAN_FORMATION_COLUMNS_BEHIND * GAME_TILE_WIDTH);
-	LONG worldColumnLeft = ((LONG)game->scrollX + screenOffsetPixels) >> 3;
+	if (targetX < 0)
+		targetX = 0;
+	else if (targetX > SCREEN_WIDTH - PLAYER_SPRITE_WIDTH)
+		targetX = SCREEN_WIDTH - PLAYER_SPRITE_WIDTH;
 
-	WORD targetRow = cachedWingmanFormationTargetRow(game, worldColumnLeft);
-	if (wingman->row != targetRow) {
+	LONG targetWorldColumn = ((LONG)game->scrollX + targetX) >> 3;
+	WORD targetRow = cachedWingmanFormationTargetRow(game, targetWorldColumn);
+	WORD xDirection = (wingman->formationLogicalX < targetX) ? 1 :
+		((wingman->formationLogicalX > targetX) ? -1 : 0);
+	WORD yDirection = (wingman->row < targetRow) ? 1 :
+		((wingman->row > targetRow) ? -1 : 0);
+
+	if (xDirection != 0 || yDirection != 0) {
+		static const BYTE directionX[WINGMAN_EVASION_DIRECTION_COUNT] =
+			{ 0, 1, 1, 1, 0, -1, -1, -1 };
+		static const BYTE directionY[WINGMAN_EVASION_DIRECTION_COUNT] =
+			{ -1, -1, 0, 1, 1, 1, 0, -1 };
 		wingman->moveTimer++;
 		if (wingman->moveTimer >= WINGMAN_MOVE_FRAME_INTERVAL) {
 			wingman->moveTimer = 0;
-			WORD candidate = (WORD)(wingman->row + ((wingman->row < targetRow) ? 1 : -1));
-			wingman->row = wingmanFormationRowIsSafe(worldColumnLeft, candidate) ?
-				candidate : wingmanSafeTargetRow(worldColumnLeft, candidate);
+			WORD previousX = wingman->formationLogicalX;
+			WORD previousRow = wingman->row;
+			WORD candidateX = (WORD)(wingman->formationLogicalX +
+				xDirection * GAME_TILE_WIDTH);
+			WORD candidateRow = (WORD)(wingman->row + yDirection);
+			LONG candidateWorldColumn = ((LONG)game->scrollX + candidateX) >> 3;
+			UBYTE accepted = candidateX >= 0 &&
+				candidateX <= SCREEN_WIDTH - PLAYER_SPRITE_WIDTH &&
+				candidateRow >= 0 && candidateRow <= WINGMAN_MAX_ROW &&
+				wingmanFormationRowIsSafe(candidateWorldColumn, candidateRow);
+
+			/* CPC checkwingmanradar tries a bounded R&7 direction when the
+			 * preferred 0..8 vector is obstructed. Preserve that decision,
+			 * but keep it finite so a dense city column cannot stall a frame. */
+			UBYTE usedEvasion = 0;
+			if (!accepted) {
+				UBYTE firstDirection = (UBYTE)((cpcRStateForWorldColumn(
+					(UWORD)targetWorldColumn) + wingman->evasionCursor++) & 7);
+				for (UBYTE attempt = 0; attempt < WINGMAN_EVASION_DIRECTION_COUNT;
+					attempt++) {
+					UBYTE direction = (UBYTE)((firstDirection + attempt) & 7);
+					candidateX = (WORD)(wingman->formationLogicalX +
+						directionX[direction] * GAME_TILE_WIDTH);
+					candidateRow = (WORD)(wingman->row + directionY[direction]);
+					candidateWorldColumn = ((LONG)game->scrollX + candidateX) >> 3;
+					if (candidateX >= 0 &&
+						candidateX <= SCREEN_WIDTH - PLAYER_SPRITE_WIDTH &&
+						candidateRow >= 0 && candidateRow <= WINGMAN_MAX_ROW &&
+						wingmanFormationRowIsSafe(candidateWorldColumn, candidateRow)) {
+						accepted = 1;
+						usedEvasion = 1;
+						break;
+					}
+				}
+			}
+
+			if (accepted) {
+				wingman->formationLogicalX = candidateX;
+				wingman->row = candidateRow;
+				if (candidateX != previousX && candidateRow != previousRow) {
+					if (telemetryWingFormationDiagonal < 0xffff)
+						telemetryWingFormationDiagonal++;
+				} else if (telemetryWingFormationCardinal < 0xffff) {
+					telemetryWingFormationCardinal++;
+				}
+				if (usedEvasion && telemetryWingFormationEvasive < 0xffff)
+					telemetryWingFormationEvasive++;
+			}
 		}
 	} else {
 		wingman->moveTimer = 0;
+		if (telemetryWingFormationStops < 0xffff)
+			telemetryWingFormationStops++;
+	}
+
+	/* Hardware sprites are not tile bound. Interpolate the accepted CPC
+	 * coordinate so diagonal and horizontal formation corrections remain
+	 * pixel smooth on Amiga while retaining CPC timing and collision cells. */
+	if (wingman->interceptScreenX < wingman->formationLogicalX) {
+		WORD stepped = (WORD)(wingman->interceptScreenX + WINGMAN_VISUAL_MOVE_PIXELS);
+		wingman->interceptScreenX = stepped > wingman->formationLogicalX ?
+			wingman->formationLogicalX : stepped;
+	} else if (wingman->interceptScreenX > wingman->formationLogicalX) {
+		WORD stepped = (WORD)(wingman->interceptScreenX - WINGMAN_VISUAL_MOVE_PIXELS);
+		wingman->interceptScreenX = stepped < wingman->formationLogicalX ?
+			wingman->formationLogicalX : stepped;
 	}
 }
 
@@ -12063,6 +12319,7 @@ static void updateWingmanTakeoff(GameState* game) {
 	if (wingman->interceptScreenX == targetX &&
 		wingman->screenY == targetY) {
 		wingman->row = targetRow;
+		wingman->formationLogicalX = targetX;
 		wingman->mode = WINGMAN_FORMATION;
 		wingman->moveTimer = 0;
 	}
@@ -12114,7 +12371,7 @@ static void updateWingmanPlayer2Control(GameState* game, UBYTE** worldBuffers,
 	if (game->wingmanControl != WINGMAN_CONTROL_PLAYER2)
 		return;
 
-	if (!wingman->active) {
+	if (!wingman->active || wingman->mode == WINGMAN_ON_DECK) {
 		/* CPC: CPU auto-launches once the player passes the parked Wingman
 		 * on deck; Player 2 must press Up before the carrier scrolls out of
 		 * reach instead (asm:2611-2625, "OTHERWISE PLAYER 2 MUST TAKEOFF
@@ -12138,8 +12395,10 @@ static void updateWingmanPlayer2Control(GameState* game, UBYTE** worldBuffers,
 			return;
 		wingman->active = 1;
 		wingman->mode = WINGMAN_PLAYER2_FLIGHT;
-		carrierParkedWingmanVisible = 0;
-		dirtyRedrawNativeCarrierAt(worldBuffers, 8);
+		if (carrierParkedWingmanVisible) {
+			carrierParkedWingmanVisible = 0;
+			dirtyRedrawNativeCarrierAt(worldBuffers, 8);
+		}
 		return;
 	}
 
@@ -12160,7 +12419,8 @@ static void updateWingmanPlayer2Control(GameState* game, UBYTE** worldBuffers,
 	 * no second eject-seat sprite channel, so P2 Eject deliberately performs
 	 * the existing Wingman abandon/destroy transition: the aircraft leaves
 	 * play and can be recovered through the normal Wingman powerup. */
-	if (Pressed(input2->eject, previousInput2->eject)) {
+	if (game->gameMode == GAME_MODE_ENHANCED &&
+		Pressed(input2->eject, previousInput2->eject)) {
 		setWingmanDestroyedState(game);
 		return;
 	}
@@ -12169,7 +12429,8 @@ static void updateWingmanPlayer2Control(GameState* game, UBYTE** worldBuffers,
 	 * Maverick lock-on exists for the Wingman's weapon in this port (it
 	 * always reuses the player's plain, non-Maverick rocket art/behaviour),
 	 * so Left+Fire isn't given a separate meaning here. */
-	if (!wingman->rocket.active && game->rockets > 0 &&
+	UBYTE sharedInventory = game->gameMode == GAME_MODE_ENHANCED;
+	if (!wingman->rocket.active && (!sharedInventory || game->rockets > 0) &&
 		Pressed(input2->fire, previousInput2->fire)) {
 		memset(&wingman->rocket, 0, sizeof(wingman->rocket));
 		wingman->rocket.active = 1;
@@ -12178,19 +12439,20 @@ static void updateWingmanPlayer2Control(GameState* game, UBYTE** worldBuffers,
 		wingman->rocket.worldX = (LONG)game->scrollX + wingman->rocket.x;
 		wingman->rocket.worldAnchored = 1;
 		wingman->rocket.dx = ROCKET_SPEED_PIXELS;
-		if (!debugInfiniteRockets)
+		if (sharedInventory && !debugInfiniteRockets)
 			game->rockets--;
 #if HAR_DEBUG_PERF_LOG
 		perfP2RocketLaunches++;
 #endif
-		updateHudValues(game);
-		*hudDirty = 1;
+		if (sharedInventory) {
+			updateHudValues(game);
+			*hudDirty = 1;
+		}
 		playSfxAt(SFX_FIRE, wingman->rocket.x);
 	}
-	/* Two human players share the aircraft's visible ordnance pool. CPU
-	 * Wingman keeps CPC's free support ordnance, but P2 must not gain an
-	 * invisible infinite inventory that the common HUD cannot represent. */
-	if (!wingman->bomb.active && game->bombs > 0 &&
+	/* Enhanced's two humans share the visible ordnance pool. Classic keeps
+	 * the support aircraft's ammunition independent of Player 1's HUD. */
+	if (!wingman->bomb.active && (!sharedInventory || game->bombs > 0) &&
 		Pressed(input2->bomb, previousInput2->bomb)) {
 		memset(&wingman->bomb, 0, sizeof(wingman->bomb));
 		wingman->bomb.active = 1;
@@ -12200,20 +12462,24 @@ static void updateWingmanPlayer2Control(GameState* game, UBYTE** worldBuffers,
 		wingman->bomb.worldAnchored = 1;
 		wingman->bomb.dy = BOMB_SPEED_Y_PIXELS;
 		wingman->bomb.timer = BOMB_FORWARD_MOMENTUM_FRAMES;
-		if (!debugInfiniteBombs)
+		if (sharedInventory && !debugInfiniteBombs)
 			game->bombs--;
 #if HAR_DEBUG_PERF_LOG
 		perfP2BombLaunches++;
 #endif
-		updateHudValues(game);
-		*hudDirty = 1;
+		if (sharedInventory) {
+			updateHudValues(game);
+			*hudDirty = 1;
+		}
 		playSfxAt(SFX_BOMB, wingman->bomb.x);
 	}
 }
 
 static WORD wingmanScreenX(const GameState* game) {
 	const WingmanState* wingman = &game->wingman;
-	return (wingman->mode == WINGMAN_TAKEOFF ||
+	return (wingman->mode == WINGMAN_ON_DECK ||
+		wingman->mode == WINGMAN_TAKEOFF ||
+		wingman->mode == WINGMAN_FORMATION ||
 		wingman->mode == WINGMAN_INTERCEPT_APPROACH ||
 		wingman->mode == WINGMAN_INTERCEPT_TRACK ||
 		wingman->mode == WINGMAN_INTERCEPT_FIRE ||
@@ -12240,7 +12506,8 @@ static void updateWingmanSprite(UWORD* sprite, UWORD* unusedSprite7, const GameS
 	static UBYTE payloadLanding = 0xff;
 	const WingmanState* wingman = &game->wingman;
 	UBYTE landingArtwork =
-		(wingman->mode == WINGMAN_LANDING_APPROACH ||
+		(wingman->mode == WINGMAN_ON_DECK ||
+		 wingman->mode == WINGMAN_LANDING_APPROACH ||
 		 wingman->mode == WINGMAN_LANDING_DECK) ? 1 : 0;
 	(void)unusedSprite7;
 	if (payloadSprite != sprite || payloadLanding != landingArtwork) {
@@ -12256,7 +12523,8 @@ static void updateWingmanSprite(UWORD* sprite, UWORD* unusedSprite7, const GameS
 		payloadLanding = landingArtwork;
 	}
 	if (!wingman->active ||
-		(wingman->mode != WINGMAN_TAKEOFF &&
+		(wingman->mode != WINGMAN_ON_DECK &&
+		 wingman->mode != WINGMAN_TAKEOFF &&
 		 wingman->mode != WINGMAN_FORMATION &&
 		 wingman->mode != WINGMAN_INTERCEPT_APPROACH &&
 		 wingman->mode != WINGMAN_INTERCEPT_TRACK &&
@@ -12344,6 +12612,59 @@ static USHORT displayByteOffsetForGameState(const GameState* game) {
 	if (useFixedTakeoffWorldWindow(game))
 		return scrollAbsoluteByteOffset(displayScrollX);
 	return scrollLocalByteOffset(displayScrollX);
+}
+
+/* CPC keeps the completed carrier picture on screen when it advances to the
+ * next sortie. The old Amiga transition called initRingWorldBuffer(), which
+ * cleared the live single-buffer playfield and synchronously rebuilt 56
+ * columns after the carrier slide. Besides the cost, that made the entire
+ * landscape visibly appear a second time.
+ *
+ * At the end of the scripted slide the final carrier occupies the same screen
+ * position as the opening carrier. Copy the 320 visible pixels of every
+ * bitplane row into the logical column-0 window, then let the ordinary ring
+ * streamer create only the still-hidden columns during the next lift. The
+ * landed scene therefore survives the mission reset without a second bitmap
+ * or a full redraw. The scripted scroll is always byte-aligned (fine 0 or 8);
+ * retain a guarded fallback to the old initializer if that invariant changes. */
+static UBYTE rebaseLandedWorldForNextMission(UBYTE* bitmap,
+	const GameState* game) {
+	const UWORD visibleBytes = SCREEN_WIDTH / 8;
+	UWORD fine = (UWORD)(displayScrollXForGameState(game) & 15);
+	if (fine != 0 && fine != 8)
+		return 0;
+
+	USHORT sourceFetchOffset = displayByteOffsetForGameState(game);
+	/* On an exact 16px boundary the DDF prefetch consumes the two preceding
+	 * bytes. At phase 8 it consumes one. In both cases this selects the first
+	 * pixel that is actually visible, rather than the Copper fetch guard. */
+	USHORT sourceVisibleOffset = (USHORT)(sourceFetchOffset +
+		(fine == 0 ? 2 : 1));
+	USHORT destinationVisibleOffset = GAME_WORLD_BUFFER_MARGIN_TILES;
+	if (sourceVisibleOffset + visibleBytes > GAME_WORLD_ROW_BYTES ||
+		destinationVisibleOffset + visibleBytes > GAME_WORLD_ROW_BYTES)
+		return 0;
+
+	UBYTE rowCopy[SCREEN_WIDTH / 8];
+	for (UWORD y = 0; y < GAME_WORLD_HEIGHT; y++) {
+		UBYTE* interleavedRow = bitmap +
+			(ULONG)y * SCREEN_PLANES * GAME_WORLD_ROW_BYTES;
+		for (UBYTE plane = 0; plane < SCREEN_PLANES; plane++) {
+			UBYTE* planeRow = interleavedRow +
+				(ULONG)plane * GAME_WORLD_ROW_BYTES;
+			memcpy(rowCopy, planeRow + sourceVisibleOffset, visibleBytes);
+			memcpy(planeRow + destinationVisibleOffset, rowCopy, visibleBytes);
+		}
+	}
+
+	/* Columns 0..39 are now the retained visible scene. Column 40 onward is
+	 * filled incrementally by serviceRingWorldStream() once lift-off begins. */
+	ringWorldLastStreamedColumn = GAME_MAP_WIDTH - 1;
+	ringStreamColumn = -1;
+	ringStreamRow = 0;
+	ringStreamTouchedFirstColumn = -1;
+	ringStreamTouchedLastColumn = -1;
+	return 1;
 }
 
 static void updateGameScrollCopper(const UBYTE* worldBuffer, const GameState* game) {
@@ -12566,6 +12887,48 @@ static void destroyWingman(GameState* game) {
 	startImpact(game, impactX, impactY);
 }
 
+/* CPC drawwingmanplane resolves the two object-map cells occupied by the
+ * 16-pixel aircraft immediately before drawing it. IDs 0/1/10/12/20/21 pass;
+ * enemy aircraft destroys both (handled by the pixel-accurate rectangle test
+ * below), and every other world cell destroys the Wingman. Keep the same two
+ * horizontal cell probes here rather than copying Player 1's wider six-cell
+ * collision box: this is gameplay parity, not a new Enhanced safety net. */
+static UBYTE wingmanObjectMapCollision(const GameState* game) {
+	const WingmanState* wingman = &game->wingman;
+	if (!wingman->active || wingman->destroyed)
+		return 0;
+
+	WORD screenX = wingmanScreenX(game);
+	LONG firstWorldColumn = ((LONG)game->scrollX + screenX) >> 3;
+	WORD tileY = wingman->screenY >> 3;
+	for (UBYTE offset = 0; offset < 2; offset++) {
+		ObjectCell cell;
+		LONG worldColumn = firstWorldColumn + offset;
+#if HAR_DEBUG_PERF_LOG
+		perfWingmanWorldProbes++;
+#endif
+		if (!townBlockCellAtWorldColumnRow(worldColumn, tileY, &cell) &&
+			!objectCellForWorldColumnTile(worldColumn, tileY, &cell))
+			continue;
+		switch (cell.id) {
+			case HAR_OBJ_CLOUD:
+			case HAR_OBJ_SKY:
+			case HAR_OBJ_FLAK:
+			case HAR_OBJ_SMOKE: /* CPC smoke shares FLAK's passable ID 10. */
+			case HAR_OBJ_PLAYER_PLANE:
+			case HAR_OBJ_WINGMAN:
+			case HAR_OBJ_POWERUP:
+				break;
+			default:
+#if HAR_DEBUG_PERF_LOG
+				perfWingmanWorldHits++;
+#endif
+				return 1;
+		}
+	}
+	return 0;
+}
+
 static UBYTE targetLockIsVisibleAhead(const GameState* game) {
 	WORD screenX;
 	if (!game->targetLock.active)
@@ -12701,6 +13064,11 @@ static UBYTE launchBomb(GameState* game) {
 	game->bombShot.worldAnchored = 0;
 	game->bombShot.dx = BOMB_SPEED_X_PIXELS;
 	game->bombShot.dy = BOMB_SPEED_Y_PIXELS;
+	game->bombLogicalWorldX = game->bombShot.worldX;
+	game->bombLogicalY = game->bombShot.y;
+	game->bombHalfPixelPhase = 0;
+	game->bombStepPixels = 0;
+	game->bombMomentumSteps = 0;
 #if HAR_DEBUG_PERF_LOG
 	perfP1BombLaunches++;
 #endif
@@ -12859,42 +13227,60 @@ static UBYTE updateWeapons(GameState* game, UBYTE scrollPixels, UBYTE** worldBuf
 	}
 
 	if (game->bombShot.active) {
-		/* The launch tile advances briefly down/forward.  Once momentum is
-		 * exhausted the bomb becomes a world-space object: it continues
-		 * falling, while horizontal screen motion comes only from scrolling
-		 * the world beneath the Harrier. */
-		if (game->bombShot.timer < BOMB_FORWARD_MOMENTUM_FRAMES) {
-			game->bombShot.x += game->bombShot.dx;
-			game->bombShot.y += game->bombShot.dy;
-			game->bombShot.worldX = (LONG)game->scrollX +
-				game->bombShot.x;
-		} else {
-			if (!game->bombShot.worldAnchored) {
-				game->bombShot.worldX = (LONG)game->scrollX +
-					game->bombShot.x;
-				game->bombShot.worldAnchored = 1;
-			}
-			game->bombShot.x = (WORD)(game->bombShot.worldX -
-				game->scrollX);
-			game->bombShot.y += game->bombShot.dy;
+		/* CPC dolaunchbomb advances four complete character columns, then
+		 * changes to complete character-row descent. Both profiles share this
+		 * rule; the Amiga-only improvement is smooth 2/3-pixel presentation. */
+		UBYTE pixels = (UBYTE)(BOMB_HALF_PIXELS_PER_FRAME >> 1);
+		game->bombHalfPixelPhase = (UBYTE)(game->bombHalfPixelPhase +
+			(BOMB_HALF_PIXELS_PER_FRAME & 1));
+		if (game->bombHalfPixelPhase >= 2) {
+			game->bombHalfPixelPhase -= 2;
+			pixels++;
 		}
-		if ((game->bombShot.timer % BOMB_EXTRA_FALL_INTERVAL) ==
-			(BOMB_EXTRA_FALL_INTERVAL - 1))
-			game->bombShot.y += BOMB_EXTRA_FALL_PIXELS;
-		if (game->bombShot.timer < 255)
+
+		if (game->bombMomentumSteps < BOMB_FORWARD_LOGICAL_STEPS) {
+			game->bombShot.worldX += pixels;
+			game->bombShot.x = (WORD)(game->bombShot.worldX - game->scrollX);
+		} else {
+			game->bombShot.x = (WORD)(game->bombShot.worldX - game->scrollX);
+			game->bombShot.y = (WORD)(game->bombShot.y + pixels);
+		}
+		game->bombStepPixels = (UBYTE)(game->bombStepPixels + pixels);
+		UBYTE bombCollisionTick = 0;
+		if (game->bombStepPixels >= BOMB_LOGICAL_STEP_PIXELS) {
+			game->bombStepPixels = (UBYTE)(game->bombStepPixels -
+				BOMB_LOGICAL_STEP_PIXELS);
+			bombCollisionTick = 1;
+			if (game->bombMomentumSteps < BOMB_FORWARD_LOGICAL_STEPS) {
+				game->bombMomentumSteps++;
+				game->bombLogicalWorldX += GAME_TILE_WIDTH;
+			} else {
+				game->bombLogicalY += GAME_TILE_HEIGHT;
+			}
+		}
+		game->bombShot.worldAnchored = 1;
+		if (game->bombMomentumSteps < BOMB_FORWARD_LOGICAL_STEPS) {
+			/* The mini-BOB uses timer<4 to select CPC's horizontal bomb art.
+			 * Keep that presentation phase tied to logical momentum steps, not
+			 * PAL frames. */
+			game->bombShot.timer = game->bombMomentumSteps;
+		} else if (game->bombShot.timer < 255) {
 			game->bombShot.timer++;
+		}
 		ObjectCell bombCell;
 		LONG bombWorldColumn = -1;
 		WORD bombTileY = -1;
-		WORD bombProbeX = bombShotContactX(&game->bombShot);
-		WORD bombProbeY = (WORD)(game->bombShot.y + BOMB_SHOT_PIXEL_BOB_HEIGHT);
-		UBYTE bombHitObject = objectCellForWorldPoint(game, bombProbeX,
+		WORD bombProbeX = (WORD)(game->bombLogicalWorldX - game->scrollX +
+			(game->bombMomentumSteps < BOMB_FORWARD_LOGICAL_STEPS ? 3 : 1));
+		WORD bombProbeY = (WORD)(game->bombLogicalY +
+			BOMB_SHOT_PIXEL_BOB_HEIGHT);
+		UBYTE bombHitObject = bombCollisionTick && objectCellForWorldPoint(game, bombProbeX,
 			bombProbeY, &bombCell, &bombWorldColumn, &bombTileY) &&
 			(bombCell.id == HAR_OBJ_LAND || bombCell.id == HAR_OBJ_GROUND_TARGET || bombCell.id == HAR_OBJ_ENEMY_SHIP || bombCell.id == HAR_OBJ_FLAK || bombCell.id == HAR_OBJ_SMOKE || bombCell.id == HAR_OBJ_OWN_FRIGATE || bombCell.id == HAR_OBJ_PIER);
-		if (!bombHitObject)
+		if (bombCollisionTick && !bombHitObject)
 			bombHitObject = ownFrigateCellNearWorldPoint(game, bombProbeX,
 				bombProbeY, &bombCell, &bombWorldColumn, &bombTileY);
-		if (!bombHitObject)
+		if (bombCollisionTick && !bombHitObject)
 			bombHitObject = townBlockCellNearWorldPoint(game, bombProbeX,
 				bombProbeY, &bombCell, &bombWorldColumn, &bombTileY);
 		if (bombHitObject) {
@@ -12961,7 +13347,7 @@ static UBYTE updateWeapons(GameState* game, UBYTE scrollPixels, UBYTE** worldBuf
 						(WORD)(bombTileY * GAME_TILE_HEIGHT));
 				game->bombShot.active = 0;
 			}
-		} else if (game->bombShot.y >= SEA_SURFACE_Y) {
+		} else if (bombCollisionTick && game->bombLogicalY >= SEA_SURFACE_Y) {
 			startWaterSplash(game, game->bombShot.x);
 			game->bombShot.active = 0;
 		} else if (game->bombShot.x < -16) {
@@ -13134,7 +13520,7 @@ static UBYTE cpcFlakL884bForWorldColumn(LONG worldColumn) {
 	if (!segment || segment->terrainKind != HAR_TERRAIN_CPC_RANDOM_LAND)
 		return 0xFF;
 	LONG localColumn = worldColumn - segment->startColumn;
-	if (localColumn < 0 || localColumn >= CPC_LAND_PROCEDURAL_LENGTH)
+	if (localColumn < 0 || localColumn >= cpcLandProceduralLength)
 		return 0xFF;
 	UBYTE target = cpcLandProceduralTarget((UWORD)localColumn);
 	if (target == CPC_LAND_TARGET_NONE || target == CPC_LAND_TARGET_TANK_REAR)
@@ -13304,7 +13690,7 @@ static void updateTargetLock(GameState* game) {
 		return;
 
 	LONG localColumn = segment ? (LONG)checkColumn - segment->startColumn : (LONG)checkColumn;
-	if (localColumn < 0 || localColumn >= CPC_LAND_PROCEDURAL_LENGTH)
+	if (localColumn < 0 || localColumn >= cpcLandProceduralLength)
 		return;
 
 	UBYTE target = cpcLandProceduralTarget((UWORD)localColumn);
@@ -13334,11 +13720,52 @@ static UWORD lerpFadeRgb(UWORD dayRgb, UWORD duskRgb, UBYTE step) {
 	return (UWORD)((r << 8) | (g << 4) | b);
 }
 
-static void applyCityFadeStep(UBYTE step) {
-	currentSkyTopRgb = lerpFadeRgb(GAME_SKY_TOP_RGB, GAME_SKY_TOP_DUSK_RGB, step);
-	currentSkyMidRgb = lerpFadeRgb(GAME_SKY_MID_RGB, GAME_SKY_MID_DUSK_RGB, step);
-	currentSkyLowRgb = lerpFadeRgb(GAME_SKY_LOW_RGB, GAME_SKY_LOW_DUSK_RGB, step);
-	currentCloudTopRgb = lerpFadeRgb(GAME_SKY_TOP_CLOUD_RGB, GAME_SKY_TOP_CLOUD_DUSK_RGB, step);
+static UWORD missionPalettePhaseColor(UBYTE phase, UBYTE band) {
+	if (phase == MISSION_PALETTE_DUSK) {
+		if (band == MISSION_PALETTE_SKY_TOP) return GAME_SKY_TOP_DUSK_RGB;
+		if (band == MISSION_PALETTE_SKY_MID) return GAME_SKY_MID_DUSK_RGB;
+		if (band == MISSION_PALETTE_SKY_LOW) return GAME_SKY_LOW_DUSK_RGB;
+		if (band == MISSION_PALETTE_LAND) return GAME_LAND_DUSK_RGB;
+		return GAME_SKY_TOP_CLOUD_DUSK_RGB;
+	}
+	if (phase == MISSION_PALETTE_NIGHT) {
+		if (band == MISSION_PALETTE_SKY_TOP) return GAME_SKY_TOP_NIGHT_RGB;
+		if (band == MISSION_PALETTE_SKY_MID) return GAME_SKY_MID_NIGHT_RGB;
+		if (band == MISSION_PALETTE_SKY_LOW) return GAME_SKY_LOW_NIGHT_RGB;
+		if (band == MISSION_PALETTE_LAND) return GAME_LAND_NIGHT_RGB;
+		return GAME_SKY_TOP_CLOUD_NIGHT_RGB;
+	}
+	if (phase == MISSION_PALETTE_DAWN) {
+		if (band == MISSION_PALETTE_SKY_TOP) return GAME_SKY_TOP_DAWN_RGB;
+		if (band == MISSION_PALETTE_SKY_MID) return GAME_SKY_MID_DAWN_RGB;
+		if (band == MISSION_PALETTE_SKY_LOW) return GAME_SKY_LOW_DAWN_RGB;
+		if (band == MISSION_PALETTE_LAND) return GAME_LAND_DAWN_RGB;
+		return GAME_SKY_TOP_CLOUD_DAWN_RGB;
+	}
+	if (band == MISSION_PALETTE_SKY_TOP) return GAME_SKY_TOP_RGB;
+	if (band == MISSION_PALETTE_SKY_MID) return GAME_SKY_MID_RGB;
+	if (band == MISSION_PALETTE_SKY_LOW) return GAME_SKY_LOW_RGB;
+	if (band == MISSION_PALETTE_LAND) return GAME_LAND_DAY_RGB;
+	return GAME_SKY_TOP_CLOUD_RGB;
+}
+
+static void applyMissionPaletteFadeStep(UBYTE fromPhase, UBYTE toPhase,
+	UBYTE step) {
+	currentSkyTopRgb = lerpFadeRgb(
+		missionPalettePhaseColor(fromPhase, MISSION_PALETTE_SKY_TOP),
+		missionPalettePhaseColor(toPhase, MISSION_PALETTE_SKY_TOP), step);
+	currentSkyMidRgb = lerpFadeRgb(
+		missionPalettePhaseColor(fromPhase, MISSION_PALETTE_SKY_MID),
+		missionPalettePhaseColor(toPhase, MISSION_PALETTE_SKY_MID), step);
+	currentSkyLowRgb = lerpFadeRgb(
+		missionPalettePhaseColor(fromPhase, MISSION_PALETTE_SKY_LOW),
+		missionPalettePhaseColor(toPhase, MISSION_PALETTE_SKY_LOW), step);
+	currentCloudTopRgb = lerpFadeRgb(
+		missionPalettePhaseColor(fromPhase, MISSION_PALETTE_CLOUD),
+		missionPalettePhaseColor(toPhase, MISSION_PALETTE_CLOUD), step);
+	currentLandRgb = lerpFadeRgb(
+		missionPalettePhaseColor(fromPhase, MISSION_PALETTE_LAND),
+		missionPalettePhaseColor(toPhase, MISSION_PALETTE_LAND), step);
 	currentSeaLowRgb = lerpFadeRgb(GAME_SKY_LOW_SEA_RGB, GAME_SKY_LOW_SEA_DUSK_RGB, step);
 	currentPanelSeaRgb = lerpFadeRgb(GAME_HUD_PANEL_SEA_RGB, GAME_HUD_PANEL_SEA_DUSK_RGB, step);
 
@@ -13350,25 +13777,52 @@ static void applyCityFadeStep(UBYTE step) {
 		*activeCopperSkyLowColor = currentSkyLowRgb;
 	if (activeCopperCloudTopColor)
 		*activeCopperCloudTopColor = currentCloudTopRgb;
+	if (activeCopperLandColor)
+		*activeCopperLandColor = currentLandRgb;
 	if (activeCopperSeaLowColor)
 		*activeCopperSeaLowColor = currentSeaLowRgb;
 	if (activeCopperPanelSeaColor)
 		*activeCopperPanelSeaColor = currentPanelSeaRgb;
 }
 
-/* Reset for a fresh session - the current*Rgb globals persist across
- * sessions (same reason the copper list itself is rebuilt fresh each
- * session, see buildGameHudCopper()'s call site), so a session starting
- * right after a previous flight ended mid-town would otherwise bake stale
- * dusk colours into the new copper list before the player has gone
- * anywhere. */
+static void applyCityFadeStep(UBYTE step) {
+	applyMissionPaletteFadeStep(currentMissionFlightPalettePhase,
+		currentMissionTownPalettePhase, step);
+}
+
+/* CPC advances five entries both at newlevelloop and when Port Stanley is
+ * built. Mission 1 deliberately skips its takeoff fade. Thereafter the exact
+ * repeating campaign is day->dusk, dusk->night, night->dawn, dawn->day. */
 static void resetCityFade(GameState* game) {
+	if (game->missionNumber == 1) {
+		currentMissionOpeningPalettePhase = MISSION_PALETTE_DAY;
+		currentMissionFlightPalettePhase = MISSION_PALETTE_DAY;
+		currentMissionTownPalettePhase = MISSION_PALETTE_DUSK;
+	} else if ((game->missionNumber & 1) == 0) {
+		currentMissionOpeningPalettePhase = MISSION_PALETTE_DUSK;
+		currentMissionFlightPalettePhase = MISSION_PALETTE_NIGHT;
+		currentMissionTownPalettePhase = MISSION_PALETTE_DAWN;
+	} else {
+		currentMissionOpeningPalettePhase = MISSION_PALETTE_DAWN;
+		currentMissionFlightPalettePhase = MISSION_PALETTE_DAY;
+		currentMissionTownPalettePhase = MISSION_PALETTE_DUSK;
+	}
+	game->takeoffPaletteFadeStep =
+		currentMissionOpeningPalettePhase == currentMissionFlightPalettePhase ?
+			CITY_FADE_STEP_COUNT : 0;
+	game->takeoffPaletteFadeTimer = CITY_FADE_STEP_FRAMES;
 	game->cityFadeStep = 0;
 	game->cityFadeTimer = CITY_FADE_STEP_FRAMES;
-	currentSkyTopRgb = GAME_SKY_TOP_RGB;
-	currentSkyMidRgb = GAME_SKY_MID_RGB;
-	currentSkyLowRgb = GAME_SKY_LOW_RGB;
-	currentCloudTopRgb = GAME_SKY_TOP_CLOUD_RGB;
+	currentSkyTopRgb = missionPalettePhaseColor(
+		currentMissionOpeningPalettePhase, MISSION_PALETTE_SKY_TOP);
+	currentSkyMidRgb = missionPalettePhaseColor(
+		currentMissionOpeningPalettePhase, MISSION_PALETTE_SKY_MID);
+	currentSkyLowRgb = missionPalettePhaseColor(
+		currentMissionOpeningPalettePhase, MISSION_PALETTE_SKY_LOW);
+	currentCloudTopRgb = missionPalettePhaseColor(
+		currentMissionOpeningPalettePhase, MISSION_PALETTE_CLOUD);
+	currentLandRgb = missionPalettePhaseColor(
+		currentMissionOpeningPalettePhase, MISSION_PALETTE_LAND);
 	currentSeaLowRgb = GAME_SKY_LOW_SEA_RGB;
 	currentPanelSeaRgb = GAME_HUD_PANEL_SEA_RGB;
 }
@@ -13385,11 +13839,29 @@ static void resetCityFade(GameState* game) {
  *
  * CPC does not restore day colours when the town geometry ends:
  * beginlandingapproach enters landinghoverloop with the current red/dusk
- * palette still active.  Day is restored only when the successful landing
- * starts the next newlevelloop.  Therefore the first non-zero fade step
- * latches the dusk target for the rest of this GameState; resetCityFade()
- * releases it when startGameSession() creates the next level. */
+ * palette still active. The successful landing's next newlevelloop advances
+ * the campaign palette again. Therefore the first non-zero fade step latches
+ * the mission's town target for the rest of this GameState; resetCityFade()
+ * selects the next mission's day/night base in startGameSession(). */
 static void updateCityFade(GameState* game) {
+	/* CPC starts the between-mission five-step fade only after checkliftoff.
+	 * Keep the retained landing palette while the aircraft wait on deck, then
+	 * advance it during the real lift-off instead of popping directly to the
+	 * next phase when startGameSession() rebuilds the Copper list. */
+	if (game->takeoffPaletteFadeStep < CITY_FADE_STEP_COUNT) {
+		if (game->takeoffState < TAKEOFF_STATE_LIFTING)
+			return;
+		if (game->takeoffPaletteFadeTimer > 0) {
+			game->takeoffPaletteFadeTimer--;
+			return;
+		}
+		game->takeoffPaletteFadeStep++;
+		game->takeoffPaletteFadeTimer = CITY_FADE_STEP_FRAMES;
+		applyMissionPaletteFadeStep(currentMissionOpeningPalettePhase,
+			currentMissionFlightPalettePhase,
+			game->takeoffPaletteFadeStep);
+		return;
+	}
 	LONG worldColumn = (LONG)((game->scrollX >> 3) + GAME_MAP_WIDTH);
 	const LevelSegmentDef* segment = levelSegmentForWorldColumn(worldColumn);
 	UBYTE stage = stageForWorldColumn(worldColumn, segment);
@@ -13437,16 +13909,22 @@ static UBYTE playerHighEnoughForPowerup(const GameState* game) {
 	/* CPC: ld a,(leveldifficulty); ld c,a; ld a,11; sub c; ld c,a; ld a,h;
 	 * cp c; ret nc. H is the player's tile Y; lower Y = higher on screen.
 	 * Skill 1 -> floor 10, skill 5 -> floor 6. */
-	UBYTE floor = (UBYTE)(POWERUP_ALTITUDE_FLOOR_BASE - game->skillLevel);
+	UBYTE floor = (UBYTE)(POWERUP_ALTITUDE_FLOOR_BASE - game->levelDifficulty);
 	return (UBYTE)(game->playerY >> 3) < floor;
 }
 
 static void spawnPowerup(GameState* game, UBYTE type, UBYTE startRow) {
 	PowerupState* p = &game->powerup;
+	/* Audit every Enhanced entry point, including the end-of-board aircraft
+	 * bonus. The caller-side arbitration should keep this at zero. */
+	if (game->gameMode == GAME_MODE_ENHANCED && game->enemyPlane.active &&
+		telemetryEnhancedPowerupWhileEnemy < 0xffff)
+		telemetryEnhancedPowerupWhileEnemy++;
 	p->active = 1;
 	p->type = type;
 	p->worldX = (LONG)game->scrollX + (POWERUP_SPAWN_COLUMN << 3);
 	p->y = (WORD)(startRow << 3);
+	p->logicalY = p->y;
 	p->fallCounter = 0;
 }
 
@@ -13466,6 +13944,17 @@ static UBYTE nextPowerupTypeForSpawnId(UBYTE spawnId) {
 
 static void trySpawnPowerup(GameState* game) {
 	PowerupState* p = &game->powerup;
+	/* Classic owns one ordered launchenemyplane decision in
+	 * updateClassicAirAdmission().  Running this older column-driven path as
+	 * well allowed a drop and an enemy to be admitted independently. */
+	if (game->gameMode == GAME_MODE_CLASSIC)
+		return;
+	/* Enhanced keeps its own radar/column timing, but follows the same clean
+	 * ownership rule: an admitted enemy aircraft blocks any new drop. Do not
+	 * consume the column while blocked; after the aircraft leaves, the current
+	 * column receives one normal opportunity. */
+	if (game->enemyPlane.active)
+		return;
 	/* CPC calls launchenemyplane once from the newly generated right-edge
 	 * world column, not once per video frame. Consume each column exactly
 	 * once even if an active powerup or another gate rejects the attempt. */
@@ -13536,6 +14025,7 @@ static void trySpawnExtraAircraftBonus(GameState* game) {
 	 * creates the object, rather than spawning an inert pickup. */
 	if (game->gameMode != GAME_MODE_ENHANCED ||
 		game->extraAircraftBonusSpawned || game->powerup.active ||
+		game->enemyPlane.active ||
 		game->gameOver || game->crashTimer || game->ejectState ||
 		game->missionComplete || game->landingState != LANDING_STATE_NONE ||
 		game->lives >= PLAYER_MAX_AIRCRAFT)
@@ -13566,18 +14056,14 @@ static void activatePowerup(GameState* game, UBYTE type) {
 			game->armour = 100;
 			break;
 		case POWERUP_ROCKETS:
-			{
-				UBYTE fullBombs;
-				ammoForSkill(game->skillLevel, &fullBombs,
-					&game->rockets);
-			}
+			/* CPC checkactivaterockets writes literal &10 to
+			 * numberofrockets. This is a 16-shot pickup, not the
+			 * skill-scaled full inventory used at takeoff/landing. */
+			game->rockets = POWERUP_ROCKET_REFILL;
 			break;
 		case POWERUP_BOMBS:
-			{
-				UBYTE fullRockets;
-				ammoForSkill(game->skillLevel, &game->bombs,
-					&fullRockets);
-			}
+			/* CPC checkactivatebombs has the same literal &10 rule. */
+			game->bombs = POWERUP_BOMB_REFILL;
 			break;
 		case POWERUP_WINGMAN:
 			if (game->wingman.destroyed) {
@@ -13595,8 +14081,9 @@ static void activatePowerup(GameState* game, UBYTE type) {
 				wingman->mode = (game->wingmanControl == WINGMAN_CONTROL_PLAYER2) ?
 					WINGMAN_PLAYER2_FLIGHT : WINGMAN_TAKEOFF;
 				wingman->interceptScreenX = pickupScreenX;
-				wingman->screenY = game->powerup.y;
-				wingman->row = (WORD)(game->powerup.y / GAME_TILE_HEIGHT);
+				WORD pickupY = game->powerup.logicalY;
+				wingman->screenY = pickupY;
+				wingman->row = (WORD)(pickupY / GAME_TILE_HEIGHT);
 				wingman->moveTimer = 0;
 				wingman->returningToFormation = 0;
 				wingman->rocket.active = 0;
@@ -13635,7 +14122,8 @@ static void activatePowerup(GameState* game, UBYTE type) {
  * branch. */
 static UBYTE powerupHitsSolidWorld(const GameState* game, const PowerupState* p) {
 	WORD probeX = (WORD)((p->worldX - (LONG)game->scrollX) + (POWERUP_COLLISION_WIDTH / 2));
-	WORD probeY = (WORD)(p->y + POWERUP_SPRITE_HEIGHT);
+	WORD collisionY = p->logicalY;
+	WORD probeY = (WORD)(collisionY + POWERUP_SPRITE_HEIGHT);
 	ObjectCell cell;
 	LONG worldColumn;
 	WORD tileY;
@@ -13653,7 +14141,8 @@ static UBYTE powerupHitsSolidWorld(const GameState* game, const PowerupState* p)
 
 static UBYTE powerupHitsPlayer(const GameState* game, const PowerupState* p) {
 	WORD screenX = (WORD)(p->worldX - (LONG)game->scrollX);
-	if (rectsOverlap(screenX, p->y, POWERUP_COLLISION_WIDTH,
+	WORD collisionY = p->logicalY;
+	if (rectsOverlap(screenX, collisionY, POWERUP_COLLISION_WIDTH,
 		POWERUP_SPRITE_HEIGHT, game->playerX, game->playerY,
 		PLAYER_SPRITE_WIDTH, PLAYER_SPRITE_HEIGHT))
 		return 1;
@@ -13664,7 +14153,7 @@ static UBYTE powerupHitsPlayer(const GameState* game, const PowerupState* p) {
 	if (game->gameMode == GAME_MODE_ENHANCED &&
 		game->wingmanControl == WINGMAN_CONTROL_PLAYER2 &&
 		game->wingman.active && !game->wingman.destroyed)
-		return rectsOverlap(screenX, p->y, POWERUP_COLLISION_WIDTH,
+		return rectsOverlap(screenX, collisionY, POWERUP_COLLISION_WIDTH,
 			POWERUP_SPRITE_HEIGHT, wingmanScreenX(game),
 			game->wingman.screenY, PLAYER_SPRITE_WIDTH,
 			PLAYER_SPRITE_HEIGHT);
@@ -13683,14 +14172,9 @@ static UBYTE updatePowerup(GameState* game) {
 		return 1;
 	}
 
-	/* One physical pixel each PAL frame: consistent cadence avoids the old
-	 * 1,1,0 micro-judder while remaining much smoother than CPC tile steps. */
-	p->fallCounter = (UBYTE)(p->fallCounter + POWERUP_FALL_PHASE_ADD);
-	if (p->fallCounter >= POWERUP_FALL_PHASE_PIXEL) {
-		p->fallCounter = (UBYTE)(p->fallCounter - POWERUP_FALL_PHASE_PIXEL);
-		p->y++;
-	}
-
+	/* CPC checks contact at its current character row on every call, then
+	 * advances one complete row only when wingmanpowerupspeed reaches five.
+	 * Both profiles share that logic and the smooth 1/2-pixel presentation. */
 	if (powerupHitsPlayer(game, p)) {
 		activatePowerup(game, p->type);
 		destroyPowerup(game, 0);
@@ -13700,6 +14184,17 @@ static UBYTE updatePowerup(GameState* game) {
 	if (powerupHitsSolidWorld(game, p)) {
 		destroyPowerup(game, 1);
 		return 1;
+	}
+
+	static const UBYTE displayOffset[POWERUP_LOGICAL_STEP_FRAMES + 1] = {
+		0, 1, 3, 4, 6, 8
+	};
+	p->fallCounter++;
+	p->y = (WORD)(p->logicalY + displayOffset[p->fallCounter]);
+	if (p->fallCounter >= POWERUP_LOGICAL_STEP_FRAMES) {
+		p->fallCounter = 0;
+		p->logicalY = (WORD)(p->logicalY + GAME_TILE_HEIGHT);
+		p->y = p->logicalY;
 	}
 
 	return 1;
@@ -13802,7 +14297,7 @@ static UBYTE enemyPlaneRowIsPassable(LONG worldColumn, WORD tileRow) {
 		return 0;
 	for (UBYTE offset = 0; offset < 2; offset++) {
 		LONG probeColumn = worldColumn + offset;
-		if (probeColumn >= 0 && probeColumn < GAME_LEVEL_WIDTH_TILES &&
+		if (probeColumn >= 0 && probeColumn < currentGameLevelWidthTiles &&
 			(enemyPlanePassableColumnValid[(UWORD)probeColumn >> 3] &
 			 (UBYTE)(1U << ((UWORD)probeColumn & 7)))) {
 			if (!(enemyPlanePassableMaskByColumn[probeColumn] &
@@ -13918,7 +14413,7 @@ static void updateRadarDetection(GameState* game, UBYTE eligible) {
 	 * (3+skill) rows above nominal row-14 terrain. Subtract its one-row
 	 * body because this implementation measures from the belly. This gives
 	 * the five skill levels belly-clearance limits of 24/32/40/48/56 px. */
-	UBYTE threshold = (UBYTE)((2 + game->skillLevel) * GAME_TILE_HEIGHT);
+	UBYTE threshold = (UBYTE)((2 + game->levelDifficulty) * GAME_TILE_HEIGHT);
 	game->radarClearance = (UBYTE)clearance;
 	game->radarThreshold = threshold;
 	if (telemetryEnabled) {
@@ -14065,13 +14560,16 @@ static UBYTE spawnEnemyPlane(GameState* game, UWORD decisionColumn) {
 	return 1;
 }
 
-/* One Amiga frame is only one interpolated pixel of the CPC aircraft's 8px
- * character move.  The CPC calls launchenemyplane once per such character
- * gameplay pass, so testing once per streamed world column made Classic's
- * admission rate depend on player speed.  Advance a private temporal state
- * once per equivalent 8px logic tick instead.  This is deliberately not the
- * Enhanced radar RNG and deliberately not the terrain's column-derived R. */
-static UBYTE classicEnemyPlaneSpawnRoll(GameState* game) {
+/* One Amiga frame is only one interpolated pixel of the CPC's 8px character
+ * step.  Run the complete Classic admission decision once per equivalent
+ * logic tick.  CPC's launchenemyplane routine has exactly one ordered path:
+ *
+ *   gate -> R&15 -> existing drop? enemy : Wingman/drop rotation/enemy
+ *
+ * Powerups and enemy aircraft must therefore never use independent rolls.
+ * Enhanced retains its radar accumulator and column-driven drop path. */
+static UBYTE updateClassicAirAdmission(GameState* game,
+	UWORD decisionColumn, UBYTE eligible, UBYTE heightGate) {
 	game->classicEnemySpawnPhase++;
 	if (game->classicEnemySpawnPhase < GAME_TILE_WIDTH)
 		return 0;
@@ -14082,7 +14580,57 @@ static UBYTE classicEnemyPlaneSpawnRoll(GameState* game) {
 	if (!value)
 		value = 0x6d2b;
 	game->classicEnemySpawnRandomState = value;
-	return (UBYTE)((value & POWERUP_SPAWN_ROLL_MASK) == 0);
+	if (telemetryClassicAirAdmissionTicks < 0xffff)
+		telemetryClassicAirAdmissionTicks++;
+
+	if (!eligible || !heightGate)
+		return 0;
+
+	/* First CPC read: ld a,r / and #0f / ret nz. */
+	UBYTE rState = (UBYTE)(value & CPC_R_MASK);
+	if ((rState & POWERUP_SPAWN_ROLL_MASK) != 0)
+		return 0;
+
+	PowerupState* powerup = &game->powerup;
+	UBYTE type = POWERUP_NONE;
+	UBYTE startRow = (UBYTE)(cpcRandomStateForWorldColumn(decisionColumn) &
+		POWERUP_SPAWN_MAX_ROW);
+
+	/* CPC jumps directly to spawnenemyplane if a drop is already descending. */
+	if (!powerup->active) {
+		if (game->wingman.destroyed) {
+			type = POWERUP_WINGMAN;
+		} else {
+			/* The second R read occurs after roughly thirteen opcode fetches.
+			 * Only values >=100 enter the deterministic 1..6 drop rotation;
+			 * slot six deliberately falls through to the enemy branch. */
+			UBYTE powerupRoll = (UBYTE)((rState + 13) & CPC_R_MASK);
+			if (powerupRoll >= 100) {
+				powerup->spawnId = (UBYTE)(powerup->spawnId + 1);
+				if (powerup->spawnId > 6)
+					powerup->spawnId = 1;
+				type = nextPowerupTypeForSpawnId(powerup->spawnId);
+			}
+		}
+	}
+
+	if (type != POWERUP_NONE) {
+		/* This counter is expected to stay zero.  Keeping the assertion as
+		 * telemetry rather than a runtime abort makes real-hardware audits safe. */
+		if (game->enemyPlane.active && telemetryClassicPowerupWhileEnemy < 0xffff)
+			telemetryClassicPowerupWhileEnemy++;
+		spawnPowerup(game, type, startRow);
+		if (telemetryClassicAirPowerupOutcomes < 0xffff)
+			telemetryClassicAirPowerupOutcomes++;
+		if (type == POWERUP_WINGMAN)
+			telemetryLogGameEvent(TELEMETRY_GAME_EVENT_WING_POWERUP, 0,
+				decisionColumn, game, rState);
+		return 0;
+	}
+
+	if (telemetryClassicAirEnemyOutcomes < 0xffff)
+		telemetryClassicAirEnemyOutcomes++;
+	return spawnEnemyPlane(game, decisionColumn);
 }
 
 static UBYTE updateEnemyPlane(GameState* game) {
@@ -14114,25 +14662,18 @@ static UBYTE updateEnemyPlane(GameState* game) {
 				RADAR_DETECTION_MAX : 0;
 			game->radarClearance = (UBYTE)(game->playerY >> 3);
 			game->radarThreshold = (UBYTE)(POWERUP_ALTITUDE_FLOOR_BASE -
-				game->skillLevel);
+				game->levelDifficulty);
 			if (telemetryEnabled) {
 				telemetryRadarLevel = game->radarDetection;
 				telemetryRadarClearance = game->radarClearance;
 				telemetryRadarThreshold = game->radarThreshold;
 			}
-			/* Keep advancing the CPC-equivalent temporal phase while a plane is
-			 * inactive, even outside the eligible band. Entering the band must
-			 * not create a fixed spawn column. */
-			UBYTE spawnRoll = classicEnemyPlaneSpawnRoll(game);
-			if (!eligible || !heightGate || !spawnRoll)
-				return 0;
-			/* trySpawnPowerup() runs first. Suppress the aircraft only when that
-			 * same CPC decision produced a new drop; an older active drop does not
-			 * block CPC's enemy-plane branch. */
-			if (game->powerup.active &&
-				(UWORD)(game->powerup.worldX >> 3) == rightEdgeColumn)
-				return 0;
-			return spawnEnemyPlane(game, rightEdgeColumn);
+			/* The same tick now owns both possible outcomes. Use CPC's actual
+			 * spawn column 0x26 (38), not the display fetch's 40-column edge. */
+			UWORD decisionColumn = (UWORD)((game->scrollX >> 3) +
+				POWERUP_SPAWN_COLUMN);
+			return updateClassicAirAdmission(game, decisionColumn,
+				eligible, heightGate);
 		}
 
 		updateRadarDetection(game, (UBYTE)(radarStage && playerAvailable));
@@ -14173,7 +14714,7 @@ static UBYTE updateEnemyPlane(GameState* game) {
 		game->enemyPlaneDamageState = ENEMY_PLANE_DAMAGE_NORMAL;
 		game->enemyPlaneBrokenTimer = 0;
 		game->enemyPlaneRetreating = 0;
-		game->enemyRespawnTimer = enemyRespawnFramesForSkill(game->skillLevel);
+		game->enemyRespawnTimer = enemyRespawnFramesForSkill(game->levelDifficulty);
 		if (!game->enemyMissile.active)
 			game->enemyMissileTarget = ENEMY_TARGET_NONE;
 		return 1;
@@ -14487,46 +15028,21 @@ static UBYTE moveWingmanTowardInterceptWaypoint(GameState* game,
 	return 0;
 }
 
-/* Sprint 15.5 follow-up: the "flying back to formation" half of
- * updateWingmanIntercept() - see WingmanState.returningToFormation's own
- * comment for why this exists instead of an instant mode switch. Reuses
- * the exact same formation-target math updateWingmanBob()'s FORMATION
- * branch uses, so the moment this hands off to WINGMAN_FORMATION the
- * derived position is guaranteed to already match where this last drew it -
- * no seam. */
+/* Sprint 15.72.2: return through the same bounded CPC-direction waypoint
+ * mover as intercept instead of maintaining a second split X/Y movement
+ * implementation.  This preserves pixel-smooth horizontal presentation,
+ * four-frame row timing and the R&7 obstruction fallback all the way back
+ * into formation. */
 static void updateWingmanReturnToFormation(GameState* game) {
 	WingmanState* wingman = &game->wingman;
 	WORD targetScreenX = (WORD)(game->playerX - WINGMAN_FORMATION_COLUMNS_BEHIND * GAME_TILE_WIDTH);
-
-	/* Clamp to the target instead of always stepping by a fixed amount -
-	 * without this, a gap that isn't an exact multiple of
-	 * WINGMAN_INTERCEPT_MOVE_PIXELS would overshoot back and forth across
-	 * the target forever (X < target steps up past it, then > target steps
-	 * back down past it, repeating), so interceptScreenX/targetScreenX
-	 * would never become exactly equal and this would never hand off to
-	 * WINGMAN_FORMATION - stuck oscillating instead. */
-	if (wingman->interceptScreenX < targetScreenX) {
-		WORD stepped = (WORD)(wingman->interceptScreenX + WINGMAN_INTERCEPT_MOVE_PIXELS);
-		wingman->interceptScreenX = (stepped > targetScreenX) ? targetScreenX : stepped;
-	} else if (wingman->interceptScreenX > targetScreenX) {
-		WORD stepped = (WORD)(wingman->interceptScreenX - WINGMAN_INTERCEPT_MOVE_PIXELS);
-		wingman->interceptScreenX = (stepped < targetScreenX) ? targetScreenX : stepped;
-	}
-
 	LONG worldColumnLeft = ((LONG)game->scrollX + wingman->interceptScreenX) >> 3;
 	WORD targetRow = cachedWingmanFormationTargetRow(game, worldColumnLeft);
+	UBYTE usedEvasion = 0;
 
-	wingman->moveTimer++;
-	if (wingman->moveTimer >= WINGMAN_MOVE_FRAME_INTERVAL) {
-		wingman->moveTimer = 0;
-		if (wingman->row != targetRow) {
-			WORD candidate = (WORD)(wingman->row + ((wingman->row < targetRow) ? 1 : -1));
-			wingman->row = wingmanFormationRowIsSafe(worldColumnLeft, candidate) ?
-				candidate : wingmanSafeTargetRow(worldColumnLeft, candidate);
-		}
-	}
-
-	if (wingman->interceptScreenX == targetScreenX && wingman->row == targetRow) {
+	if (moveWingmanTowardInterceptWaypoint(game,
+		targetScreenX, targetRow, &usedEvasion)) {
+		wingman->formationLogicalX = targetScreenX;
 		wingman->mode = WINGMAN_FORMATION;
 		wingman->returningToFormation = 0;
 		wingman->interceptReason = 0;
@@ -14656,7 +15172,6 @@ static void maybeStartWingmanIntercept(GameState* game) {
 		(UWORD)rollWorldColumn, game, rState);
 
 	wingman->mode = WINGMAN_INTERCEPT_APPROACH;
-	wingman->interceptScreenX = (WORD)(game->playerX - WINGMAN_FORMATION_COLUMNS_BEHIND * GAME_TILE_WIDTH);
 	wingman->interceptWaypointX = (WORD)(wingman->interceptScreenX +
 		WINGMAN_INTERCEPT_FIRST_PASS_COLUMNS * GAME_TILE_WIDTH);
 	if (wingman->interceptWaypointX > SCREEN_WIDTH - PLAYER_SPRITE_WIDTH)
@@ -14696,8 +15211,6 @@ static void maybeStartWingmanBombingRun(GameState* game) {
 		game->targetLock.worldX + GAME_TILE_WIDTH / 2;
 	wingman->bombTargetY =
 		(WORD)(game->targetLock.y + GAME_TILE_HEIGHT / 2);
-	wingman->interceptScreenX = (WORD)(game->playerX -
-		WINGMAN_FORMATION_COLUMNS_BEHIND * GAME_TILE_WIDTH);
 	wingman->mode = WINGMAN_BOMB_APPROACH;
 	wingman->moveTimer = 0;
 }
@@ -14952,7 +15465,8 @@ static UBYTE updateEnemyMissile(GameState* game, UBYTE scrollPixels) {
 		if (game->enemyMissile.active && game->powerup.active) {
 			WORD powerupScreenX = (WORD)(game->powerup.worldX - (LONG)game->scrollX);
 			if (rectsOverlap(game->enemyMissile.x, game->enemyMissile.y, ENEMY_MISSILE_SPRITE_WIDTH, ENEMY_MISSILE_SPRITE_HEIGHT,
-					powerupScreenX, game->powerup.y, POWERUP_COLLISION_WIDTH, POWERUP_SPRITE_HEIGHT)) {
+					powerupScreenX, game->powerup.logicalY,
+					POWERUP_COLLISION_WIDTH, POWERUP_SPRITE_HEIGHT)) {
 				game->enemyMissile.active = 0;
 				game->enemyMissileFromShip = 0;
 				game->enemyMissileTarget = ENEMY_TARGET_NONE;
@@ -15141,10 +15655,10 @@ static UBYTE updateAircraftFailure(GameState* game, const InputState* input) {
 		AIRCRAFT_FAILURE_SPEED_DECAY_FRAMES) == 0 && game->speedLevel > 0)
 		game->speedLevel--;
 	UBYTE scrollPixels = scrollPixelsForSpeedLevel(game->speedLevel);
-	if (game->scrollX < GAME_SCROLL_MAX_PIXELS) {
+	if (game->scrollX < gameScrollMaxPixels()) {
 		UWORD nextScrollX = (UWORD)(game->scrollX + scrollPixels);
-		game->scrollX = nextScrollX > GAME_SCROLL_MAX_PIXELS ?
-			GAME_SCROLL_MAX_PIXELS : nextScrollX;
+		game->scrollX = nextScrollX > gameScrollMaxPixels() ?
+			gameScrollMaxPixels() : nextScrollX;
 	}
 
 	game->aircraftFailureY256 += game->aircraftFailureFallSpeed256;
@@ -15323,7 +15837,7 @@ static void applyPlayerFlakDamage(GameState* game) {
 		game->aircraftFailureState != AIRCRAFT_FAILURE_NONE)
 		return;
 
-	UBYTE threshold = flakDamageThresholdForSkill(game->skillLevel);
+	UBYTE threshold = flakDamageThresholdForSkill(game->levelDifficulty);
 	if (game->flakDamageCount < threshold)
 		game->flakDamageCount++;
 	game->armour = game->flakDamageCount < threshold ? (UWORD)(100 - (100 * (ULONG)game->flakDamageCount / threshold)) : 0;
@@ -15554,6 +16068,14 @@ static UBYTE updateGameCollisions(GameState* game, UBYTE** worldBuffers,
 		enemyChanged = 1;
 	}
 
+	/* CPC checks the two occupied object-map cells after every Wingman move.
+	 * Do this before projectile/aircraft contacts so solid world geometry can
+	 * no longer be flown through by either CPU or Player 2. */
+	if (game->wingman.active && wingmanObjectMapCollision(game)) {
+		destroyWingman(game);
+		*wingmanChanged = 1;
+	}
+
 	if (game->wingman.active) {
 		WORD wingmanX = wingmanScreenX(game);
 		WORD wingmanY = game->wingman.screenY;
@@ -15614,7 +16136,7 @@ static UBYTE updateGameCollisions(GameState* game, UBYTE** worldBuffers,
 		WORD impactX = game->playerX;
 		WORD impactY = game->playerY;
 		game->enemyPlane.active = 0;
-		game->enemyRespawnTimer = enemyRespawnFramesForSkill(game->skillLevel);
+		game->enemyRespawnTimer = enemyRespawnFramesForSkill(game->levelDifficulty);
 		/* Real CPC: every collision object except flak is instant death
 		 * (checkplayeragainstobjectmap/planehitbyobject, :7525-7544/:8127-8132)
 		 * - no graduated damage points for enemy-plane contact. */
@@ -15645,9 +16167,10 @@ static UBYTE updateGameCollisions(GameState* game, UBYTE** worldBuffers,
 	 * powerup is handled in the missile's own update path. */
 	if (game->powerup.active) {
 		WORD powerupScreenX = (WORD)(game->powerup.worldX - (LONG)game->scrollX);
+		WORD powerupCollisionY = game->powerup.logicalY;
 		if (game->rocketShot.active &&
 			rectsOverlap(game->rocketShot.x, game->rocketShot.y, 16, WEAPON_SPRITE_HEIGHT,
-				powerupScreenX, game->powerup.y, POWERUP_COLLISION_WIDTH, POWERUP_SPRITE_HEIGHT)) {
+				powerupScreenX, powerupCollisionY, POWERUP_COLLISION_WIDTH, POWERUP_SPRITE_HEIGHT)) {
 			game->rocketShot.active = 0;
 			destroyPowerup(game, 1);
 			startWorldImpact(game, game->rocketShot.x, game->rocketShot.y);
@@ -15655,7 +16178,7 @@ static UBYTE updateGameCollisions(GameState* game, UBYTE** worldBuffers,
 		}
 		if (game->powerup.active && game->bombShot.active &&
 			rectsOverlap(game->bombShot.x, game->bombShot.y, 16, WEAPON_SPRITE_HEIGHT,
-				powerupScreenX, game->powerup.y, POWERUP_COLLISION_WIDTH, POWERUP_SPRITE_HEIGHT)) {
+				powerupScreenX, powerupCollisionY, POWERUP_COLLISION_WIDTH, POWERUP_SPRITE_HEIGHT)) {
 			game->bombShot.active = 0;
 			destroyPowerup(game, 1);
 			startWorldImpact(game, game->bombShot.x, game->bombShot.y);
@@ -15729,9 +16252,14 @@ static void startGameSession(GameState* game,
 	UBYTE* pendingWingmanSpriteUpdate,
 	UBYTE* hudDirty,
 	ULONG highScore,
+	UBYTE missionNumber,
 	UBYTE skillLevel,
 	UBYTE gameModeSetting,
-	UBYTE wingmanControl) {
+	UBYTE wingmanControl,
+	UBYTE preserveVisibleWorld) {
+	UBYTE effectiveMission = missionNumber ? missionNumber : 1;
+	UBYTE levelDifficulty = cpcDifficultyForMission(skillLevel,
+		effectiveMission);
 	stopAllSfx();
 	/* Must be set before initGameState() below, not after: initGameState()
 	 * calls resetCpcRandomSequence(), which now generates the land height/
@@ -15739,12 +16267,22 @@ static void startGameSession(GameState* game,
 	 * ceiling) rather than lazily on first render - setting this afterward
 	 * would build the table for the previous session's skill level instead
 	 * of the one the player just picked at the menu. */
-	cpcLandSkillLevel = skillLevel;
+	cpcLandSkillLevel = levelDifficulty;
+	cpcLandRouteExtension = (UWORD)(levelDifficulty *
+		CPC_LAND_EXTENSION_PER_DIFFICULTY);
+	cpcLandProceduralLength = (UWORD)(CPC_LAND_PROCEDURAL_BASE_LENGTH +
+		cpcLandRouteExtension);
 	initGameState(game);
+	game->missionNumber = effectiveMission;
+	/* initGameState() establishes the safe mission-1 default before the
+	 * caller's campaign mission is known. Select the actual CPC palette phase
+	 * now, before buildGameHudCopper() captures these colours. */
+	resetCityFade(game);
 	game->takeoffState = TAKEOFF_STATE_ROLLING_IN;
 	game->scrollX = TAKEOFF_SCROLL_START_PIXELS;
 	setTakeoffDeckPosition(game);
 	game->skillLevel = skillLevel;
+	game->levelDifficulty = levelDifficulty;
 	game->gameMode = gameModeSetting == GAME_MODE_CLASSIC ?
 		GAME_MODE_CLASSIC : GAME_MODE_ENHANCED;
 	/* Session-time seed mirrors the CPC R register's dependence on how long
@@ -15763,10 +16301,9 @@ static void startGameSession(GameState* game,
 	/* Same reasoning as lives above - initGameState() set a flat 12/6
 	 * regardless of skill; ammoForSkill() gives the real CPC's
 	 * skill-scaled starting ammo instead. */
-	ammoForSkill(skillLevel, &game->bombs, &game->rockets);
-	game->wingmanControl = (game->gameMode == GAME_MODE_CLASSIC &&
-		wingmanControl == WINGMAN_CONTROL_PLAYER2) ?
-		WINGMAN_CONTROL_CPU : wingmanControl;
+	ammoForSkill(levelDifficulty, &game->bombs, &game->rockets);
+	game->wingmanControl = wingmanControl <= WINGMAN_CONTROL_PLAYER2 ?
+		wingmanControl : WINGMAN_CONTROL_OFF;
 	/* CPC movesecondharrierlandingfrigate scrolls the grey second Harrier
 	 * with both the start and end carrier specifically when Wingman control
 	 * is OFF. CPU/Player 2 modes also begin with it parked, then remove the
@@ -15783,6 +16320,15 @@ static void startGameSession(GameState* game,
 		game->wingman.interceptScreenX = WINGMAN_TAKEOFF_DECK_X;
 		game->wingman.screenY = WINGMAN_TAKEOFF_DECK_Y;
 		game->wingman.row = WINGMAN_TAKEOFF_DECK_Y / GAME_TILE_HEIGHT;
+		/* A retained post-landing bitmap contains the carrier without its
+		 * parked aircraft: that Wingman landed as a hardware sprite and was
+		 * never baked into the world. Keep it live across the mission reset so
+		 * it remains visible on deck until its next real takeoff. A fresh game
+		 * still uses the cheaper parked carrier composite. */
+		if (preserveVisibleWorld) {
+			game->wingman.active = 1;
+			carrierParkedWingmanVisible = 0;
+		}
 	}
 	*activeWorldBuffer = 0;
 	resetBombShotPixelBobFootprints();
@@ -15791,7 +16337,8 @@ static void startGameSession(GameState* game,
 	resetCarrierAmbienceVisuals();
 	bombImpactBobFootprintValid = 0;
 	powerupBobFootprintValid = 0;
-	initRingWorldBuffer(worldBuffers[0], 0);
+	if (!preserveVisibleWorld)
+		initRingWorldBuffer(worldBuffers[0], 0);
 
 	*pendingGameScrollCopperUpdate = 0;
 	*pendingPlayerSpriteUpdate = 0;
@@ -15997,7 +16544,7 @@ int main(void) {
 	/* Runtime route arrays are writable because the final CPC town block can
 	 * extend the route. Do this after the loading page is live; initGameState()
 	 * replaces the baseline with the session-specific shifted route. */
-	configureRuntimeLevelRoute(0);
+	configureRuntimeLevelRoute(0, 0);
 
 	initRingWorldBuffer(worldBuffers[0], 0);
 	buildPlayerSprite(playerSprite, playerAttachSprite, PLAYER_START_X, PLAYER_START_Y);
@@ -16118,10 +16665,11 @@ int main(void) {
 		previousInput = input;
 		ReadInput(&input, (UBYTE)(inGameScene &&
 			game.wingmanControl == WINGMAN_CONTROL_PLAYER2 &&
-			controlProfiles[1].joystickPort == CONTROL_JOY_PORT_1));
+			(game.gameMode == GAME_MODE_CLASSIC ||
+			 controlProfiles[1].joystickPort == CONTROL_JOY_PORT_1)));
 		previousInput2 = input2;
 		if (inGameScene && game.wingmanControl == WINGMAN_CONTROL_PLAYER2)
-			ReadPlayer2Input(&input2);
+			ReadPlayer2Input(&input2, game.gameMode);
 		else
 			memset(&input2, 0, sizeof(input2));
 #if HAR_HEADLESS_AUTOPLAY
@@ -16142,6 +16690,7 @@ int main(void) {
 #endif
 			if (!headlessStartSent) {
 				skillLevel = HAR_HEADLESS_SKILL_LEVEL;
+				gameModeSetting = HAR_HEADLESS_GAME_MODE;
 				wingmanControl = HAR_HEADLESS_WINGMAN_CONTROL;
 				/* perf_log and parity_log are the headless telemetry. Keep the
 				 * optional in-game 100-frame sample ring disabled so the observer
@@ -16165,7 +16714,19 @@ int main(void) {
 				 * flight levels while an attacker is active.  This gives the
 				 * tracking AI repeatable vertical work without changing normal
 				 * gameplay or the reference full-map run. */
-#if HAR_HEADLESS_ENEMY_PLANE_EXERCISE
+#if HAR_HEADLESS_WINGMAN_FORMATION_EXERCISE
+				/* Sweep between two safe flight levels on a fixed cadence.  The
+				 * player also accelerates normally below, so the Wingman must use
+				 * the complete CPC 0..8 direction set rather than only vertical
+				 * corrections. */
+				{
+					const WORD desiredY = ((frameCounter / 96) & 1) ? 24 : 88;
+					if (game.playerY > desiredY + 1)
+						input.up = 1;
+					else if (game.playerY < desiredY - 1)
+						input.down = 1;
+				}
+#elif HAR_HEADLESS_ENEMY_PLANE_EXERCISE
 				if (game.enemyPlane.active) {
 					const WORD desiredY =
 						((game.enemyPlane.timer / 24) & 1) ? 16 : 72;
@@ -16445,7 +17006,8 @@ int main(void) {
 						Pressed(input.right, previousInput.right)) {
 						short direction = Pressed(input.left,
 							previousInput.left) ? -1 : 1;
-						if (controlsSelected == CONTROL_MENU_PLAYER_ROW) {
+						if (controlsSelected == CONTROL_MENU_PLAYER_ROW &&
+							gameModeSetting != GAME_MODE_CLASSIC) {
 							controlsPlayer ^= 1;
 							controlsMessage = CONTROL_MESSAGE_NONE;
 						} else {
@@ -16459,7 +17021,8 @@ int main(void) {
 					}
 
 					if (Pressed(input.select, previousInput.select)) {
-						if (controlsSelected == CONTROL_MENU_PLAYER_ROW) {
+						if (controlsSelected == CONTROL_MENU_PLAYER_ROW &&
+							gameModeSetting != GAME_MODE_CLASSIC) {
 							controlsPlayer ^= 1;
 							drawControlsScreen(screenBuffer, controlsPlayer,
 								controlsSelected, 0, CONTROL_MESSAGE_NONE);
@@ -16738,9 +17301,9 @@ int main(void) {
 							&pendingEnemySpriteUpdate,
 							&pendingEnemyMissileSpriteUpdate,
 							&pendingWingmanSpriteUpdate, &hudDirty,
-							highScore, (UBYTE)skillLevel,
+							highScore, 1, (UBYTE)skillLevel,
 							(UBYTE)gameModeSetting,
-							(UBYTE)wingmanControl);
+							(UBYTE)wingmanControl, 0);
 						if (telemetryEnabled)
 							telemetryReset();
 						lastInputMask = inputMask;
@@ -16749,6 +17312,10 @@ int main(void) {
 						gamePaused = 0;
 					} else if (selected == MENU_ITEM_CONTROLS) {
 						controlsActive = 1;
+						/* Classic P2 uses CPC's fixed keypad/joystick-port-1
+						 * controls; only Enhanced exposes P2 rebinding. */
+						if (gameModeSetting == GAME_MODE_CLASSIC)
+							controlsPlayer = 0;
 						controlsSelected = CONTROL_MENU_PLAYER_ROW;
 						controlsCapture = 0;
 						controlsMessage = CONTROL_MESSAGE_NONE;
@@ -16919,7 +17486,8 @@ int main(void) {
 							&pendingEnemySpriteUpdate,
 							&pendingEnemyMissileSpriteUpdate,
 							&pendingWingmanSpriteUpdate, &hudDirty, highScore,
-							game.skillLevel, rescuedGameMode, game.wingmanControl);
+							rescuedMissionNumber, game.skillLevel, rescuedGameMode,
+							game.wingmanControl, 0);
 						game.score = rescuedScore;
 						game.bonusScore = rescuedBonusScore;
 						game.missionStartScore = rescuedMissionStartScore;
@@ -17022,12 +17590,25 @@ int main(void) {
 						 * startGameSession supplies the same complete world/
 						 * actor reset; restore run-persistent values afterward
 						 * and skip the initial carrier-entry animation. */
+						/* Remove retained ambience before capturing the authoritative
+						 * carrier scene. Resetting their footprints first would bake a
+						 * gull or wave phase permanently into the rebased world. */
+						eraseCarrierGulls(worldBuffers[activeWorldBuffer],
+							activeWorldBuffer);
+						eraseSeaWaves(worldBuffers[activeWorldBuffer],
+							activeWorldBuffer);
+						UBYTE preservedLandingWorld =
+							rebaseLandedWorldForNextMission(
+								worldBuffers[activeWorldBuffer], &game);
+
 						ULONG nextBonusScore = game.bonusScore;
 						UWORD nextHitsCount = game.hitsCount;
 						UBYTE nextLives = game.lives;
 						UBYTE nextGameMode = game.gameMode;
-						UBYTE nextSkill = game.skillLevel < 5
-							? (UBYTE)(game.skillLevel + 1) : 5;
+						/* CPC increments leveldifficulty, not the player's menu
+						 * selection. startGameSession derives the next board's
+						 * capped difficulty from this unchanged starting skill. */
+						UBYTE nextSkill = game.skillLevel;
 						UBYTE nextMissionNumber = game.missionNumber < 99
 							? (UBYTE)(game.missionNumber + 1) : 99;
 						UBYTE nextWingmanControl = game.wingmanControl;
@@ -17037,7 +17618,6 @@ int main(void) {
 						 * every time the carrier resets for the next sortie. */
 						UBYTE nextWingmanDestroyed = game.wingman.destroyed;
 
-						skillLevel = nextSkill;
 						startGameSession(&game, copper, worldBuffers,
 							&activeWorldBuffer, hudBuffer, playerSprite,
 							playerAttachSprite, crashPart1Sprite, enemyAttachSprite,
@@ -17047,7 +17627,8 @@ int main(void) {
 							&pendingEnemySpriteUpdate,
 							&pendingEnemyMissileSpriteUpdate,
 							&pendingWingmanSpriteUpdate, &hudDirty, highScore,
-							nextSkill, nextGameMode, nextWingmanControl);
+							nextMissionNumber, nextSkill, nextGameMode, nextWingmanControl,
+							preservedLandingWorld);
 						game.bonusScore = nextBonusScore;
 						game.score = nextBonusScore;
 						game.missionStartScore = nextBonusScore;
@@ -17056,8 +17637,11 @@ int main(void) {
 						game.lives = nextLives;
 						game.missionNumber = nextMissionNumber;
 						game.wingman.destroyed = nextWingmanDestroyed;
-						if (nextWingmanDestroyed)
+						if (nextWingmanDestroyed) {
+							game.wingman.active = 0;
 							game.wingman.mode = WINGMAN_DESTROYED;
+							pendingWingmanSpriteUpdate = 1;
+						}
 						game.takeoffState = TAKEOFF_STATE_READY;
 						game.scrollX = 0;
 						setTakeoffDeckPosition(&game);
@@ -17087,12 +17671,12 @@ int main(void) {
 				UBYTE scrollPixels = (game.missionComplete || game.landingState == LANDING_STATE_HOVER) ?
 					0 : scrollPixelsForSpeedLevel(game.speedLevel);
 				if (!game.missionComplete && game.landingState != LANDING_STATE_HOVER &&
-					game.scrollX < GAME_SCROLL_MAX_PIXELS) {
+					game.scrollX < gameScrollMaxPixels()) {
 					UWORD nextScrollX = (UWORD)(game.scrollX + scrollPixels);
 					if (game.landingState == LANDING_STATE_SLOWING &&
 						nextScrollX > LANDING_HOVER_SCROLL_X)
 						nextScrollX = LANDING_HOVER_SCROLL_X;
-					game.scrollX = nextScrollX > GAME_SCROLL_MAX_PIXELS ? GAME_SCROLL_MAX_PIXELS : nextScrollX;
+					game.scrollX = nextScrollX > gameScrollMaxPixels() ? gameScrollMaxPixels() : nextScrollX;
 				}
 
 				if (game.takeoffState == TAKEOFF_STATE_LIFTING) {
@@ -17113,7 +17697,9 @@ int main(void) {
 						 * post-landing transition below), not respawn for
 						 * free just because a new takeoff began. */
 						if (game.wingmanControl == WINGMAN_CONTROL_CPU &&
-							!game.wingman.active && !game.wingman.destroyed) {
+							!game.wingman.destroyed &&
+							(!game.wingman.active ||
+							 game.wingman.mode == WINGMAN_ON_DECK)) {
 							game.wingman.active = 1;
 							game.wingman.mode = WINGMAN_TAKEOFF;
 							game.wingman.interceptScreenX =
@@ -17128,13 +17714,16 @@ int main(void) {
 							 * composite as soon as the real hardware
 							 * sprite launches, then refresh both carrier
 							 * ranges in the ring buffer. */
+							UBYTE carrierHadBakedWingman =
+								carrierParkedWingmanVisible;
 							carrierParkedWingmanVisible = 0;
 							/* Only the start carrier changed from the parked-
 							 * Wingman composite. Redrawing every carrier here
 							 * mapped the far end carrier into the same ring
 							 * slots and made it appear behind the first enemy
 							 * frigate until those columns streamed again. */
-							dirtyRedrawNativeCarrierAt(worldBuffers, 8);
+							if (carrierHadBakedWingman)
+								dirtyRedrawNativeCarrierAt(worldBuffers, 8);
 						} else if (game.wingmanControl == WINGMAN_CONTROL_PLAYER2 &&
 							!game.wingman.active && !game.wingman.destroyed) {
 							/* Not airborne yet - CPC's checkwingmankeys/
@@ -17191,8 +17780,8 @@ int main(void) {
 							game.playerY = PLAYER_MAX_Y;
 					}
 				}
-				if (game.scrollX > GAME_SCROLL_MAX_PIXELS)
-					game.scrollX = GAME_SCROLL_MAX_PIXELS;
+				if (game.scrollX > gameScrollMaxPixels())
+					game.scrollX = gameScrollMaxPixels();
 
 				updateEngineSound(scrollPixels);
 
@@ -17224,8 +17813,6 @@ int main(void) {
 			if (updateWeapons(&game, scrollPixels, worldBuffers))
 				pendingCrashSpriteUpdate = 1;
 			trySpawnFlak(&game, worldBuffers);
-			trySpawnExtraAircraftBonus(&game);
-			trySpawnPowerup(&game);
 			telemetryTrackGameplayStage(&game);
 			updateCityFade(&game);
 			updateTargetLock(&game);
@@ -17238,6 +17825,11 @@ int main(void) {
 					if (game.radarDetection != radarBeforeEnemyUpdate)
 						hudDirty = 1;
 				}
+			/* Enhanced resolves a radar-qualified aircraft before either drop
+			 * source. If an aircraft was admitted (or remains active), both drop
+			 * functions reject the frame. Existing falling drops are untouched. */
+			trySpawnExtraAircraftBonus(&game);
+			trySpawnPowerup(&game);
 				if (updateEnemyMissile(&game, scrollPixels))
 					pendingEnemyMissileSpriteUpdate = 1;
 				updateWingmanFormationRow(&game);
@@ -17315,7 +17907,7 @@ int main(void) {
 						enemySprite, enemyMissileSprite, wingmanSprite, unusedSprite7,
 						&pendingGameScrollCopperUpdate, &pendingPlayerSpriteUpdate,
 						&pendingCrashSpriteUpdate, &pendingEnemySpriteUpdate, &pendingEnemyMissileSpriteUpdate, &pendingWingmanSpriteUpdate,
-						&hudDirty, highScore, (UBYTE)skillLevel, (UBYTE)gameModeSetting, (UBYTE)wingmanControl);
+							&hudDirty, highScore, 1, (UBYTE)skillLevel, (UBYTE)gameModeSetting, (UBYTE)wingmanControl, 0);
 					if (telemetryEnabled)
 						telemetryReset();
 					lastInputMask = inputMask;

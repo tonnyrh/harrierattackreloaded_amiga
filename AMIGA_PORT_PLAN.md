@@ -3219,7 +3219,7 @@ An independent review of Sprint 14.101 (Norwegian "Lederboks" review, same style
 - Flak's tile-choice (`trySpawnFlak()`) now applies the measured `+55` offset before taking bit 0 (`(rState + 55) & 1`), rather than reading the column-start R value directly - since 55 is odd this is a real behavioural correction (flips which tile parity comes out), not just a comment update. Still an approximation - real CPC calls `launchflakattack` from a different point in the per-frame sequence than column generation, so "entry R lines up with column-start R" isn't guaranteed - but it's now a measurement-informed correction instead of an unexamined reuse.
 - Town's block-choice is unchanged (still reads raw column-start R) pending its own measurement.
 
-**Separately, checked which other menu-selectable skill parameters CPC actually scales** (prompted by a question about whether the R-cost calibration or anything else had been verified across skill levels - it hadn't; all four LOGGEN samples were captured at `leveldifficulty=1`, the compiled-in default, since `leveldifficulty` only changes via a landing/relaunch progression loop the Amiga port doesn't implement). Traced every `leveldifficulty` read in the CPC source:
+**Separately, checked which other menu-selectable skill parameters CPC actually scales** (prompted by a question about whether the R-cost calibration or anything else had been verified across skill levels - it hadn't; all four LOGGEN samples were captured at `leveldifficulty=1`, the compiled-in default. At the time of this audit the Amiga port did not yet implement the landing/relaunch progression; Sprint 15.75.0 supersedes that limitation). Traced every `leveldifficulty` read in the CPC source:
 
 | Parameter | CPC formula | Amiga status |
 |---|---|---|
@@ -3227,8 +3227,8 @@ An independent review of Sprint 14.101 (Norwegian "Lederboks" review, same style
 | Land max height (hill ceiling) | `12 - skill` | Already correct (`cpcLandMinimumRow`, Sprint 14.95) |
 | Starting/replenished ammo | `bombs=skill+3`, `rockets=bombs/2` | **Was hardcoded 12 rockets/6 bombs at every skill level - genuinely never wired up. Fixed this sprint.** |
 | Enemy plane spawn gating | player altitude row `< 11-skill` | Not implemented (fixed world-column trigger table instead) - already an explicit Sprint 14.91 scope decision, not a new gap |
-| Land section length before town | `300 + skill*256` | Not implemented (fixed-length route table) - already documented as deliberately deferred (Sprint 14.97) |
-| `leveldifficulty` auto-increments each successful landing (capped at 5) | asm:3040-3046 | Not implemented (no landing/relaunch loop yet) - already documented as deferred |
+| Land section length before town | `300 + skill*256` | Implemented in Sprint 15.75.0 with a dynamic procedural-land and post-land route offset |
+| `leveldifficulty` auto-increments each successful landing (capped at 5) | asm:3040-3046 | Implemented in Sprint 15.75.0 without mutating the selected menu skill |
 | Border-flash delay timing (accel/decel) | scales with skill | CPC-hardware border-color effect - no Amiga equivalent exists to compare against |
 
 Only the ammo line was a genuine, previously-unnoticed gap. Fixed with a new `ammoForSkill(skillLevel, &bombs, &rockets)` matching the exact CPC formula (`bombs=skill+3`, `rockets=bombs/2` integer division), wired into both `startGameSession()` (game start, mirroring how `lives`/`cpcLandSkillLevel` are already set post-`initGameState()` for the same "must reflect the just-picked skill, not a stale default" reason) and `replenishPlayerFromFrigate()` (landing replenish, previously a flat 12/6 there too).
@@ -5491,8 +5491,9 @@ profile, selected only from the main menu and fixed for the complete run:
   fuel/armour loss, missile contact and aircraft contact enter the existing
   three-forward-fragment CPC destruction and then Game Over. Failure descent,
   voluntary eject, parachute rescue and the white extra-aircraft bonus are
-  disabled. Powerups belong to Player 1, and Wingman choices are limited to
-  Off/CPU. Enemy-plane admission uses CPC's absolute character-row rule
+  disabled. Powerups belong to Player 1, and Wingman choices are Off/CPU/P2;
+  Classic P2 uses fixed controls and support ordnance outside Player 1's HUD.
+  Enemy-plane admission uses CPC's absolute character-row rule
   `playerTileY < 11-skill` and the 1-in-16 R-state roll instead of accumulating
   terrain-relative detection. The Amiga radar gauge remains as a binary visual
   risk indicator; it does not control admission over time.
@@ -5520,8 +5521,8 @@ CPC gameplay result.
 ### Sprint 15.67 acceptance
 
 - The menu defaults to Enhanced and shows no separate aircraft-count setting.
-- Switching to Classic while P2 is selected resolves Wingman to CPU; Classic
-  cycles only Off/CPU, while Enhanced cycles Off/CPU/P2.
+- Both profiles cycle Off/CPU/P2. Classic keeps P2 selected across a profile
+  change, but uses fixed keypad/joystick controls and no P2 eject/rebinding.
 - Classic always starts with AIR 01. Missile/aircraft/fuel/armour fatal events
   immediately show the CPC wreck and end the run; E does nothing.
 - Classic never creates a white extra-aircraft drop and only Player 1 collects
@@ -5677,27 +5678,109 @@ These remain isolated so a CPC-rule regression can be tied to one telemetry
 change. `Classic` means behavioural CPC parity; it is not cycle-exact while the
 route and shared R-register model remain approximations.
 
-1. **15.70.0 - powerup refill correctness.** Rocket and bomb drops refill to
-   CPC's literal 16 in both profiles. Start/landing ammunition remains
-   skill-dependent through `ammoForSkill()`.
-2. **15.70.1 - one Classic air-admission decision.** Replace the independent
+1. **15.70.0 - powerup refill correctness. Implemented.** Rocket and bomb
+   drops now refill to CPC's literal 16 in both profiles. Start/landing
+   ammunition remains skill-dependent through `ammoForSkill()`.
+2. **15.70.1 - one Classic air-admission decision. Implemented.** Replace the independent
    Classic enemy-plane LFSR and column powerup decision with one ordered,
    mutually exclusive CPC-shaped decision. Enhanced radar admission remains
    untouched. Fixed-seed telemetry must prove that an active enemy prevents a
    drop and that one tick produces at most one outcome.
-3. **15.70.2 - CPC Player 2 in Classic.** Restore Off/CPU/Player 2 in the
+3. **15.70.2 - CPC Player 2 in Classic. Implemented.** Restore Off/CPU/Player 2 in the
    Classic menu, while keeping shared inventory, rebind/eject extensions behind
    the Enhanced profile.
-4. **15.70.3 - Wingman world collision.** Add one existing-object-map probe
+4. **15.70.3 - Wingman world collision. Implemented.** Add one existing-object-map probe
    after Wingman movement: sky/cloud/FLAK/player/powerup pass, enemy aircraft
    destroys both, and other solid cells destroy the Wingman. Measure the added
    lookup on a stock cycle-exact A500 route run.
-5. **15.70.4 - Classic logical cadence.** Give Classic CPC bomb and powerup
-   world-step timing while retaining Amiga pixel interpolation for display.
-   Enhanced keeps its faster bomb and smooth pickup behaviour.
-6. **15.71+ - route/R/city calibration.** Treat variable CPC land length, one
-   continuous R stream, town selection and full nine-direction Wingman logic
-   as separate telemetry-led work, not as part of the admission refactor.
+5. **15.70.4 - Classic logical cadence. Implemented.** Classic bombs now
+   complete CPC's four horizontal character steps before descending, and
+   collision is sampled at 8-pixel logical boundaries. A 2/3-pixel DDA keeps
+   the flight visually smooth and at the port's established 2.5 px/frame.
+   Classic powerups keep a separate collision row which advances eight pixels
+   after five CPC wait ticks, while their display interpolates 1/2 pixels per
+   frame. Enhanced retains its diagonal/faster bomb and one-pixel,
+   move-before-contact pickup path unchanged.
+6. **15.71+ - route/R/city calibration. In progress.** Sprint 15.71.0 gives
+   the town state machine explicit ownership of one continuous modeled CPC R
+   cursor and exports town-specific start/end/checksum telemetry. A dedicated
+   CPC town LOGGEN capture is still required before the two provisional town
+   opcode-fetch costs can be called cycle-calibrated. Full nine-direction
+   Wingman logic remains a separate later sprint.
+
+### Sprint 15.70.4 validation
+
+- Source reference: CPC `dolaunchbomb`/`decreasebombmomentum` consumes four
+  complete horizontal moves before `decreasebombheight`; `movewingmanpowerup`
+  advances one complete row when its wait counter reaches five.
+- Classic collision uses the logical bomb/powerup location. The BOB position
+  is presentation only, so fine scrolling cannot create extra collision
+  opportunities between CPC steps.
+- A cycle-exact stock A500 + 512 KiB weapon-stress run (Classic, skill 1,
+  Player 2, seed 12040) reached the final carrier. Both clean gameplay
+  windows measured 50 FPS minimum/average/maximum, zero hitches and maximum
+  VBL delta 1 while both players continuously fired rockets and bombs.
+- The same run recorded seven Classic enemy outcomes, four powerup outcomes
+  and zero simultaneous Classic powerup/enemy admissions.
+
+### Sprint 15.70.5 - shared bomb and powerup cadence
+
+- Classic and Enhanced now share CPC's logical bomb and powerup movement.
+  These are core flight/weapon rules rather than a useful Enhanced feature.
+- Both bombs complete four horizontal 8-pixel steps before descending. Both
+  powerup profiles test contact on their logical row and advance eight pixels
+  after five wait ticks.
+- Amiga presentation remains enhanced in both profiles: bombs use the smooth
+  2/3-pixel DDA and powerups use the smooth 1/2-pixel five-frame sequence.
+- Profile-specific radar, aircraft reserves, rescue and bonus-drop admission
+  remain separate and are not affected by this unification.
+
+### Sprint 15.70.6 - ticker ownership correction
+
+- The main menu again owns one common CPC tribute/credit ticker, independent
+  of Classic/Enhanced selection. Changing mode no longer resets or rerenders
+  that ticker.
+- Only Items Overview/Field Guide selects a rules ticker by the currently
+  configured mode: CPC trigger/pickup rules for Classic and terrain-radar/
+  extra-aircraft rules for Enhanced.
+- Ticker rendering, one-shot completion and MOD servicing are unchanged.
+
+### Sprint 15.71.0 - continuous CPC town R stream
+
+- `generateCpcTownBlockTable()` now seeds one town-local R cursor from the
+  shared mission stream at authored world column 411. It advances that cursor
+  once for the flat/choice tick and once for every emitted building column.
+- Building widths therefore explicitly determine the R value used for the
+  following choice, matching CPC state 6 -> state 7 -> state 6 ownership.
+  The 200-tick town timer and whole-final-building overflow rule are unchanged.
+- Route objects, pier, final frigate, missile trigger and landing carrier still
+  receive the measured town overflow through `configureRuntimeLevelRoute()`.
+- Fixed-seed parity output now includes `townRStart`, `townREnd` and
+  `townRChecksum`. The current flat/building costs retain the representative
+  63-fetch value until a town-only CPC LOGGEN capture supplies measured costs;
+  this sprint deliberately does not claim cycle-exact R parity.
+- No renderer, scrolling, collision, combat or sprite behavior changed.
+- Cycle-exact A500+512K validation (skill 1, speed 15, Wingman Off, seed
+  12040) produced 57 blocks, 57 flat columns and 143 building columns for a
+  200-column town (`R 27 -> 83`, checksum 34093). All invariants passed, no
+  columns were clipped, and the run reached the final carrier at scroll 5160.
+  The two steady moving intervals held 50 FPS with maximum VBL delta 1; the
+  first interval still contains the known headless bootstrap cost.
+
+### Sprint 15.71.1 - Wingman continuity between sorties
+
+- The landed Wingman now remains a live deck sprite while the retained carrier
+  bitmap is rebased for the next mission. It is no longer hidden during the
+  session reset and recreated only after Player 1 has cleared the deck.
+- A fresh first mission still uses the inexpensive carrier composite with its
+  parked aircraft. Only the retained post-landing scene uses the live sprite,
+  because that bitmap contains the aircraft-free carrier from the preceding
+  flight.
+- CPU Wingman changes from `ON_DECK` to `TAKEOFF` at Player 1's normal lift
+  trigger even when it was already active as the retained deck sprite. Player
+  2 can likewise launch that retained sprite by pressing Up.
+- A Wingman destroyed earlier in the campaign is explicitly hidden again
+  after the retained-session reset and is not restored for free.
 # Sprint 15.69.9 - Player Harrier start-deck alignment
 
 - Moved only the player's staged takeoff position one pixel down, from
@@ -5705,3 +5788,232 @@ route and shared R-register model remain approximations.
 - Kept Wingman's already-correct deck position at Y=103.
 - Kept completed landing contact at Y=105; the earlier landing correction
   is therefore unchanged.
+
+# Sprint 15.69.10 - Retained carrier scene between missions
+
+- Removed the full ring-buffer clear and synchronous 56-column redraw after
+  `LANDED` and the carrier's return slide.
+- The completed 320-pixel carrier view is rebased into the next mission's
+  logical start window. The visible sea, carrier and parked aircraft therefore
+  remain in place while gameplay state advances to the next sortie.
+- Only hidden columns beyond the retained view are generated, incrementally,
+  by the existing ring streamer during lift-off.
+- Carrier gull and sea-wave footprints are restored before the view is
+  retained so presentation BOBs cannot become baked into the world bitmap.
+- New game, retry and eject recovery still use the complete deterministic
+  world initialization path.
+
+# Sprint 15.70.0 - CPC powerup refill counters
+
+- `POWERUP_ROCKETS` now writes the CPC literal `&10` (16) directly to the
+  rocket counter.
+- `POWERUP_BOMBS` now writes the same literal 16 directly to the bomb counter.
+- Removed the incorrect pickup-time call to `ammoForSkill()`. That function
+  remains authoritative only for takeoff and friendly-carrier rearming.
+- The rule is shared by Classic and Enhanced; presentation, spawn selection,
+  inventory consumption and pickup collision are unchanged.
+
+# Sprint 15.70.1 - One CPC-shaped Classic air-admission decision
+
+- Removed Classic from the old column-driven `trySpawnPowerup()` path. That
+  path remains available to Enhanced, together with Enhanced radar admission.
+- Replaced Classic's separate enemy-plane LFSR result and powerup-column roll
+  with one eight-frame CPC-character cadence in
+  `updateClassicAirAdmission()`.
+- The qualifying decision follows CPC `launchenemyplane` order: reject on the
+  common stage/player/missile/height gates, apply one `R & 15` admission roll,
+  send an already-active drop to the enemy branch, prefer a Wingman recovery
+  drop when required, then use the shared 1..6 powerup rotation or fall through
+  to the enemy branch.
+- A decision returns immediately after creating either a drop or an aircraft;
+  the two outcomes can no longer happen independently on the same tick.
+- Fixed-seed `parity_log.csv` now includes `classicAirTicks`,
+  `classicEnemyOutcomes`, `classicPowerupOutcomes` and
+  `classicPowerupWhileEnemy`. The final value must remain zero.
+- Corrected the existing parity CSV header to name its already-present
+  `enemyPlaneBlocked` column, keeping all following fields aligned.
+- Cycle-exact A500+512K validation (skill 1, speed 15, Wingman Off, seed
+  12040) completed the route at scroll 5160 and reached the final carrier:
+  148 Classic admission ticks produced 8 enemy aircraft and 3 powerups;
+  `classicPowerupWhileEnemy` remained 0.
+
+## Sprint 15.70.1A - Enhanced air-admission arbitration
+
+- Retained Enhanced's radar accumulator, difficulty response and
+  column-driven drop timing; this is not a conversion to Classic cadence.
+- Reordered only admission within the frame: the radar-qualified enemy-plane
+  update now runs before the ordinary and extra-aircraft powerup attempts.
+- An enemy plane admitted at 100% radar therefore owns that frame. Both drop
+  paths reject while it remains active, while a powerup that was already
+  falling continues normally and does not prevent a later enemy aircraft.
+- A blocked ordinary drop does not consume its world-column opportunity. Once
+  the aircraft has left, the current column is considered once through the
+  normal Enhanced gates.
+- `enhancedPowerupWhileEnemy` was added to fixed-seed parity telemetry and
+  must remain zero. This audits every `spawnPowerup()` entry point, including
+  the Enhanced-only extra-aircraft reward.
+- Cycle-exact A500+512K Enhanced validation (skill 1, speed 15, Wingman Off,
+  seed 12040) completed the route at scroll 5160 and reached the final carrier
+  with 6 admitted enemy aircraft; `enhancedPowerupWhileEnemy` remained 0.
+
+## Sprint 15.70.2 - CPC Player 2 restored in Classic
+
+- Classic and Enhanced now both expose `Wingman: Off/CPU/Player 2`. Changing
+  profile no longer silently converts a selected second player into CPU AI,
+  and session initialization preserves the selected value.
+- Classic P2 deliberately uses a fixed input contract: joystick port 1 or
+  keypad 8/2/4/6, keypad 0 for rocket and keypad Enter for bomb. The Controls
+  page remains on Player 1 in Classic; P2 rebinding and P2 eject remain
+  Enhanced extensions.
+- Classic P2 support ordnance is independent of Player 1's visible rocket and
+  bomb counters. Enhanced retains shared inventory, shared HUD updates and
+  P2 powerup collection. Classic ordinary powerups remain Player-1-only.
+- Launch-from-deck, pixel-smooth movement, weapon flight and target damage use
+  the existing P2 implementation. Wingman terrain/object collision is kept
+  out of this change and remains Sprint 15.70.3.
+- Cycle-exact A500+512K Classic weapon-stress validation (skill 1, speed 15,
+  P2, seed 12040) reached the final carrier at scroll 5352. All three gameplay
+  windows held 50 FPS with maximum VBL delta 1. P2 launched 14/8, 17/8 and
+  18/8 rockets/bombs per window while Player 1's visible Classic inventory
+  remained unchanged by those launches.
+
+## Sprint 15.70.3 - CPC Wingman world collision
+
+- Added `wingmanObjectMapCollision()` after all Wingman movement and before
+  projectile/aircraft contact resolution. It checks the rear and front map
+  cells occupied by the 16-pixel aircraft, matching CPC
+  `drawwingmanplane`/`checkwingmanagainstobjectmap` rather than borrowing
+  Player 1's wider Amiga collision box.
+- Sky, clouds, runtime flak, CPC-equivalent hit smoke, Player 1, Wingman and
+  powerups are passable. Land, sea, buildings, ships, pier and all other
+  world geometry destroy the Wingman. The existing pixel-accurate enemy-plane
+  overlap remains responsible for destroying both aircraft.
+- The rule is shared by Classic and Enhanced and applies equally to CPU and
+  Player 2. It changes no AI route, weapon behavior, sprite or object-map data.
+- Performance CSV now records `wingWorldProbes` and `wingWorldHits`. A
+  cycle-exact A500+512K CPU-Wingman run (skill 1, speed 15, seed 12040)
+  completed the route at scroll 5160. The two gameplay windows each executed
+  1000 cell probes while holding 50 FPS, zero hitches and maximum VBL delta 1;
+  the AI avoided all solid contacts in that deterministic run.
+
+## Sprint 15.72.0 - CPC Wingman nine-direction formation flight
+
+- Formation AI now resolves CPC's complete 0..8 direction set: stationary,
+  four cardinal moves and four diagonals toward the three-columns-behind,
+  three-rows-above/below slot.
+- The accepted logical move remains one 8-pixel CPC cell every four frames.
+  Hardware-sprite X and Y presentation interpolates by two pixels per PAL
+  frame, preserving smooth Amiga motion without changing CPC route timing.
+- A blocked preferred cell uses a bounded deterministic `R & 7` search of the
+  eight neighboring cells, matching `checkwingmanradar` without any unbounded
+  retry loop in dense town geometry.
+- Formation, interception, bombing and landing handoffs retain the current
+  pixel position instead of snapping back to a player-derived X coordinate.
+- `WINGMAN_ON_DECK` explicitly uses the live sprite's deck coordinate. This
+  completes the retained-carrier continuity introduced in Sprint 15.71.1.
+- Cycle-exact A500+512K validation (skill 1, speed 15, CPU Wingman, seed
+  12040) reached the final carrier at scroll 5160. Both steady moving
+  intervals held 50 FPS with maximum VBL delta 1; 2000 Wingman world probes
+  reported zero solid contacts.
+
+## Sprint 15.72.1 - measurable Wingman direction audit
+
+- Added an opt-in headless formation exercise which alternates Player 1
+  between two safe flight levels while retaining normal acceleration.
+- Parity output now records stationary formation frames, cardinal moves,
+  diagonal moves and obstruction/evasion moves. The counters are observation
+  only and are absent from normal gameplay decisions.
+- Cycle-exact A500+512K validation (skill 1, speed 15, CPU Wingman, seed
+  12040) reached the final carrier at scroll 5160. It recorded 94 cardinal
+  and 18 diagonal logical moves, with zero solid contacts in 1000 Wingman
+  world probes. Both steady route intervals held 50 FPS and max VBL delta 1.
+
+## Sprint 15.72.2 - one Wingman return path
+
+- Returning from intercept/bombing to formation now uses the same bounded
+  waypoint mover as the outbound AI path.
+- Removed the duplicate split horizontal/vertical return implementation.
+  Return flight therefore shares pixel-smooth X movement, four-frame CPC row
+  cadence, terrain checks and deterministic bounded R&7 evasion.
+- Formation handoff still occurs only at the exact target coordinate, so
+  there is no visual snap or one-frame seam.
+- The same cycle-exact fixed-seed route reproduced Sprint 15.72.1 exactly:
+  final carrier at scroll 5160, 94 cardinal and 18 diagonal formation moves,
+  zero Wingman world hits, and 50 FPS/max VBL delta 1 in both steady windows.
+
+## Sprint 15.73.0 - promoted enemy-ship damage visibility
+
+- Kept CPC `enemyshipsprite` object-map cells authoritative for rocket, bomb,
+  Wingman, score and smoke behavior. No second ship-health model was added.
+- The promoted two-sprite gunship renderer now omits only the exact 8x8 cell
+  already replaced by CPC hit smoke. Previously it redrew the intact promoted
+  artwork over that persistent damage, making a valid hit look ineffective.
+- This is a rendering correction shared by Classic and Enhanced. Ship
+  placement, missile triggers, palette, collision and 500-point award are
+  unchanged.
+- Cycle-exact A500+512K two-player weapon stress reached the final carrier at
+  scroll 5352. Both steady intervals held 50 FPS/max VBL delta 1, all four
+  P1/P2 weapon paths launched, and 2000 Wingman world probes had zero hits.
+
+## Sprint 15.74.0/15.74.1 - CPC campaign palette identity
+
+- Implemented the deferred next-board green treatment as a campaign palette
+  sequence rather than a one-off screen recolour. The first pass established
+  day/dusk versus night/dawn; the 15.74.1 audit followed the complete CPC
+  pointer flow through later boards and restored its transition timing too.
+- CPC advances five table entries at town and five at the following takeoff:
+  mission 1 is day -> dusk; mission 2 retains dusk on deck, fades to green
+  night during takeoff and then to dawn in town; mission 3 retains dawn on
+  deck, fades back to day during takeoff and then to dusk in town. The
+  two-mission sequence repeats after that.
+- `startGameSession()` receives the authoritative mission number before the
+  gameplay Copper list is built. This prevents a one-frame day flash, retains
+  the completed phase on the carrier, and preserves the phase after Enhanced
+  rescue/respawn. A separate five-step takeoff fade starts only at lift-off.
+- Sky, cloud and the world-band land pen now use the CPC table's phase
+  colours converted from CPC Plus GRB to Amiga RGB. COLOR05 is restored from
+  `game_palette.pal` at the HUD split, so later-board terrain can darken
+  without recolouring the FUEL/LIVES safe-green gauges. Sea remains dark blue
+  to preserve the port's shared COLOR15 cloud/sea solution. Sprites,
+  collision, route generation, difficulty and both gameplay modes are
+  unchanged.
+- Normal A500 build and bootable ADF generation complete successfully. The
+  remaining `visibility attribute not supported` messages are the established
+  Bartman/LTO toolchain warnings, not new palette warnings.
+- Cycle-exact A500+512K regression (skill 1, CPU Wingman, speed 15, seed
+  12040) reached the final carrier at scroll 5160. Both steady route windows
+  held 50 FPS with maximum VBL delta 1, 1000 Wingman world probes recorded
+  zero hits, and the script restored the ordinary F5/release binary and ADF.
+
+## Sprint 15.75.0 - CPC later-board difficulty and route duration
+
+- Separated the menu's selected skill from CPC `leveldifficulty`. The selected
+  skill remains the campaign starting point; effective difficulty is
+  `skill + mission - 1`, capped at 5, exactly matching the increment after a
+  successful CPC landing. Returning to the menu no longer silently changes
+  the player's selected starting skill.
+- Effective difficulty now owns the already-sourced CPC terrain ceiling,
+  flak tolerance, ammunition/rearm counters and aircraft admission height.
+  Enhanced radar retains its own accumulator but uses the same current-board
+  difficulty input it previously received through the conflated skill value.
+- Implemented CPC's later-board land timer from `l91e3`: the authored compact
+  route is expanded by 256 procedural columns for each difficulty level. The
+  descend, town, pier, second ship, ship-missile triggers, final carrier and
+  landing scroll limits are shifted by one shared offset. The town's existing
+  whole-building overflow is then applied after that offset.
+- Generator and cache storage are sized for capped difficulty 5, while all
+  generation/render/collision loops use the active mission length. This avoids
+  generating or scanning unused maximum-board columns on easier missions.
+- `parity_log.csv` now records selected skill, effective difficulty, mission
+  and generated land length independently.
+- Cycle-exact A500+512K validation (selected skill 1, mission/difficulty 1,
+  CPU Wingman, speed 15, seed 12040) generated 551 land columns, reached the
+  shifted final carrier at scroll 7208, and held 50 FPS/max VBL delta 1 in all
+  steady intervals. The run reported 99 land targets, zero Wingman world hits
+  and no clipped town columns. The initial bootstrap sample remains the known
+  non-steady interval.
+- A second cycle-exact boundary run at selected skill/difficulty 5 generated
+  the maximum 1575 land columns and reached the final carrier at scroll 15400.
+  Every steady interval held 50 FPS/max VBL delta 1, confirming the expanded
+  generator caches, dynamic scroll limit and shifted end-route coordinates at
+  their capped size. The validation script restored the normal F5 build/ADF.

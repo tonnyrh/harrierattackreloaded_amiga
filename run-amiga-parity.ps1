@@ -10,6 +10,7 @@ param(
     [int]$SessionSeed = 12040,
     [int[]]$EnemyPlaneRates = @(1),
     [switch]$EnemyPlaneExercise,
+    [switch]$WingmanFormationExercise,
     [switch]$WeaponStress,
     [string]$ExtraCcFlags = "",
     [ValidatePattern('^[A-Za-z0-9_-]*$')]
@@ -76,6 +77,12 @@ try {
         $flags = "-DHAR_DEBUG_PERF_LOG=1 -DHAR_DEBUG_LAND_LOG=1 -DHAR_DEBUG_ENEMY_PLANE_LOG=1 -DHAR_ENEMY_PLANE_INTERPOLATION_PIXELS=$EnemyPlaneRate -DHAR_HEADLESS_AUTOPLAY=1 -DHAR_HEADLESS_SKILL_LEVEL=$Skill -DHAR_HEADLESS_CRUISE_SPEED=$CruiseSpeed -DHAR_HEADLESS_WINGMAN_CONTROL=$WingmanControl -DHAR_VALIDATION_SESSION_SEED=$SessionSeed"
         if ($EnemyPlaneExercise) {
             $flags = "$flags -DHAR_HEADLESS_ENEMY_PLANE_EXERCISE=1"
+        }
+        if ($WingmanFormationExercise) {
+            if ($WingmanControl -ne 1) {
+                throw "WingmanFormationExercise krever -WingmanControl 1."
+            }
+            $flags = "$flags -DHAR_HEADLESS_WINGMAN_FORMATION_EXERCISE=1"
         }
         if ($WeaponStress) {
             if ($WingmanControl -ne 2) {

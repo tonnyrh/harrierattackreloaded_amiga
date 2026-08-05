@@ -4,8 +4,9 @@
 // editor should be able to export these two tables: broad terrain/stage
 // segments and explicit object placements. Columns are world tile columns,
 // not pixels. These are immutable source coordinates: Sprint 15.54 copies
-// them at runtime, completes the final CPC town block and shifts every
-// post-town segment/object/trigger by the same 0..4 columns.
+// them at runtime, expands the land timer by 256 columns per CPC
+// leveldifficulty, completes the final CPC town block and shifts every later
+// segment/object/trigger by the same land and 0..5-column town offsets.
 //
 // Sprint 14.7 mirrors the CPC procedural level generator more closely. The CPC
 // does not store one static map; it emits one right-edge column at a time from
