@@ -15,7 +15,7 @@
 #include <string.h>
 #include "assets/harrier_menu_text.h"
 
-#define HAR_BUILD_LABEL "SPRINT 15.75.0"
+#define HAR_BUILD_LABEL "SPRINT 15.78.0"
 
 #define SCREEN_WIDTH 320
 #define LOADING_SCREEN_WIDTH 320
@@ -336,15 +336,12 @@
 #define WINGMAN_VISUAL_MOVE_PIXELS 2
 #define WINGMAN_MAX_ROW ((GAME_WORLD_HEIGHT / GAME_TILE_HEIGHT) - 1)
 
-/* Sprint 15.5: interception AI constants, matching
+/* Wingman interception constants, matching
  * HarrierAttackSourceNew2...asm's wingman intercept routines:
  * - WINGMAN_INTERCEPT_CHANCE_MASK: asm:6513-6516 rolls `r & 1` on every new
  *   enemy-plane spawn to decide whether to break formation and intercept.
- *   Real CPC also *forces* this roll when the enemy plane specifically
- *   targeted the wingman (asm:6504-6509, missiletargetwingman!=1) - not
- *   implemented here yet, since this port has no enemy-target-selection
- *   system (that's Sprint 15.6's EnemyTarget work); only the unconditional
- *   50/50 chance is applied for now.
+ *   CPC forces the intercept when the enemy targets Wingman
+ *   (asm:6504-6509); this is represented by interceptReason=2.
  * - WINGMAN_INTERCEPT_LEAD_PIXELS/WINGMAN_INTERCEPT_FIRE_RANGE_PIXELS:
  *   asm:2481-2486 and :2470-2474 use 6px/10px respectively - deliberately
  *   NOT copied verbatim here. Both sprites in this port are
@@ -753,6 +750,7 @@ static UBYTE* menuTickerBitmap = 0;
 #define RAWKEY_R 0x13
 #define RAWKEY_B 0x35
 #define RAWKEY_SPACE 0x40
+#define RAWKEY_BACKSPACE 0x41
 #define RAWKEY_RETURN 0x44
 #define RAWKEY_ESCAPE 0x45
 #define RAWKEY_UP 0x4c
@@ -1040,11 +1038,7 @@ typedef struct TargetLock {
 	UBYTE targetType;
 } TargetLock;
 
-/* Sprint 15.1: CPC's menu-time wingmanon setting (0=Off, 1=CPU, 2=PLAYER 2).
- * Menu-selectable and persisted into GameState only for now - no wingman
- * actually flies yet. Later Wingman sprints (WingmanState, Bob rendering,
- * CPU formation/AI, a second joystick port for PLAYER 2) read this to decide
- * whether/how a wingman subsystem runs. */
+/* CPC's menu-time wingmanon setting: Off, CPU formation AI or Player 2. */
 typedef enum WingmanControl {
 	WINGMAN_CONTROL_OFF = 0,
 	WINGMAN_CONTROL_CPU = 1,
@@ -1056,13 +1050,10 @@ typedef enum GameMode {
 	GAME_MODE_ENHANCED = 1
 } GameMode;
 
-/* Sprint 15.2/15.3: named form of CPC's raw wingmantakeoff state values (see
+/* Named form of CPC's raw wingmantakeoff state values (see
  * the Sprint 15 roadmap in AMIGA_PORT_PLAN.md for the full ASM-side mapping).
  * Raw CPC value 4 ("documented as landed, but the code normally resets it to
- * 0") is deliberately not represented - CPC itself never leaves it set. Only
- * WINGMAN_ON_DECK and WINGMAN_FORMATION are driven by real behaviour this
- * sprint; the rest are declared now so later sprints (obstacle avoidance,
- * interception, ground-attack, landing) don't need to renumber anything. */
+ * 0") is deliberately not represented because CPC never leaves it set. */
 typedef enum WingmanMode {
 	WINGMAN_ON_DECK = 0,
 	WINGMAN_FORMATION = 1,
@@ -1161,9 +1152,15 @@ typedef struct GameState {
 	UWORD armour;
 	UBYTE gameOver;
 	/* A completed run may remain on the Game Over screen for many frames.
-	 * Commit it to the in-memory table exactly once; disk I/O is deferred to
-	 * a safe AmigaDOS window when leaving that screen. */
+	 * A qualifying CPC score first enters the six-character name editor, then
+	 * commits to the in-memory table exactly once. Disk I/O is deferred to a
+	 * safe AmigaDOS window when leaving that screen. */
 	UBYTE highScoreCommitted;
+	UBYTE highScoreNameEntryActive;
+	UBYTE highScoreNameLength;
+	UWORD highScoreNameKeySerial;
+	char highScoreNameJoyChar;
+	char highScoreName[7];
 	UBYTE missionComplete;
 	UWORD missionCompleteTimer;
 	UBYTE postLandingSlide;
@@ -4446,12 +4443,7 @@ static USHORT* screenScan(USHORT* copListEnd, USHORT fetchWidth, UBYTE fetchExtr
 	*copListEnd++ = offsetof(struct Custom, diwstrt);
 	*copListEnd++ = x + (y << 8);
 	*copListEnd++ = offsetof(struct Custom, diwstop);
-	/* NOTE: a DIWSTOP vertical byte that reads identical to DIWSTRT's (since
-	 * (y+256)&0xff always equals y) was suspected as a source of display
-	 * instability, but empirically fixing it (subtracting 1 line) did not
-	 * resolve the reported HUD ghosting and cost a visible pixel row off
-	 * the bottom gauges (ROCKETS/BOMBS border) - reverted pending a
-	 * confirmed root cause. */
+	/* Keep the full 256-line window; shortening DIWSTOP clips the HUD border. */
 	*copListEnd++ = ((ystop & 0xff) << 8) | ((xstop - 256) & 0xff);
 	return copListEnd;
 }
@@ -5887,6 +5879,11 @@ static void initGameState(GameState* game) {
 	game->armour = 100;
 	game->gameOver = 0;
 	game->highScoreCommitted = 0;
+	game->highScoreNameEntryActive = 0;
+	game->highScoreNameLength = 0;
+	game->highScoreNameKeySerial = keyboardMakeSerial;
+	game->highScoreNameJoyChar = 0;
+	memset(game->highScoreName, 0, sizeof(game->highScoreName));
 	game->missionComplete = 0;
 	game->missionCompleteTimer = 0;
 	game->postLandingSlide = 0;
@@ -5971,17 +5968,19 @@ static UBYTE updateHudValues(GameState* game) {
 	return oldScore != game->score || oldFuel != game->fuel;
 }
 
-/* LEVEL is the CPC's own gamelevelprogress-equivalent stage (HarLevelStage)
- * reached by the run's final scroll position - the world only ever scrolls
- * forward (no reverse-scroll mechanic), so scrollX at game-end is always
- * the furthest point reached; no separate "furthest position" tracking
- * needed. */
-static UBYTE highScoreLevelForWorldColumn(LONG worldColumn) {
-	const LevelSegmentDef* segment = levelSegmentForWorldColumn(worldColumn);
-	return stageForWorldColumn(worldColumn, segment);
+static UBYTE highScoreTableQualifies(ULONG score) {
+	ULONG lowestScore = highScoreTable[0].score;
+	for (UBYTE i = 1; i < HIGH_SCORE_ENTRY_COUNT; i++) {
+		if (highScoreTable[i].score < lowestScore)
+			lowestScore = highScoreTable[i].score;
+	}
+	/* CPC enterhighscore rejects only scores below lastscore. Equal scores
+	 * enter the table too (asm:3814-3820). */
+	return score >= lowestScore;
 }
 
-static UBYTE updateHighScore(ULONG* highScore, const GameState* game) {
+static UBYTE updateHighScoreNamed(ULONG* highScore, const GameState* game,
+	const char* playerName) {
 	UBYTE changed = 0;
 	if (game->score > *highScore) {
 		*highScore = game->score;
@@ -5993,12 +5992,12 @@ static UBYTE updateHighScore(ULONG* highScore, const GameState* game) {
 		if (highScoreTable[i].score < highScoreTable[lowestIndex].score)
 			lowestIndex = i;
 	}
-	if (game->score > highScoreTable[lowestIndex].score) {
-		/* No name-entry UI (out of scope for this pass) - real runs are
-		 * simply tagged "PLAYER", displacing the CPSOFT/AMSOFT/DURELL
-		 * placeholder rows one at a time as they're actually beaten. */
-		copyMenuText(highScoreTable[lowestIndex].name, "PLAYER");
-		highScoreTable[lowestIndex].level = highScoreLevelForWorldColumn((LONG)(game->scrollX >> 3));
+	if (game->score >= highScoreTable[lowestIndex].score) {
+		copyMenuText(highScoreTable[lowestIndex].name, playerName);
+		/* CPC enterhighscore stores leveldifficulty, not gamelevelprogress or
+		 * the world stage reached before death (asm:3863-3865). Sprint 15.75
+		 * made this the authoritative selected-skill-plus-mission value. */
+		highScoreTable[lowestIndex].level = game->levelDifficulty;
 		highScoreTable[lowestIndex].hits = game->hitsCount;
 		highScoreTable[lowestIndex].score = game->score;
 
@@ -6021,6 +6020,146 @@ static UBYTE updateHighScore(ULONG* highScore, const GameState* game) {
 		changed = 1;
 	}
 	return changed;
+}
+
+/* Deterministic/headless callers still need a one-call commit. Interactive
+ * runs use beginHighScoreNameEntry()/commitHighScoreNameEntry() below. */
+static UBYTE updateHighScore(ULONG* highScore, const GameState* game) {
+	return updateHighScoreNamed(highScore, game, "PLAYER");
+}
+
+static UBYTE beginHighScoreNameEntry(ULONG* highScore, GameState* game) {
+	if (game->score > *highScore)
+		*highScore = game->score;
+	if (!highScoreTableQualifies(game->score)) {
+		game->highScoreCommitted = 1;
+		return 0;
+	}
+	game->highScoreNameEntryActive = 1;
+	game->highScoreNameLength = 0;
+	game->highScoreNameKeySerial = keyboardMakeSerial;
+	game->highScoreNameJoyChar = 0;
+	memset(game->highScoreName, 0, sizeof(game->highScoreName));
+	return 1;
+}
+
+static void commitHighScoreNameEntry(ULONG* highScore, GameState* game) {
+	if (!game->highScoreNameEntryActive)
+		return;
+	if (!game->highScoreNameLength)
+		copyMenuText(game->highScoreName, "PLAYER");
+	else
+		game->highScoreName[game->highScoreNameLength] = 0;
+	updateHighScoreNamed(highScore, game, game->highScoreName);
+	game->highScoreNameEntryActive = 0;
+	game->highScoreCommitted = 1;
+}
+
+static UBYTE rawKeyToHighScoreChar(UBYTE rawKey, char* value) {
+	static const char numberRow[] = "`1234567890";
+	static const char qwertyRow[] = "QWERTYUIOP";
+	static const char homeRow[] = "ASDFGHJKL";
+	static const char bottomRow[] = "ZXCVBNM";
+	if (rawKey <= 0x0a) {
+		*value = numberRow[rawKey];
+		return rawKey != 0;
+	}
+	if (rawKey >= 0x10 && rawKey <= 0x19) {
+		*value = qwertyRow[rawKey - 0x10];
+		return 1;
+	}
+	if (rawKey >= 0x20 && rawKey <= 0x28) {
+		*value = homeRow[rawKey - 0x20];
+		return 1;
+	}
+	if (rawKey >= 0x31 && rawKey <= 0x37) {
+		*value = bottomRow[rawKey - 0x31];
+		return 1;
+	}
+	if (rawKey == RAWKEY_SPACE) {
+		*value = ' ';
+		return 1;
+	}
+	return 0;
+}
+
+static UBYTE appendHighScoreNameChar(ULONG* highScore, GameState* game,
+	char value) {
+	if (game->highScoreNameLength >= 6)
+		return 0;
+	game->highScoreName[game->highScoreNameLength++] = value;
+	game->highScoreName[game->highScoreNameLength] = 0;
+	game->highScoreNameJoyChar = 0;
+	if (game->highScoreNameLength == 6) {
+		commitHighScoreNameEntry(highScore, game);
+		return 2;
+	}
+	return 1;
+}
+
+/* CPC printscores accepts direct keyboard characters and also exposes its
+ * currentjoykey editor: Up/Down select space..Z, Left deletes and Right/Fire
+ * accepts the selected character. Return completes a shorter name. Return
+ * values: 0=no change, 1=redraw name editor, 2=entry committed. */
+static UBYTE updateHighScoreNameEntry(ULONG* highScore, GameState* game,
+	const InputState* input, const InputState* previousInput) {
+	if (!game->highScoreNameEntryActive)
+		return 0;
+
+	if (game->highScoreNameKeySerial != keyboardMakeSerial) {
+		game->highScoreNameKeySerial = keyboardMakeSerial;
+		UBYTE rawKey = lastKeyboardMakeKey;
+		if (rawKey == RAWKEY_RETURN || rawKey == RAWKEY_KP_ENTER) {
+			commitHighScoreNameEntry(highScore, game);
+			return 2;
+		}
+		if (rawKey == RAWKEY_BACKSPACE) {
+			game->highScoreNameJoyChar = 0;
+			if (game->highScoreNameLength) {
+				game->highScoreNameLength--;
+				game->highScoreName[game->highScoreNameLength] = 0;
+				return 1;
+			}
+			return 0;
+		}
+		char value;
+		if (rawKeyToHighScoreChar(rawKey, &value))
+			return appendHighScoreNameChar(highScore, game, value);
+	}
+
+	if (Pressed(input->up, previousInput->up)) {
+		if (!game->highScoreNameJoyChar)
+			game->highScoreNameJoyChar = 'A';
+		else if (game->highScoreNameJoyChar < 'Z')
+			game->highScoreNameJoyChar++;
+		return 1;
+	}
+	if (Pressed(input->down, previousInput->down)) {
+		if (!game->highScoreNameJoyChar)
+			game->highScoreNameJoyChar = 'A';
+		else if (game->highScoreNameJoyChar > ' ')
+			game->highScoreNameJoyChar--;
+		return 1;
+	}
+	if (Pressed(input->left, previousInput->left)) {
+		game->highScoreNameJoyChar = 0;
+		if (game->highScoreNameLength) {
+			game->highScoreNameLength--;
+			game->highScoreName[game->highScoreNameLength] = 0;
+			return 1;
+		}
+		return 0;
+	}
+	if (Pressed(input->right, previousInput->right) ||
+		Pressed(input->select, previousInput->select)) {
+		if (!game->highScoreNameJoyChar) {
+			commitHighScoreNameEntry(highScore, game);
+			return 2;
+		}
+		return appendHighScoreNameChar(highScore, game,
+			game->highScoreNameJoyChar);
+	}
+	return 0;
 }
 
 static UBYTE scrollPixelsForSpeedLevel(UBYTE speedLevel) {
@@ -6117,17 +6256,11 @@ static UBYTE updateLandingApproach(GameState* game) {
 	return 1;
 }
 
-/* Real CPC in-game HUD draws SPEED/FUEL/ROCKETS/BOMBS as tick-segmented
+/* CPC draws SPEED/FUEL/ROCKETS/BOMBS as tick-segmented
  * gauge bars (drawgauge, HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5249-5261
  * - 15 "empty gauge" tiles plus one "marker" tile) and ARMOUR as a bar that
- * erases one segment per hit (updatehealth, :2963-2985), not plain numbers -
- * this Amiga port's gameplay HUD had been left as placeholder digit readouts
- * since Sprint 14.7.1 ("gauge-style in-game HUD parity... later dedicated
- * HUD sprint"). The menu screen already built a matching gauge-bar look
- * (drawMenuGaugeBar) as the CPC-style reference; reused here with a live
- * fill fraction instead of the menu's fixed/decorative full bar. SCORE and
- * LIV stay plain numbers - CPC's score is just a number too, and LIV (lives)
- * has no CPC equivalent at all (single-life game, see Sprint 14.91). */
+ * erases one segment per hit (updatehealth, :2963-2985). SCORE and LIV remain
+ * numeric; LIV is an Enhanced-mode extension. */
 static void drawHudGaugeBar(UBYTE* hud, short x, short y, short width, short height, UBYTE fillColor, UWORD value, UWORD maxValue) {
 	short innerWidth = (short)(width - 2);
 	short filled = maxValue ? (short)(((ULONG)value * innerWidth) / maxValue) : 0;
@@ -6275,7 +6408,7 @@ typedef struct HudRenderState {
 	UBYTE livesColor;
 	UBYTE skillLevel;
 	UBYTE missionNumber;
-	UBYTE overlayMode; /* 0 = none, 1 = game over, 2 = mission complete */
+	UBYTE overlayMode; /* 0=none, 1=game over, 2=mission complete, 3=name entry */
 } HudRenderState;
 
 static HudRenderState hudRenderState[HUD_BUFFER_COUNT];
@@ -6292,7 +6425,8 @@ static void drawHudValues(UBYTE* hud, const GameState* game, ULONG highScore, UB
 	UBYTE radarColor = (UBYTE)(game->radarDetection >= 900 ? HUD_COLOR_WARN :
 		(game->radarDetection >= RADAR_DETECTION_ALARM_START ?
 		HUD_COLOR_VALUE : HUD_COLOR_SAFE));
-	UBYTE overlayMode = (UBYTE)(game->gameOver ? 1 : (game->missionComplete ? 2 : 0));
+	UBYTE overlayMode = (UBYTE)(game->highScoreNameEntryActive ? 3 :
+		(game->gameOver ? 1 : (game->missionComplete ? 2 : 0)));
 
 	hudDrawCalls++;
 	if (state->valid) {
@@ -6395,6 +6529,23 @@ static void drawHudValues(UBYTE* hud, const GameState* game, ULONG highScore, UB
 			fillRect(hud, 44, 33, 232, 32, HUD_COLOR_VALUE);
 			fillRect(hud, 46, 35, 228, 28, HUD_COLOR_BACKGROUND);
 			drawTextCentered(hud, 45, "LANDED", HUD_COLOR_SAFE);
+		} else if (overlayMode == 3) {
+			char entryText[7];
+			for (UBYTE i = 0; i < 6; i++) {
+				if (i < game->highScoreNameLength)
+					entryText[i] = game->highScoreName[i];
+				else if (i == game->highScoreNameLength &&
+					game->highScoreNameJoyChar)
+					entryText[i] = game->highScoreNameJoyChar;
+				else
+					entryText[i] = '_';
+			}
+			entryText[6] = 0;
+			fillRect(hud, 42, 31, 236, 35, HUD_COLOR_SAFE);
+			fillRect(hud, 44, 33, 232, 32, HUD_COLOR_VALUE);
+			fillRect(hud, 46, 35, 228, 28, HUD_COLOR_BACKGROUND);
+			drawTextCentered(hud, 38, "HIGH SCORE", HUD_COLOR_SAFE);
+			drawTextCentered(hud, 52, entryText, HUD_COLOR_VALUE);
 		} else {
 			/* Overlay just cleared - restore what's normally there. */
 			drawTextStyled(hud, 36, 36, "SPEED", FONT_STYLE_CPC_HUD);
@@ -8456,9 +8607,7 @@ static UBYTE stageForWorldColumn(LONG worldColumn, const LevelSegmentDef* segmen
 #endif
 }
 
-/* Observe the stage entering at the right edge of the playfield. This is
- * deliberately read-only: Sprint 15.41 records the current level decisions
- * before later sprints replace them with CPC-authentic gates. */
+/* Observe stage transitions at the right edge without affecting gameplay. */
 static void telemetryTrackGameplayStage(const GameState* game) {
 	if ((!telemetryEnabled && !HAR_DEBUG_PERF_LOG) || !telemetryAvailable)
 		return;
@@ -9168,7 +9317,7 @@ static void parityLogFlushToDisk(const GameState* game) {
 	char report[896];
 	char* out = report;
 	static const char header[] =
-		"skill,difficulty,mission,landLength,minY,maxY,flat,climb,descend,targets,enemySpawnOk,enemySpawnNo,enemyMissiles,flakSpawns,wingInterceptOk,wingInterceptNo,wingBombOk,wingBombNo,terrainEvents,pierEvents,enemyPlaneBlocked,townBlocks,townBuildingCols,townFlatCols,townLength,townOverflowCols,townRStart,townREnd,townRChecksum,townClippedCols,classicAirTicks,classicEnemyOutcomes,classicPowerupOutcomes,classicPowerupWhileEnemy,enhancedPowerupWhileEnemy,wingFormationStops,wingFormationCardinal,wingFormationDiagonal,wingFormationEvasive,finalScroll,landingState,missionComplete,reachedFinalCarrier\n";
+		"skill,difficulty,mission,landLength,minY,maxY,flat,climb,descend,targets,enemySpawnOk,enemySpawnNo,enemyMissiles,flakSpawns,wingInterceptOk,wingInterceptNo,wingBombOk,wingBombNo,terrainEvents,pierEvents,enemyPlaneBlocked,townBlocks,townBuildingCols,townFlatCols,townLength,townOverflowCols,townRStart,townREnd,townRChecksum,townClippedCols,classicAirTicks,classicEnemyOutcomes,classicPowerupOutcomes,classicPowerupWhileEnemy,enhancedPowerupWhileEnemy,wingFormationStops,wingFormationCardinal,wingFormationDiagonal,wingFormationEvasive,highScoreLevel,finalScroll,landingState,missionComplete,reachedFinalCarrier\n";
 	for (UWORD i = 0; i < sizeof(header) - 1; i++)
 		*out++ = header[i];
 #define PARITY_VALUE(value) do { out = appendUnsignedLong(out, (ULONG)(value)); *out++ = ','; } while (0)
@@ -9211,6 +9360,7 @@ static void parityLogFlushToDisk(const GameState* game) {
 	PARITY_VALUE(telemetryWingFormationCardinal);
 	PARITY_VALUE(telemetryWingFormationDiagonal);
 	PARITY_VALUE(telemetryWingFormationEvasive);
+	PARITY_VALUE(highScoreTable[0].level);
 	PARITY_VALUE(game->scrollX);
 	PARITY_VALUE(game->landingState);
 	PARITY_VALUE(game->missionComplete);
@@ -13395,9 +13545,7 @@ static void updateCrashPartSprites(UWORD* crashPart1Sprite,
 		return;
 	}
 
-	/* Player rocket is a pixel-precise playfield Bob from Sprint 15.12.
-	 * Channel 5 remains hidden during normal play and is only borrowed by
-	 * crash debris above, until a later sprite allocation uses it. */
+	/* Player rocket is a playfield Bob; channel 5 is reserved for crash debris. */
 	hideHardwareSprite(crashPart1Sprite);
 }
 
@@ -16838,6 +16986,11 @@ int main(void) {
 			if (!gameCancelArmed && !input.cancel)
 				gameCancelArmed = 1;
 			if (gameCancelArmed && input.cancel) {
+				/* A CPC high-score row must never be left half-written. Escape
+				 * accepts the current text (or PLAYER when still empty) before
+				 * performing its normal return-to-menu transition. */
+				if (game.highScoreNameEntryActive)
+					commitHighScoreNameEntry(&highScore, &game);
 				/* A completed run may leave high-score data dirty in RAM. Do not
 				 * briefly restore and retake AmigaOS here: that nested ownership
 				 * transition can invalidate the 68000 supervisor stack. The hardened
@@ -17884,9 +18037,10 @@ int main(void) {
 					game.aircraftFailureState == AIRCRAFT_FAILURE_NONE)
 					startAircraftFailure(&game, AIRCRAFT_FAILURE_CAUSE_FUEL);
 				if (game.gameOver) {
-					if (!game.highScoreCommitted) {
-						updateHighScore(&highScore, &game);
-						game.highScoreCommitted = 1;
+					if (!game.highScoreCommitted &&
+						!game.highScoreNameEntryActive) {
+						beginHighScoreNameEntry(&highScore, &game);
+						hudDirty = 1;
 					}
 					pendingCrashSpriteUpdate = 1;
 					pendingEnemySpriteUpdate = 1;
@@ -17900,7 +18054,12 @@ int main(void) {
 				}
 				}
 			} else {
-				if (Pressed(input.select, previousInput.select)) {
+				if (game.highScoreNameEntryActive) {
+					UBYTE nameEntryUpdate = updateHighScoreNameEntry(
+						&highScore, &game, &input, &previousInput);
+					if (nameEntryUpdate)
+						drawHudBuffer(hudBuffer, &game, highScore, 0);
+				} else if (Pressed(input.select, previousInput.select)) {
 					stopModMusic();
 					stopAllSfx();
 					startGameSession(&game, copper, worldBuffers, &activeWorldBuffer, hudBuffer, playerSprite, playerAttachSprite, crashPart1Sprite, enemyAttachSprite,

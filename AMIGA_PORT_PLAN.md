@@ -16,13 +16,27 @@ Target: stock Amiga 500, PAL, Kickstart 1.3, 68000, OCS, 512 KiB chip RAM + 512 
 - Use A500-safe features only: OCS, 68000 instructions, chip RAM for bitplanes/sprites/copper, no AGA/020 assumptions.
 - Keep visual debug overlays behind explicit flags in `amiga/main.c`, so normal playtest screens stay clean while debugger resources remain available.
 
-## Current Baseline
+## Current Release Status
 
-- Amstrad build works and produces `compile/build/HarrierAttackReloaded.cpr`.
-- Amiga toolchain works and produces `amiga/out/harrier_amiga.exe` and `.elf`.
-- Bartman/Abyss VS Code debug starts WinUAE with Kickstart 1.3.
-- CPC loading screen is `compile/HARRSCR.bin`, built from `HARR_SCR2.asm`.
-- `HARR_SCR2.asm` says ConvImgCpc, CPC Mode 0, 80x200, `org &C000`.
+- Sprint 15.78.0 is feature-complete and in release-candidate preparation.
+- The toolchain produces `harrier_amiga.exe`, debug symbols and a bootable
+  `harrier_amiga.adf` with the early loading-screen executable.
+- The target remains stock PAL Amiga 500: 68000, OCS, Kickstart 1.3 and
+  512 KiB chip RAM + 512 KiB expansion RAM.
+- Deterministic cycle-exact full-route tests cover maximum difficulty, CPU
+  Wingman and two-player weapon pressure. Stable route intervals hold 50 FPS
+  with a maximum one-VBlank delta.
+- Remaining release work is manual regression on real hardware, writable-disk
+  high-score verification, release packaging and documentation/licence review.
+- The Amstrad build remains the gameplay oracle and produces
+  `compile/build/HarrierAttackReloaded.cpr`.
+
+## Historical Sprint Log
+
+The status lines below record the state when each sprint was written. Early
+`planned`, `started`, `pending confirmation` and placeholder notes are retained
+for implementation history; they are not the current release status. Later
+14.x/15.x entries supersede them, with the current status summarized above.
 
 ## Sprint 0 - Amiga Debug Baseline
 
@@ -2339,7 +2353,7 @@ Watch during testing:
   - `A=1/S=1` suggests world drawing spike.
   - `A=0` suggests non-render sources such as HUD/audio/collision.
 
-## Next Implementation Slice
+## Historical continuation after Sprint 14.78
 
 ## Sprint 14.79 - Harrier Sprite Priority Over Carrier
 
@@ -2549,7 +2563,9 @@ Why:
 
 - User compared a CPC+ screenshot against the Amiga port and asked whether we extracted from base CPC instead of CPC+, since the CPC+ visuals looked richer.
 - Traced the real mechanism: the game runs almost entirely on **4 dynamically-rewritten ASIC palette registers** (pens 0-3), rewritten every frame by raster-timed interrupts (`fiftiethofasecondinterrupt2/3/5/6`, `HarrierAttackSourceNew2_alt_CRTC_CART16.asm:8363-8439`) copying from small master tables (`setasicpalettegame`/`setasicpalettemenu`, `:9302-9315`) straight into the CPC+ ASIC's memory-mapped palette at `&6400` via `ldi`. This is what produces the vertical sky-gradient look (`palettemainscreen`/`palettesky`/`palettesky2`, three slightly different shades for three screen bands) plus a separate 4-colour instrument-panel set (`paletteinstruments`).
-- Also found a full day-to-dusk-to-night 20-keyframe palette fade table (`palettefadetable`, `:9374-9399`) that isn't ported to the Amiga side yet - noted for a later sprint, not touched here.
+- Also found a full day-to-dusk-to-night 20-keyframe palette fade table
+  (`palettefadetable`, `:9374-9399`). It was outside this sprint and was later
+  implemented by Sprint 15.74.0/15.74.1.
 - Checked which CPC tile-pen values (0-15) actually appear in the extracted tile data (`cpc_tiles_contact_sheet`) - found the full 0-15 range is used, but no code path anywhere sets ASIC palette registers for pens 4-15; only the 4 dynamic ones are ever written. Where those other pens' colours come from (a DMA-driven palette list the disassembly wouldn't show as individual colour writes, or simply hardware default/unused) remains an open question - out of scope to resolve further for this pass.
 
 Tasks:
@@ -3009,7 +3025,11 @@ Status: done. User supplied a detailed review of the main menu screen (`drawMenu
 - **Right-column status lines mislabeled (done)**: "Rocket range: 10"/"Controls: Off"/"Lock height: On"/"Wingman: Off" used the same `MENU_COLOR_CYAN` as an unselected-but-selectable left-column menu item, despite none of them being interactive. Switched to `MENU_COLOR_SHADOW` - this menu's existing "dim/inactive" colour (already used for the debug-overlay label) - so the column reads as status at a glance.
 - **Fake "Input: Joystick/Keyboard" toggle removed (done, per user's explicit choice over wiring it up for real)**: confirmed `ReadInput()` always reads joystick+keyboard+mouse simultaneously regardless of this menu setting - the toggle only ever changed its own displayed text. Removed as a selectable item entirely (`MENU_ITEM_COUNT` 4->3, `MENU_ITEM_INPUT` removed, `MENU_ITEM_SKILL`/`MENU_ITEM_LIVES` renumbered) rather than gating `ReadInput()` for real. "Controls: Off" (another non-functional text-only status token) replaced with "Input: All" in the right column, since the tight 200px menu screen (`HUD_TOP`=168 sits right below the last status row) had no room to add a line instead of replacing one.
 - **Skill level expanded beyond terrain height (done)**: previously only fed `cpcLandMinimumRow()`. Added `flakDamageThresholdForSkill()` using the review's confirmed CPC formula `totalflakdamagecount ~= 25 - 2*difficulty` (skill 1 tolerates ~23 flak hits, skill 5 only ~15) in place of the old fixed 100-hit budget in `applyPlayerFlakDamage()` - armour now scales proportionally against that threshold instead of a flat `100 - flakDamageCount`. Also added `enemyRespawnFramesForSkill()`/`enemyMissileFireFallbackFrameForSkill()` scaling `ENEMY_RESPAWN_FRAMES`/`ENEMY_MISSILE_FIRE_FALLBACK_FRAME` down at higher skill (roughly halved by skill 5) - **unlike the flak formula, no sourced CPC value was available for enemy-timing difficulty scaling**, so this pair is this port's own directional approximation, clearly commented as such rather than presented as a verified match.
-- **Real top-7 high score table with disk persistence (done)**: replaced the permanent placeholder table (only row 0 ever showed a real score; LEVEL/HITS always displayed 0) with a real sorted `HighScoreEntry[7]` (name/level/hits/score). `game->hitsCount` added, incremented alongside every existing `bonusScore +=` award (ground target, enemy ship, town block, enemy plane, enemy missile - 10 call sites). LEVEL is read from the CPC's own `gamelevelprogress`-equivalent stage (`HarLevelStage`) at the run's final `scrollX` - since the world only ever scrolls forward, that's always the furthest point reached, no separate tracking needed. No name-entry UI was built (out of scope for this pass) - real runs are tagged a fixed "PLAYER", displacing the CPSOFT/AMSOFT/DURELL placeholder rows one at a time as they're actually beaten. Persisted to `PROGDIR:harrier_scores.dat` via `Open`/`Read`/`Write`/`Close` (dos.library, already linked), loaded once at program startup, saved whenever the table changes.
+- **Real top-7 high score table with disk persistence (done)**: replaced the
+  permanent placeholder table with sorted `HighScoreEntry[7]` records and
+  persisted them through AmigaDOS. At this point LEVEL still used route stage
+  and names were fixed to `PLAYER`; Sprint 15.76 corrected LEVEL semantics and
+  Sprints 15.77/15.78 added keyboard/joystick name entry.
   - **Bug found and fixed during testing**: `Open()` on `PROGDIR:harrier_scores.dat` triggered AmigaDOS's blocking "Please insert volume PROGDIR in any drive" system requester when that assign doesn't resolve - confirmed live, and froze the headless test harness completely (no automated way to click through a modal OS dialog). Root cause: the headless harness doesn't launch the program through a normal AmigaDOS process invocation that would set up `PROGDIR:`, so the assign is simply absent in that environment. Fixed with the standard AmigaOS technique - set the current process's `pr_WindowPtr` to `(APTR)-1` immediately around each `Open()` call (`suppressDosRequesters()`/`restoreDosRequesters()`), which makes DOS fail the call silently instead of popping a requester. Both `loadHighScoreTable()` and `saveHighScoreTable()` already handled a failed `Open()` gracefully (falls back to defaults / just skips the save), so no other logic changes were needed once the requester itself was suppressed. This also protects any real player whose environment doesn't have `PROGDIR:` resolvable for whatever reason - the game now degrades to "high scores don't persist this run" instead of hanging on a dialog most players wouldn't know how to reach (WinUAE runs headless/full-screen for many).
 - Verified: clean rebuild after every step. Headless autoplay confirmed no crash/hang for the skill-level/menu-structure changes (autoplay doesn't reach the menu-driven paths meaningfully beyond initial startup, so this mainly checks nothing regressed elsewhere). The DOS-requester fix was verified live by the user (confirmed the game now boots and autoplay flies normally, where it previously hung on the disk-insert dialog) - the deepest, most concrete verification available for exactly this kind of bug.
 
@@ -3057,7 +3077,10 @@ Re-verified all 5 sub-points from the review against current code:
 
 Verified: clean rebuild after every step, headless autoplay confirmed no crash/hang for the full batch. None of the new systems (Maverick rocket, flak countdown timing, town single-tile redraw) are meaningfully exercised by headless autoplay (it never fires weapons, and the countdown/redraw changes are timing/perf-only with no functional branch autoplay would trip) - live confirmation from the user still needed for all three.
 
-## Next Implementation Slice
+## Historical backlog after Sprint 14.97
+
+This list records the open questions at that point in development. Later
+sprints resolved or superseded most entries; it is not the current backlog.
 
 Backlog, roughly in the order raised:
 
@@ -6017,3 +6040,51 @@ route and shared R-register model remain approximations.
   Every steady interval held 50 FPS/max VBL delta 1, confirming the expanded
   generator caches, dynamic scroll limit and shifted end-route coordinates at
   their capped size. The validation script restored the normal F5 build/ADF.
+
+## Sprint 15.76.0 - CPC high-score level semantics
+
+- Corrected the high-score table's `LEVEL` field to store CPC
+  `leveldifficulty` (`HarrierAttackSourceNew2_alt_CRTC_CART16.asm:3863-3865`).
+  It previously stored the route stage at the final scroll position, which is
+  unrelated to the value recorded by the CPC game.
+- New scores now retain the effective campaign difficulty introduced in
+  Sprint 15.75.0: selected skill plus completed missions, capped at 5. A
+  skill-1 run ending on mission 3 therefore records `03`; a skill-5 run ending
+  during its first mission records `05`.
+- The on-disk structure, checksum and two-slot recovery scheme are unchanged.
+  Existing files remain readable; old rows keep their historical value until
+  naturally displaced by a new score.
+- Headless parity output adds `highScoreLevel`, allowing the existing
+  deterministic high-score exercise to validate the metadata without writing
+  a test score to disk.
+
+## Sprint 15.77.0 - CPC high-score name entry
+
+- Restored the CPC high-score name flow instead of silently tagging every new
+  entry `PLAYER`. A qualifying score now opens a six-character editor in the
+  existing HUD status panel before Retry/Menu becomes active.
+- Letter and number keys enter uppercase text, Backspace corrects it, Return
+  accepts a shorter name, and the sixth character commits automatically. An
+  empty entry safely falls back to `PLAYER`; Escape commits the current entry
+  before returning to the menu, so a half-written row can never reach disk.
+- Qualification now matches CPC `enterhighscore`: only a score below the last
+  table entry is rejected, so an equal score is allowed into the table.
+- Sorting, LEVEL/HITS metadata, checksummed two-slot persistence and the safe
+  one-way AmigaDOS write remain unchanged. Headless validation deliberately
+  retains the deterministic automatic `PLAYER` name.
+
+
+## Sprint 15.78.0 - CPC joystick high-score entry
+
+- Extended the Sprint 15.77 editor with CPC `printscores`/`currentjoykey`
+  behavior instead of making name entry keyboard-only.
+- Joystick Up/Down selects a character in CPC's space-through-`Z` range,
+  Left removes the previous committed character, and Right or Fire commits
+  the displayed character. Right/Fire with no selected character completes a
+  shorter name, matching CPC's empty-current-key finish path.
+- The pending joystick character is rendered at the active underscore before
+  it is committed. Direct keyboard letters, digits, Space, Backspace and
+  Return continue to work unchanged.
+- This changes only interactive name entry. Qualification, sorting,
+  LEVEL/HITS, disk format and the deterministic headless `PLAYER` path remain
+  unchanged.

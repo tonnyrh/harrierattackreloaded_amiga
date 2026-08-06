@@ -332,6 +332,22 @@ alternates between two safe heights while accelerating and parity CSV adds
 `wingFormationEvasive`. A valid direction audit must reach the final carrier,
 record both cardinal and diagonal movement and keep `wingWorldHits` at zero.
 
+Sprint 15.76.0 adds `highScoreLevel` to `parity_log.csv`. A deterministic,
+disk-safe metadata check can be run through `run-amiga-parity.ps1` with:
+
+```powershell
+.\run-amiga-parity.ps1 -Skills 5 -WingmanControl 0 -ResultTag highscore_level `
+  -ExtraCcFlags "-DHAR_HEADLESS_HIGHSCORE_TEST=1 -DHAR_HIGHSCORE_DISK_IO=0"
+```
+
+The run exits after committing the synthetic 1234-point score in memory;
+`highScoreLevel` must be `5`. Disabling disk I/O ensures the exercise cannot
+replace a real saved table.
+
+Sprint 15.77.0 adds interactive CPC-style name entry, but this headless path
+deliberately keeps the automatic `PLAYER` name. Automation therefore remains
+deterministic and never waits for keyboard input.
+
 ## Sprint 15.41 baseline and target
 
 Cycle-exact A500 run on 2026-08-01, excluding the startup interval and the
