@@ -100,6 +100,35 @@ all four launch paths actually fired inside each measurement window. Compare
 rows by `scroll`, not elapsed time; the current town occupies world columns
 411..610 (approximately scroll 3288..4880).
 
+## Classic gameplay contract
+
+Sprint 15.79.0 adds a small policy and fuel regression test which exits before
+normal game allocation, high-score access and autoplay. Run it with:
+
+```powershell
+.\run-amiga-classic-contract.ps1
+```
+
+The runner builds with `HAR_HEADLESS_CLASSIC_CONTRACT_TEST=1`, boots the same
+cycle-exact A500 + 512K configuration, waits for
+`amiga/out/classic_contract.txt`, fails on any non-`PASS` result, terminates
+WinUAE, and always restores the ordinary F5/release executable and ADF.
+
+The contract currently covers Classic/Enhanced starting aircraft, radar,
+failure descent, safe respawn, collision/eject policy, skill 1/5 flak
+thresholds, and the exact 9558-PAL-frame CPC fuel lifetime. Sprint 15.80 adds
+CPC's `8 + playerspeed/2` horizontal character mapping and the deliberately
+shared Amiga pixel-smooth 96..186 anchor plus 1..4 pixel/frame scroll bands.
+This prevents both mode leakage and a later cleanup accidentally replacing
+the approved smooth-control behavior with CPC's CPU-delay implementation.
+
+Sprint 15.81 adds the shared bomb trajectory contract. At scroll speed four,
+the 2/3-pixel DDA completes CPC's four logical downward momentum rows in 13
+frames while screen X remains fixed, then completes the first ordinary
+descent row in three frames while world X remains fixed and screen X follows
+the scenery left. These numbers test deterministic interpolation; object and
+artwork contact still needs the listed manual play check.
+
 The runner cleans and builds one test executable per skill, starts only the
 cycle-exact headless WinUAE process it owns, waits for the terminal CSV,
 archives results under `.tmp/amiga-parity-results`, and finally restores a
@@ -110,6 +139,23 @@ includes it in every archived filename. Keep `-SessionSeed` identical when
 comparing builds or Wingman modes. Earlier runs seeded from the menu's elapsed
 frame count and could compare different terrain, cloud, flak and target
 sequences while appearing to be an A/B performance test.
+
+## Sprint 15.86 release-candidate baseline
+
+The fixed-seed regression baseline uses seed `12040`, speed 15 and the
+cycle-exact stock-A500 configuration. It consists of:
+
+- Enhanced CPU Wingman, skills 1 and 5.
+- Enhanced Player 2 with `-WeaponStress`, skill 1 and 100-frame samples.
+- Classic CPU Wingman, skill 1 and 100-frame samples.
+- The standalone Classic gameplay contract.
+
+All full-route profiles must reach `reachedFinalCarrier=1`. Ignore only the
+first bootstrap/startup performance interval; subsequent intervals must hold
+50 FPS, zero hitches, maximum VBL delta 1 and zero HUD guard/register hits.
+The Player-2 stress profile must record non-zero `p1Rkt`, `p1Bmb`, `p2Rkt`
+and `p2Bmb` totals. Results are archived under
+`.tmp/amiga-parity-results` with the `sprint1586_*` result tags.
 
 ## The critical gotcha: DOS file I/O deadlocks mid-game
 
@@ -347,6 +393,26 @@ replace a real saved table.
 Sprint 15.77.0 adds interactive CPC-style name entry, but this headless path
 deliberately keeps the automatic `PLAYER` name. Automation therefore remains
 deterministic and never waits for keyboard input.
+
+Sprint 15.82.0 extends `run-amiga-classic-contract.ps1` with deterministic
+Maverick checks: the CPC eight-column launch distance, exact one-pixel axis
+steering, Amiga final-step clamping and retained direction after lock loss.
+The test does not replace a live check that the visible BOB contacts each
+ground-target silhouette at the expected position.
+
+Sprint 15.83.0 also locks CPC player-object outcomes and the carrier's stepped
+two-cell/four-cell tower mask. Physical rear/front deck contact, parked
+Wingman exclusion and the visible tower edge remain manual landing checks;
+the headless contract deliberately does not allocate the world renderer.
+
+Sprint 15.84.0 keeps the contracted bomb trajectory/cadence but makes gameplay
+contact follow the interpolated 4x3 mini-BOB every frame. This closes the
+previous gap where Player 1 collision was sampled only on eight-pixel logical
+row boundaries; visual target-edge contact still requires a manual play test.
+
+Sprint 15.84.1 changes render ordering only: projectile footprints are retired
+before persistent impact cells are redrawn. Verify manually that an enemy-ship
+hit leaves CPC smoke instead of a blank stern/hull section.
 
 ## Sprint 15.41 baseline and target
 

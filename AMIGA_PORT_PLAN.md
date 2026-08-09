@@ -18,7 +18,7 @@ Target: stock Amiga 500, PAL, Kickstart 1.3, 68000, OCS, 512 KiB chip RAM + 512 
 
 ## Current Release Status
 
-- Sprint 15.78.0 is feature-complete and in release-candidate preparation.
+- Sprint 15.86.3 is feature-complete and in release-candidate regression.
 - The toolchain produces `harrier_amiga.exe`, debug symbols and a bootable
   `harrier_amiga.adf` with the early loading-screen executable.
 - The target remains stock PAL Amiga 500: 68000, OCS, Kickstart 1.3 and
@@ -33,10 +33,52 @@ Target: stock Amiga 500, PAL, Kickstart 1.3, 68000, OCS, 512 KiB chip RAM + 512 
 
 ## Historical Sprint Log
 
+## Sprint 15.86.3 - Pre-town terrain wobble
+
+Status: implemented and contract-tested.
+
+- Corrected the procedural random-land base table from 295 to 299 entries so
+  it exactly covers the authored inclusive route segment at columns 102..400.
+- The old mismatch repeated the final generated surface tile for four columns.
+  When that tile was a CPC hill slope, it was drawn repeatedly at one fixed
+  height and appeared as wobbling ground immediately before the city.
+- Added Classic contract checks for exact route/table alignment and for a
+  monotonic CPC state-5 descent that reaches the town baseline.
+- No terrain smoothing or new generation rule was introduced; the random CPC
+  land algorithm and its natural height changes remain unchanged.
+
 The status lines below record the state when each sprint was written. Early
 `planned`, `started`, `pending confirmation` and placeholder notes are retained
 for implementation history; they are not the current release status. Later
 14.x/15.x entries supersede them, with the current status summarized above.
+
+## Sprint 15.86.1 - Persistent town-hit smoke capacity
+
+Status: implemented and contract-tested.
+
+- Replaced town destruction's use of the shared 24-cell ship/target smoke list
+  with a fixed two-bit-per-row map covering every generated town column.
+- Bomb and rocket hits in both Classic and Enhanced now keep the exact struck
+  facade cell as CPC Smoke 2 and, where the cell above is sky, CPC Smoke 1.
+- The representation costs 410 bytes and has no dynamic allocation or per-frame
+  list scan on the A500.
+- The Classic contract now destroys more than 24 generated town cells and
+  verifies that every cell persists without consuming the ship smoke list.
+- No weapon physics, scoring, renderer layout, palette or audio behavior changed.
+
+## Sprint 15.86.2 - Failed-aircraft object impact
+
+Status: implemented and contract-tested.
+
+- Aircraft collision now resolves the opaque cells in the procedural town
+  facade as well as the base object map.
+- A normal Harrier, a failing Harrier and the abandoned aircraft after eject
+  therefore explode on contact with buildings. Existing fatal collision rules
+  already cover intact ground targets, vehicles and enemy ships.
+- Destroyed facade cells still resolve as non-fatal CPC hit smoke rather than
+  invisible solid geometry.
+- The Classic contract verifies the fatal classifications and performs an
+  end-to-end collision against a generated building cell.
 
 ## Sprint 0 - Amiga Debug Baseline
 
@@ -6088,3 +6130,197 @@ route and shared R-register model remain approximations.
 - This changes only interactive name entry. Qualification, sorting,
   LEVEL/HITS, disk format and the deterministic headless `PLAYER` path remain
   unchanged.
+
+## Sprint 15.79.0 - player parity contract
+
+- Added `PLAYER_PARITY_REVIEW.md`, grounded in the CPC routines and the actual
+  Amiga call sites. Exact parity is claimed only where the source evidence and
+  implementation support it; movement, Maverick, bomb-contact timing and the
+  complete Wingman trace remain explicit measurement items.
+- Centralized the approved mode policy. Classic owns CPC one-aircraft,
+  no-radar, immediate-failure, no-safe-respawn and CPC eject outcomes.
+  Enhanced retains the deliberately approved radar, three-aircraft, failure,
+  rescue and safe-respawn extensions. CPC logical collision outcomes remain
+  the baseline for both modes.
+- Replaced distance-derived fuel with CPC `timercountdown`'s rational 300 Hz
+  model: 16 gauge levels, a 14-count divider and one divider tick per 256 clock
+  ticks. A full tank lasts 9558 PAL frames (about 191.15 seconds) in either
+  mode, independent of speed.
+- Kept release-to-rearm for rockets and bombs in both modes as an explicit
+  shared Amiga input improvement.
+- Expanded optional player-event telemetry and added the compile-time
+  `HAR_HEADLESS_CLASSIC_CONTRACT_TEST` regression gate.
+
+## Sprint 15.80.0 - player movement and speed contract
+
+- Audited CPC `checkplayerplanemovement` and `checkplayerspeed` directly.
+  CPC maps `playerspeed` 0..15 to character X `8 + playerspeed/2`; its timing
+  also contains CPU-delay loops and is not a stable pixel/frame contract.
+- Retained the previously approved Amiga control presentation in both modes:
+  every speed level has a pixel-smooth 96..186 screen-X anchor and world
+  scrolling uses the established 1..4 pixel/frame bands. This is documented
+  as an intentional shared improvement, not mislabeled as exact CPC cadence.
+- Added the CPC source mapping and Amiga interpolation/scroll invariants to
+  the Classic contract test, including monotonicity and flight-area bounds.
+
+## Sprint 15.81.0 - CPC bomb momentum correction
+
+- Re-read CPC `dolaunchbomb`, `decreasebombmomentum`, `movebombmomentum` and
+  `decreasebombheight`. The momentum phase advances bomb row H four times
+  while screen L stays fixed; descent then decrements L with scenery scroll
+  and continues advancing H. The old Amiga interpretation moved only world X
+  during momentum and therefore delayed all falling until the fifth step.
+- Corrected the shared Classic/Enhanced motion: the bomb descends throughout,
+  follows world progress at fixed screen X for four logical rows, then retains
+  world X and scrolls left with the landscape until contact.
+- Kept the existing pixel mini-BOB, 2/3-pixel interpolation, faster-than-player
+  fall rate and release-to-rearm input improvement.
+- Extended the headless contract with source-derived momentum/descent position
+  assertions so this direction error cannot return.
+
+## Sprint 15.82.0 - CPC Maverick guidance contract
+
+- Audited CPC `checkfireplayermissile`, `playermissilemovemaverick`,
+  `playermissilemovemaverickguidance`, `getdirectionfromcoords` and
+  `scrollenemylandlocationlock` as one state chain.
+- Restored CPC lock eligibility: any active lock remains fireable until the
+  CPC-equivalent column-5 expiry, even after the Harrier has overtaken it.
+- Replaced the old +/-4-pixel steering dead zone with CPC's exact nine-way
+  direction choice. The Amiga BOB remains smooth and avoids the former
+  travelling-V oscillation by shortening only the final four-pixel step.
+- Retained the last direction after lock loss or exact arrival, as the CPC
+  code does, and locked these rules into the headless contract test.
+
+## Sprint 15.83.0 - CPC player collision and carrier mask
+
+- Centralized CPC `checkplayeragainstobjectmap` outcomes: cloud/sky, Wingman
+  and pickup cells are safe; flak/smoke use accumulated damage; every other
+  occupied gameplay cell is fatal. Both modes share this baseline.
+- Corrected the native carrier obstruction from one shifted rectangle to
+  CPC `writefrigatetilemap`'s stepped mask: two upper tower cells, four lower
+  tower cells and the unchanged twelve-cell deck.
+- Kept the smooth visible-body overlap and the previously approved parked
+  Wingman landing exclusion. No renderer, scrolling or mode-specific physics
+  changed.
+- Extended the headless Classic contract with collision outcome and carrier
+  mask assertions.
+
+## Sprint 15.84.0 - Pixel-accurate player bomb contact
+
+- Kept the source-derived CPC bomb trajectory and 2/3-pixel Amiga mini-BOB
+  interpolation unchanged.
+- Replaced Player 1's obsolete collision probe, which ran only once per
+  eight-pixel logical row, with the same per-frame visible-footprint contact
+  used by Player 2.
+- The probe now follows the lowest opaque pixel of the diagonal or vertical
+  4x3 bomb art. This prevents a visually intersecting bomb from passing
+  through a target between CPC logical row updates.
+- No weapon inventory, damage, scrolling, renderer or mode-specific rule was
+  changed.
+
+### Sprint 15.84.1 - Persistent impact ordering
+
+- Fixed stale bomb/rocket BOB backgrounds overwriting permanent world changes
+  made earlier in the same frame.
+- Projectile footprints are now restored and invalidated before ship smoke,
+  target smoke or craters redraw their world cells.
+- Applied the same ordering to Player 1, Player 2 and CPU Wingman weapons;
+  CPC tile-by-tile enemy-ship damage remains unchanged.
+
+### Sprint 15.84.2 - CPC-timed carrier-tower contact
+
+- Kept the exact CPC `writefrigatetilemap` tower mask and its fatal collision
+  result, but changed the player probe from a smooth pixel rectangle to CPC's
+  two cells on the current `currentplayerlocation` character row.
+- The former probe could enter the next vertical tower cell up to seven pixels
+  early, destroying a Harrier while clear air was still visibly below it on
+  the landing approach.
+- Carrier rendering, deck touchdown, parked-Wingman exclusion and smooth
+  movement are unchanged.
+
+### Sprint 15.85.0 - Shared CPC Wingman bomb momentum
+
+- Routed CPU-Wingman and Player 2 bombs through the same four logical
+  momentum rows as Player 1/CPC `dolaunchbomb`: fixed screen X first, then
+  fixed world X for the rest of the fall.
+- Restored CPU Wingman's source-derived five-character bombing lead from
+  `checkwingmandobombingrun`; Player 2 remains a freely aimed manual drop.
+- Kept the shared pixel interpolation, collision footprints, inventory rules
+  and release-to-rearm input unchanged.
+
+### Sprint 15.85.1 - Enter confirms menu choices
+
+- Return and numeric-keypad Enter now confirm the highlighted choice anywhere
+  the menu/UI already accepts Fire.
+- Enter is kept out of the gameplay `fire` signal, so it cannot launch a
+  rocket; existing weapon bindings, including keypad Enter for Player 2's
+  bomb, remain unchanged during play.
+- Updated the control and debug-browser prompts to advertise Fire/Enter.
+
+### Sprint 15.86.0 - Release-candidate gameplay regression
+
+- Re-ran the Classic contract and three cycle-exact stock-A500 full-route
+  profiles against fixed session seed 12040: Enhanced CPU Wingman at skills 1
+  and 5, Enhanced Player 2 weapon stress at skill 1, and Classic CPU Wingman
+  at skill 1.
+- Every route reached the final carrier. All stable measurement windows held
+  50 FPS, zero hitches and a maximum one-VBlank delta; the intentionally slow
+  emulator/bootstrap sample is excluded from gameplay assessment.
+- Player-2 stress recorded launches on all four independent weapon paths:
+  P1 rockets/bombs 116/63 and P2 rockets/bombs 29/71. This also exercises the
+  shared Wingman bomb-momentum change from Sprint 15.85 without bypassing
+  release-to-rearm input.
+- HUD memory and register canaries remained zero in every profile. The Classic
+  parity log recorded Classic-only air/enemy/pickup outcomes and no Enhanced
+  pickup leakage.
+- No gameplay defect was found by the automated gate, so this sprint changes
+  no game rule, renderer, collision, AI or audio path. Carrier contact,
+  Maverick visuals, eject presentation and writable-media high-score behavior
+  remain explicit manual/release checks.
+
+### Sprint 15.87.0 - Real rocket-range menu and honest control help
+
+- Re-read CPC `decrementrocketrange`, `incrementrocketrange`,
+  `checkplayermissilemove` and `checkwingmanmissilemove`: Rocket Range is a
+  real 10..20-character setting with default 10, applied to both ordinary
+  player and Wingman rockets.
+- Added Rocket Range to the reachable menu sequence. Left/right or Fire/Enter
+  changes it within the CPC limits; the value is copied into every mission and
+  now controls actual ordinary-rocket travel distance.
+- Kept Maverick's separate eight-cell launch/guidance state unchanged. CPC
+  `L+Fire` is a fixed chord, not a configurable menu value.
+- Kept the intentional Amiga input improvement where keyboard, joystick and
+  mouse are active together. `INPUT: ALL` and `MAV: L+FIRE` now sit under a
+  white/green `CONTROL HELP` heading rather than masquerading as blue choices.
+- Extended the Classic contract with the source-derived 10..20/default-10
+  constants and character-to-pixel range conversion.
+
+### Sprint 15.87.1 - Incremental Controls-screen updates
+
+- Up/down navigation now erases and draws only the old and new cursor cells;
+  it no longer clears and rebuilds the complete Controls screen.
+- Key-capture state, changed values and validation messages redraw only their
+  affected row. This keeps the MOD player serviced instead of starving it on
+  every navigation input.
+- A complete redraw remains intentional only when entering the page, changing
+  player profile, or restoring defaults because those actions can change all
+  displayed bindings.
+
+### Sprint 15.87.2 - Bounded Player-2 pause transition
+
+- The pause overlay no longer enters the menu-MOD service routine once per
+  character while gameplay audio has just been stopped. It now uses a small
+  gameplay-only text path with a compile-time width and no tracker state.
+- Pause still blanks only the bottom HUD band, keeps its required blinking
+  message and restores the normal HUD plus engine state on resume.
+- Added an optional headless pause/resume injection which presses P, waits 20
+  VBlanks, presses P again and then requires the Player-2 route test to finish.
+
+### Sprint 15.88.0 - Tighter Enhanced radar masking
+
+- Enhanced terrain masking now begins four pixels closer to the local terrain,
+  sea or intact town roof. The five skill-dependent belly-clearance boundaries
+  are 20/28/36/44/52 pixels instead of 24/32/40/48/56.
+- Detection gain/drain response, alarm thresholds and surface probes are
+  unchanged. Classic still uses its separate CPC absolute-height admission
+  rule and never enters the Enhanced radar accumulator.

@@ -27,10 +27,10 @@ static const LevelSegmentDef harLevelRouteSource[] = {
 	// Sprint 14.97 PRI 8: COAST_RISE reduced from 6 columns (100-105) to 2
 	// (100-101), matching CPC's 1+1 tile coast transition (one solid tile
 	// at row 15, one hill-up at row 14). Procedural land starts immediately
-	// after at column 102. CPC_LAND_PROCEDURAL_WORLD_START in main.c still
-	// references column 106 — the 4 extra columns of procedural land that
-	// replace the old coast-rise fill generate identically to any other
-	// land column, so no separate adjustment is needed there.
+	// after at column 102. CPC_LAND_PROCEDURAL_WORLD_START and the 299-entry
+	// base table in main.c cover this exact inclusive 102..400 range. Keep
+	// those boundaries aligned: clamping a shorter table repeats a slope tile
+	// at fixed height and creates a visible wobble immediately before town.
 	{ 100, 101, HAR_STAGE_DO_LAND, HAR_TERRAIN_COAST_RISE },
 	{ 102, 400, HAR_STAGE_DO_LAND, HAR_TERRAIN_CPC_RANDOM_LAND },
 	{ 401, 410, HAR_STAGE_DESCEND_MOUNTAINS, HAR_TERRAIN_CPC_DESCEND_TO_TOWN },
