@@ -44,10 +44,12 @@ is redrawn for their animation.
 - A deterministic group of one to three CPU BOBs begins arriving after
   two seconds of carrier idle time. Each bird enters through an off-screen
   edge, with a varied 60-187-frame gap, instead of appearing in the playfield.
-- Three pre-rendered distance banks (8px, 12px and 16px), three wing phases,
-  two grey/white variants and independent fixed-point velocities avoid runtime
-  scaling and a shared mechanical loop. Birds approach from a small distant
-  silhouette; takeoff scatter steps back down through the banks.
+- Three pre-rendered distance banks (roughly 4px, 6px and 8px) and five real
+  wing phases avoid runtime scaling while making the stroke visibly smoother.
+  Every bird owns an independent deterministic animation clock and frequency.
+  After a few private flap cycles it can hold the level-wing frame for a short,
+  individually varied glide before resuming. Birds approach from a small
+  distant silhouette; takeoff scatter steps back down through the banks.
 - Their private LFSR is reset per game session and never touches gameplay RNG.
 - Starting takeoff switches every active gull to a fast upward/outward scatter
   state. The same state is cleanly reset on menu/session changes.

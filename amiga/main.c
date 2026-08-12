@@ -15,7 +15,7 @@
 #include <string.h>
 #include "assets/harrier_menu_text.h"
 
-#define HAR_BUILD_LABEL "SPRINT 15.90.0"
+#define HAR_BUILD_LABEL "SPRINT 15.90.2"
 
 #define SCREEN_WIDTH 320
 #define LOADING_SCREEN_WIDTH 320
@@ -453,7 +453,11 @@
 #define CARRIER_GULL_SPAWN_INTERVAL_VARIATION 127
 #define CARRIER_GULL_CRUISE_X256 77
 #define CARRIER_GULL_CRUISE_Y256 14
-#define CARRIER_GULL_FLAP_PHASE_FRAMES 9
+#define CARRIER_GULL_FLAP_PHASE_COUNT 5
+#define CARRIER_GULL_FLAP_PERIOD_MIN_FRAMES 5
+#define CARRIER_GULL_FLAP_PERIOD_VARIATION 7
+#define CARRIER_GULL_GLIDE_MIN_FRAMES 18
+#define CARRIER_GULL_GLIDE_VARIATION 47
 
 #define WEAPON_SPRITE_HEIGHT 8
 #define AUXILIARY_SPRITE_WORDS (2 + WEAPON_SPRITE_HEIGHT * 2 + 2)
@@ -919,6 +923,10 @@ typedef struct AttractDemoState {
 	UBYTE nextUsesWingman;
 	UBYTE airborneStarted;
 	UBYTE diving;
+	/* ReadInput maps gameplay keys, but attract mode must also yield to keys
+	 * which have no game binding. PollKeyboard increments this on every raw
+	 * make code, so one snapshot covers the complete Amiga keyboard. */
+	UWORD keyboardMakeSerial;
 	UWORD airborneFrame;
 	UWORD nextManeuverFrame;
 	UWORD nextRocketFrame;
@@ -7685,10 +7693,15 @@ typedef struct CarrierGull {
 	UBYTE active;
 	UBYTE scattering;
 	UBYTE variant;
-	UBYTE flapOffset;
+	UBYTE flapPhase;
+	UBYTE flapTimer;
+	UBYTE flapPeriod;
+	UBYTE flapCyclesUntilGlide;
+	UBYTE glideFrames;
 	UBYTE scale;
 	UBYTE maxScale;
 	UBYTE scatterFrames;
+	UWORD animationRandomState;
 	LONG worldX256;
 	LONG y256;
 	WORD velocityX256;
@@ -11648,9 +11661,7 @@ static UBYTE carrierGullsNeedRedraw(const GameState* game) {
 				return 1;
 			continue;
 		}
-		UBYTE phase = gull->scattering ? 0 :
-			(UBYTE)(((frameCounter / CARRIER_GULL_FLAP_PHASE_FRAMES) +
-				gull->flapOffset) % 3);
+		UBYTE phase = gull->scattering ? 0 : gull->flapPhase;
 		if (!footprint->valid || footprint->worldX != worldX ||
 			footprint->y != y || footprint->phase != phase ||
 			footprint->variant != gull->variant ||
@@ -11671,6 +11682,58 @@ static UWORD nextCarrierGullRandom(void) {
 	return carrierGullLfsr;
 }
 
+static UWORD nextCarrierGullActorRandom(CarrierGull* gull) {
+	/* Each bird owns its animation RNG so changing one bird's flap/glide timing
+	 * cannot phase-lock the rest of the flock or disturb gameplay generation. */
+	UWORD value = gull->animationRandomState ?
+		gull->animationRandomState : 0x6d2b;
+	value = (UWORD)((value >> 1) ^ (-(WORD)(value & 1) & 0xb400));
+	if (!value)
+		value = 0x6d2b;
+	gull->animationRandomState = value;
+	return value;
+}
+
+static void updateCarrierGullWingAnimation(CarrierGull* gull) {
+	if (gull->scattering) {
+		gull->flapPhase = 0;
+		return;
+	}
+
+	if (gull->glideFrames) {
+		/* Phase 2 is the level-wing silhouette. Holding it for a private random
+		 * interval creates genuine soaring instead of a slower shared flap loop. */
+		gull->flapPhase = 2;
+		gull->glideFrames--;
+		if (!gull->glideFrames) {
+			UWORD random = nextCarrierGullActorRandom(gull);
+			gull->flapTimer = 0;
+			gull->flapPeriod = (UBYTE)(
+				CARRIER_GULL_FLAP_PERIOD_MIN_FRAMES +
+				(random & CARRIER_GULL_FLAP_PERIOD_VARIATION));
+			gull->flapCyclesUntilGlide = (UBYTE)(3 + ((random >> 4) & 3));
+		}
+		return;
+	}
+
+	if (++gull->flapTimer < gull->flapPeriod)
+		return;
+	gull->flapTimer = 0;
+	gull->flapPhase++;
+	if (gull->flapPhase < CARRIER_GULL_FLAP_PHASE_COUNT)
+		return;
+
+	gull->flapPhase = 0;
+	if (gull->flapCyclesUntilGlide)
+		gull->flapCyclesUntilGlide--;
+	if (!gull->flapCyclesUntilGlide) {
+		UWORD random = nextCarrierGullActorRandom(gull);
+		gull->flapPhase = 2;
+		gull->glideFrames = (UBYTE)(CARRIER_GULL_GLIDE_MIN_FRAMES +
+			(random & CARRIER_GULL_GLIDE_VARIATION));
+	}
+}
+
 static void spawnCarrierGull(const GameState* game, UBYTE index) {
 	CarrierGull* gull = &carrierGulls[index];
 	UWORD random = nextCarrierGullRandom();
@@ -11682,7 +11745,17 @@ static void spawnCarrierGull(const GameState* game, UBYTE index) {
 	gull->active = 1;
 	gull->scattering = 0;
 	gull->variant = (UBYTE)((random >> 8) & 1);
-	gull->flapOffset = (UBYTE)((random >> 10) & 7);
+	gull->animationRandomState = (UWORD)(random ^
+		((UWORD)(index + 1) * 0x2d35));
+	if (!gull->animationRandomState)
+		gull->animationRandomState = (UWORD)(0x593d + index);
+	gull->flapPhase = (UBYTE)((random >> 9) % CARRIER_GULL_FLAP_PHASE_COUNT);
+	gull->flapTimer = (UBYTE)((random >> 3) & 3);
+	gull->flapPeriod = (UBYTE)(CARRIER_GULL_FLAP_PERIOD_MIN_FRAMES +
+		(nextCarrierGullActorRandom(gull) &
+		 CARRIER_GULL_FLAP_PERIOD_VARIATION));
+	gull->flapCyclesUntilGlide = (UBYTE)(2 + ((random >> 12) & 3));
+	gull->glideFrames = 0;
 	/* Birds enter as distant silhouettes and grow only at two discrete
 	 * approach thresholds. Some remain mid-distance, which avoids a flock of
 	 * identical full-size BOBs and costs no runtime scaling. */
@@ -11790,6 +11863,7 @@ static void updateCarrierGulls(const GameState* game, UBYTE idleEligible,
 		CarrierGull* gull = &carrierGulls[index];
 		if (!gull->active)
 			continue;
+		updateCarrierGullWingAnimation(gull);
 		gull->worldX256 += gull->velocityX256;
 		gull->y256 += gull->velocityY256;
 		if (!gull->scattering) {
@@ -11831,21 +11905,28 @@ static void drawCarrierGullPlacement(UBYTE* bitmap,
 	CarrierGullFootprint* footprint, UBYTE placement, UWORD bufferPixelX,
 	WORD y, UBYTE phase, UBYTE variant, UBYTE scale) {
 	(void)variant;
-	/* Three hand-authored OCS banks: distant 4x3, middle 6x4 and near
-	 * 8x5. Keeping the perspective banks precomputed is cheaper than runtime
-	 * scaling, while the closest gull is now half the former 16px width. */
-	static const UWORD shape[3][3][CARRIER_GULL_HEIGHT] = {
+	/* Three hand-authored OCS distance banks and five actual wing positions:
+	 * high, rising, level/glide, falling and low. Precomputation remains much
+	 * cheaper on a stock A500 than scaling or rotating a larger source BOB. */
+	static const UWORD shape[3][CARRIER_GULL_FLAP_PHASE_COUNT]
+		[CARRIER_GULL_HEIGHT] = {
 		{
 			{ 0, 0, 0, 0x0240, 0x0180, 0, 0, 0, 0 },
-			{ 0, 0, 0, 0x0180, 0x0180, 0, 0, 0, 0 },
+			{ 0, 0, 0, 0x0240, 0x03c0, 0, 0, 0, 0 },
+			{ 0, 0, 0, 0, 0x03c0, 0, 0, 0, 0 },
+			{ 0, 0, 0, 0x0180, 0x03c0, 0, 0, 0, 0 },
 			{ 0, 0, 0, 0x0180, 0x0240, 0, 0, 0, 0 }
 		}, {
 			{ 0, 0, 0, 0x0420, 0x0240, 0x0180, 0, 0, 0 },
-			{ 0, 0, 0, 0x0420, 0x0240, 0x0180, 0, 0, 0 },
+			{ 0, 0, 0, 0, 0x0420, 0x03c0, 0, 0, 0 },
+			{ 0, 0, 0, 0, 0x07e0, 0x0180, 0, 0, 0 },
+			{ 0, 0, 0, 0x0180, 0x03c0, 0x0420, 0, 0, 0 },
 			{ 0, 0, 0, 0x0180, 0x0240, 0x0420, 0, 0, 0 }
 		}, {
 			{ 0, 0, 0x0810, 0x0420, 0x0240, 0x0180, 0, 0, 0 },
-			{ 0, 0, 0x0810, 0x0420, 0x0240, 0x0180, 0, 0, 0 },
+			{ 0, 0, 0, 0x0810, 0x0420, 0x03c0, 0, 0, 0 },
+			{ 0, 0, 0, 0, 0x0ff0, 0x0180, 0, 0, 0 },
+			{ 0, 0, 0x0180, 0x03c0, 0x0420, 0x0810, 0, 0, 0 },
 			{ 0, 0, 0x0180, 0x0240, 0x0420, 0x0810, 0, 0, 0 }
 		}
 	};
@@ -11859,7 +11940,8 @@ static void drawCarrierGullPlacement(UBYTE* bitmap,
 	footprint->byteX[placement] = byteX;
 	footprint->byteCount[placement] = byteCount;
 	for (UBYTE row = 0; row < CARRIER_GULL_HEIGHT; row++) {
-		ULONG shifted = (ULONG)shape[scale % 3][phase % 3][row] <<
+		ULONG shifted = (ULONG)shape[scale % 3]
+			[phase % CARRIER_GULL_FLAP_PHASE_COUNT][row] <<
 			(8 - bitOffset);
 		UBYTE masks[3] = {
 			(UBYTE)(shifted >> 16), (UBYTE)(shifted >> 8), (UBYTE)shifted
@@ -11908,9 +11990,7 @@ static void drawCarrierGulls(UBYTE* bitmap, UBYTE bufferIndex,
 		footprint->valid = 1;
 		footprint->placementCount = 1;
 		footprint->y = y;
-		UBYTE phase = gull->scattering ? 0 :
-			(UBYTE)(((frameCounter / CARRIER_GULL_FLAP_PHASE_FRAMES) +
-				gull->flapOffset) % 3);
+		UBYTE phase = gull->scattering ? 0 : gull->flapPhase;
 		footprint->worldX = worldX;
 		footprint->phase = phase;
 		footprint->variant = gull->variant;
@@ -17199,6 +17279,7 @@ static void resetAttractDemoRun(AttractDemoState* demo, UBYTE usesWingman) {
 	demo->active = 1;
 	demo->airborneStarted = 0;
 	demo->diving = 0;
+	demo->keyboardMakeSerial = keyboardMakeSerial;
 	demo->airborneFrame = 0;
 	demo->nextManeuverFrame = 0;
 	demo->nextRocketFrame = 45;
@@ -18040,7 +18121,9 @@ int main(void) {
 		 * scripted recording. A completed crash advances solo <-> CPU Wingman;
 		 * an interrupted demo retries the same variant next time. */
 		if (attractDemo.active) {
-			UBYTE physicalAbort = input.any || input.cancel || input.space ||
+			UBYTE physicalAbort =
+				keyboardMakeSerial != attractDemo.keyboardMakeSerial ||
+				input.any || input.cancel || input.space ||
 				input.p || input.d || input.r || input.shift || input.control;
 			UBYTE completed = game.gameOver;
 			if (physicalAbort || completed) {

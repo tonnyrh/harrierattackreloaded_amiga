@@ -18,7 +18,7 @@ Target: stock Amiga 500, PAL, Kickstart 1.3, 68000, OCS, 512 KiB chip RAM + 512 
 
 ## Current Release Status
 
-- Sprint 15.90.0 is feature-complete and in release-candidate regression.
+- Sprint 15.90.2 is feature-complete and in release-candidate regression.
 - The toolchain produces `harrier_amiga.exe`, debug symbols and a bootable
   `harrier_amiga.adf` with the early loading-screen executable.
 - The target remains stock PAL Amiga 500: 68000, OCS, Kickstart 1.3 and
@@ -33,6 +33,26 @@ Target: stock Amiga 500, PAL, Kickstart 1.3, 68000, OCS, 512 KiB chip RAM + 512 
   standalone Amiga repository.
 
 ## Historical Sprint Log
+
+## Sprint 15.90.2 - any-input attract-demo exit
+
+- The attract demo still samples the configured joystick through the normal
+  input path, so every direction and fire button returns directly to the menu.
+- A raw keyboard make-code serial is snapshotted when the demo starts. Any new
+  key press now exits, including keys which are not bound to a game action.
+- The physical-input test remains before scripted demo input is installed, so
+  the recording cannot accidentally abort itself.
+
+## Sprint 15.90.1 - independent five-phase carrier gull animation
+
+- Expanded every pre-rendered gull distance bank from three frames (two of
+  which were visually identical in the larger banks) to five distinct wing
+  positions: high, rising, level, falling and low.
+- Replaced the shared `frameCounter` animation clock with a tiny state machine
+  and private deterministic LFSR per bird. Each gull now varies its wingbeat
+  period independently and occasionally holds the level-wing frame to glide.
+- The feature still uses CPU BOBs, consumes no hardware sprites or extra
+  bitplanes, and does not advance the gameplay/world random sequence.
 
 ## Sprint 15.90.0 - alternating gameplay attract demo
 
