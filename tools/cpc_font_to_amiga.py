@@ -184,9 +184,9 @@ def write_font_preview(path: Path, font: bytes) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", type=Path, default=Path("AMSTRADFONT3.asm"))
-    parser.add_argument("--out-font", type=Path, default=Path("amiga/assets/cpc_font8x8.bin"))
+    parser.add_argument("--out-font", type=Path, default=Path("amiga/assets/font8x8.bin"))
     parser.add_argument("--out-text", type=Path, default=Path("amiga/assets/harrier_menu_text.h"))
-    parser.add_argument("--preview-bmp", type=Path, default=Path("amiga/assets/cpc_font8x8_preview.bmp"))
+    parser.add_argument("--preview-bmp", type=Path, default=Path(".tmp/cpc-asset-audit/font8x8_preview.bmp"))
     args = parser.parse_args()
 
     text = args.input.read_text(encoding="utf-8", errors="ignore")

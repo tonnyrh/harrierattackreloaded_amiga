@@ -4,7 +4,7 @@ Target: stock Amiga 500, PAL, Kickstart 1.3, 68000, OCS, 512 KiB chip RAM + 512 
 
 ## Rules
 
-- Keep the CPC version as the gameplay oracle. Compare behavior and screenshots against `compile/build/HarrierAttackReloaded.cpr`.
+- Keep the CPC version as the gameplay oracle in a separate reference checkout; the standalone Amiga repository does not version CPC source or build outputs.
 - Default rule: port CPC gameplay, scoring, weapon behavior, object destruction, collision, spawning, and level progression as-is.
 - Allowed Amiga-specific improvements are limited to smooth hardware-assisted scrolling/presentation, Paula sound/effects implementation, and technical restructuring needed to run the same behavior cleanly on a stock Amiga 500 target.
 - Do not add new gameplay rules, new balancing, or "better" object behavior unless it is explicitly marked as a temporary debugging aid or the user requests a deliberate enhancement.
@@ -18,7 +18,7 @@ Target: stock Amiga 500, PAL, Kickstart 1.3, 68000, OCS, 512 KiB chip RAM + 512 
 
 ## Current Release Status
 
-- Sprint 15.86.3 is feature-complete and in release-candidate regression.
+- Sprint 15.90.0 is feature-complete and in release-candidate regression.
 - The toolchain produces `harrier_amiga.exe`, debug symbols and a bootable
   `harrier_amiga.adf` with the early loading-screen executable.
 - The target remains stock PAL Amiga 500: 68000, OCS, Kickstart 1.3 and
@@ -28,10 +28,57 @@ Target: stock Amiga 500, PAL, Kickstart 1.3, 68000, OCS, 512 KiB chip RAM + 512 
   with a maximum one-VBlank delta.
 - Remaining release work is manual regression on real hardware, writable-disk
   high-score verification, release packaging and documentation/licence review.
-- The Amstrad build remains the gameplay oracle and produces
-  `compile/build/HarrierAttackReloaded.cpr`.
+- The Amstrad version remains the external gameplay oracle, but its source,
+  build products and extraction audits are intentionally not part of this
+  standalone Amiga repository.
 
 ## Historical Sprint Log
+
+## Sprint 15.90.0 - alternating gameplay attract demo
+
+Status: implemented and regression-tested.
+
+- A naturally completed main-menu ticker still opens the Field Guide. When
+  the Field Guide's second ticker has completely left the screen, it now
+  starts a real generated Enhanced mission instead of returning immediately.
+- Attract runs alternate after each completed crash between solo Harrier and
+  CPU Wingman. An interrupted run does not advance the alternation.
+- The demo owns a deterministic controller recording independent of gameplay
+  RNG: it accelerates, follows changing terrain-relative flight clearances and
+  produces fresh-edge rocket and bomb presses at varied intervals.
+- After 20 PAL seconds airborne the Harrier commits to a dive. Normal terrain
+  collision owns the crash; a five-second safety bound starts the established
+  three-fragment crash if no surface contact was possible.
+- Any physical input during the demo immediately restores a fresh main menu,
+  its one-shot ticker and menu MOD. Demo scores never enter the high-score
+  table and no demo path performs disk I/O.
+- The Classic contract passed unchanged. A fixed-seed Enhanced full-route
+  regression reached the final carrier with stable 50 FPS samples, zero
+  steady-state hitches and `maxVblDelta=1`.
+
+## Sprint 15.89.0 - Enhanced skill-pressure curve
+
+Status: implemented and contract-tested.
+
+- Kept Classic mode on the CPC-derived terrain, flak, admission and weapon
+  rules without an additional balance multiplier.
+- Added an explicit Enhanced-only pressure curve of 100/103/105/108/110
+  percent for skill levels 1..5. It raises terrain-relative radar accumulation
+  gradually and reduces the integer flak-hit budget conservatively at the
+  upper levels.
+- Skill 1 is unchanged. Skill 5 reaches the requested approximately ten-percent
+  increase without changing enemy movement cadence, projectile speed, smooth
+  scrolling or CPC object rules.
+- Extended the Classic contract test to lock the mode boundary, endpoints and
+  rounded skill-5 flak budget.
+- Isolated the live parachute pickup canopy registers from campaign
+  atmosphere palettes. Yellow armour, red Wingman, blue rockets and green
+  bombs now use the same fixed OCS colours in gameplay as in the Field Guide;
+  mission sky/land/sea fades cannot turn them grey or black.
+- Cycle-exact A500 full-route validation at fixed seed 12040 reached the final
+  carrier at both skill 1 and skill 5. Stable samples held 50 FPS, zero
+  hitches and a one-VBlank maximum delta. Skill 5 produced 21 enemy
+  planes/missiles and 323 flak spawns versus 9/9 and 210 at skill 1.
 
 ## Sprint 15.86.3 - Pre-town terrain wobble
 

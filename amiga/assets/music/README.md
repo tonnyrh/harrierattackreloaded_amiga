@@ -27,19 +27,6 @@ The file can be opened in common Amiga music tools such as ProTracker,
 OctaMED, MilkyTracker and OpenMPT. Keeping it as a normal MOD also makes it
 suitable for common Amiga replay routines such as ptplayer.
 
-Regenerate it from the assembler source at the repository root:
-
-```powershell
-python tools/cpc_music_to_mod.py
-```
-
-Generate the separately arranged four-voice version:
-
-```powershell
-python tools/cpc_music_to_mod.py --four-channel-arrangement `
-  --output amiga/assets/music/harrier_menu_fixed.mod
-```
-
 `harrier_menu_fixed.mod` adds a fourth, octave-down supporting voice derived
 from AY channel A and gives it a separate bass chip sample.
 
@@ -58,7 +45,6 @@ python tools/mutopia_thaxted_to_mod.py
 Source: Mutopia project, `Thaxted`, G. T. Holst, typeset by Peter Chubb,
 Mutopia-2005/01/18-527, public domain.
 
-The converter reads the active `HARRIERATTACK` score from
-`CPSoundEffectGenerator2.asm`, maps its three note columns to the first three
-MOD channels, preserves normal/half-beat timing, and validates the resulting
-module structure.
+The historical three-channel score is retained only as provenance. Original
+CPC assembler and its converter are deliberately not part of this standalone
+Amiga repository.

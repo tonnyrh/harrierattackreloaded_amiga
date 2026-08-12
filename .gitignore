@@ -5,9 +5,7 @@
 .vscode/
 **/__pycache__/
 *.py[cod]
-compile/*.bin
-compile/*.sym
-compile/build/
+compile/
 amiga/obj/
 amiga/out/
 amiga/*.map

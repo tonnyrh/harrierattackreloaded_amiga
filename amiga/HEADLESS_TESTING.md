@@ -81,6 +81,20 @@ and accidentally shipped with autoplay enabled:
 | `HAR_DEBUG_HUD_GUARD` | Expensive per-frame HUD corruption scan. Keep this `0` for performance measurements; enable it only when diagnosing HUD memory corruption. |
 | `HAR_USE_RING_WORLD_SCROLL` | The actual scrolling strategy being tested - not test-only, but this is the flag these tests exist to evaluate. |
 
+## Sprint 15.89 validation notes
+
+Headless autoplay is intentionally invulnerable, but collision detection and
+telemetry remain active. Fatal terrain cells and flak contacts are counted
+without mutating armour or pinning the synthetic pilot inside the same map
+cell. This matters because a no-op crash handler previously made a renderer
+test look like a game restart after the route driver entered a fatal cell.
+
+The fixed-seed cycle-exact release matrix for Sprint 15.89 completed Enhanced
+skills 1 and 5 with CPU Wingman and reached the final carrier in both runs.
+Stable samples held 50 FPS, zero hitches and `maxVblDelta=1`. The Classic
+contract also passed unchanged, confirming that the Enhanced-only
+100/103/105/108/110 percent pressure curve does not alter CPC Classic rules.
+
 Use the checked-in runner instead of editing these flags by hand:
 
 ```powershell

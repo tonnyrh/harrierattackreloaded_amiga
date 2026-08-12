@@ -373,9 +373,9 @@ def build_gallery(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate a browsable CPC graphics review gallery.")
-    parser.add_argument("--source-root", type=Path, default=ROOT / "amiga/assets/generated/cpc")
+    parser.add_argument("--source-root", type=Path, default=ROOT / ".tmp/cpc-asset-audit")
     parser.add_argument("--main-source", type=Path, default=ROOT / "HarrierAttackSourceNew2_alt_CRTC_CART16.asm")
-    parser.add_argument("--out", type=Path, default=ROOT / "dist/cpc_graphics_viewer")
+    parser.add_argument("--out", type=Path, default=ROOT / ".tmp/cpc-graphics-viewer")
     parser.add_argument("--scale", type=int, default=6)
     parser.add_argument("--open", action="store_true", help="Open the generated HTML in the default browser.")
     args = parser.parse_args()

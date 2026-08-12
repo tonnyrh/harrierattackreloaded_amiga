@@ -1,5 +1,7 @@
 [CmdletBinding()]
 param(
+    [Parameter(Mandatory = $true)]
+    [string]$CpcSourceRoot,
     [string]$Output = "amiga/assets/music/harrier_menu.mod",
     [switch]$FourChannelArrangement
 )
@@ -9,7 +11,8 @@ $repoRoot = $PSScriptRoot
 
 Push-Location $repoRoot
 try {
-    $arguments = @("tools/cpc_music_to_mod.py", "--output", $Output)
+    $input = Join-Path (Resolve-Path -LiteralPath $CpcSourceRoot -ErrorAction Stop).Path "CPSoundEffectGenerator2.asm"
+    $arguments = @("tools/cpc_music_to_mod.py", "--input", $input, "--output", $Output)
     if ($FourChannelArrangement) {
         $arguments += "--four-channel-arrangement"
     }

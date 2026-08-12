@@ -1129,7 +1129,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Extract CPC Harrier Attack graphics into reviewable Amiga-port assets.")
     parser.add_argument("--font-source", type=Path, default=Path("AMSTRADFONT3.asm"))
     parser.add_argument("--main-source", type=Path, default=Path("HarrierAttackSourceNew2_alt_CRTC_CART16.asm"))
-    parser.add_argument("--out-root", type=Path, default=Path("amiga/assets/generated/cpc"))
+    parser.add_argument("--out-root", type=Path, default=Path(".tmp/cpc-asset-audit"))
     args = parser.parse_args()
 
     font_lines = read_source_lines(args.font_source)

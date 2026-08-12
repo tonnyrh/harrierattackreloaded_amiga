@@ -1,6 +1,6 @@
 #pragma once
 
-/* Generated from AMSTRADFONT3.asm by tools/cpc_font_to_amiga.py. */
+/* Converted menu text retained as an authoritative Amiga build asset. */
 #define HAR_TEXT_TITLE "* HARRIER ATTACK RELOADED *"
 #define HAR_TEXT_SKILL_LEVEL "Skill level:"
 #define HAR_TEXT_SKILL_VALUE "1"

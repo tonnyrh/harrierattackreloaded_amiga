@@ -15,7 +15,7 @@
 #include <string.h>
 #include "assets/harrier_menu_text.h"
 
-#define HAR_BUILD_LABEL "SPRINT 15.88.5"
+#define HAR_BUILD_LABEL "SPRINT 15.90.0"
 
 #define SCREEN_WIDTH 320
 #define LOADING_SCREEN_WIDTH 320
@@ -199,6 +199,11 @@
  * Sprint 15.51's shared 150-percent factor. */
 #define RADAR_GAIN_RESPONSE_PERCENT 165
 #define RADAR_DRAIN_RESPONSE_PERCENT 135
+/* Deliberate Enhanced-mode balance extension requested after the CPC-parity
+ * pass. Skill 1 stays unchanged; skills 2..5 add 2.5 percentage points each,
+ * reaching ten percent extra pressure at skill 5. Classic remains the exact
+ * CPC gameplay oracle and never uses this multiplier. */
+#define ENHANCED_DIFFICULTY_MAX_PRESSURE_PERCENT 110
 #define RADAR_ALARM_MIN_VOLUME 14
 #define RADAR_ALARM_MAX_VOLUME 28
 #define RADAR_ALARM_TONE_FRAMES 5
@@ -640,6 +645,9 @@
 #define MENU_TICKER_FRAME_DIVIDER 1
 #define MENU_TICKER_MARGIN_PIXELS 16
 #define MENU_TICKER_LEAD_PIXELS SCREEN_WIDTH
+#define ATTRACT_DEMO_FLIGHT_FRAMES (20 * 50)
+#define ATTRACT_DEMO_FORCE_CRASH_FRAMES (ATTRACT_DEMO_FLIGHT_FRAMES + 250)
+#define ATTRACT_DEMO_SPEED_LEVEL 10
 /* Keep the editable ASCII text before the size macros: sizeof() is a compile-
  * time constant, so the backing bitplane automatically grows when the text
  * in harrier_menu_text.h gets longer. Besides one complete cycle, Copper
@@ -699,6 +707,13 @@ static UBYTE* menuTickerBitmap = 0;
  * the campaign's day/dusk/night/dawn phases. */
 #define GAME_COLOR_POWERUP_GREEN 8
 #define GAME_COLOR_POWERUP_BLUE 14
+/* Pickup colours are gameplay identities, not atmosphere. Keep their RGB
+ * values explicit in the game Copper so campaign palette fades can only
+ * affect sky/cloud/land/sea registers. */
+#define GAME_POWERUP_HEALTH_RGB 0x0ff0
+#define GAME_POWERUP_WINGMAN_RGB 0x0f00
+#define GAME_POWERUP_BOMBS_RGB 0x0460
+#define GAME_POWERUP_ROCKETS_RGB 0x0335
 /* Real CPC Mode 1 per-band copper palette (re-derived after the game tile
  * assets were found to have been extracted as Mode 0 instead of Mode 1 and
  * re-extracted correctly) - COLOR00/15 change across the 4 screen bands:
@@ -898,6 +913,19 @@ typedef struct InputState {
 	UBYTE any;
 	UBYTE lastRawKey;
 } InputState;
+
+typedef struct AttractDemoState {
+	UBYTE active;
+	UBYTE nextUsesWingman;
+	UBYTE airborneStarted;
+	UBYTE diving;
+	UWORD airborneFrame;
+	UWORD nextManeuverFrame;
+	UWORD nextRocketFrame;
+	UWORD nextBombFrame;
+	UWORD randomState;
+	WORD targetY;
+} AttractDemoState;
 
 /* Sprint 15.28: Wingman: Player 2's own controller - deliberately separate
  * from InputState rather than extra fields bolted onto it, since it reads a
@@ -1325,6 +1353,19 @@ typedef struct GameState {
  * helper names an intentional Amiga gameplay extension. */
 static UBYTE gameplayUsesRadar(const GameState* game) {
 	return game->gameMode == GAME_MODE_ENHANCED;
+}
+
+static UBYTE enhancedDifficultyPressurePercent(const GameState* game) {
+	if (!game || game->gameMode != GAME_MODE_ENHANCED)
+		return 100;
+	UBYTE difficulty = game->levelDifficulty;
+	if (difficulty < 1)
+		difficulty = 1;
+	else if (difficulty > 5)
+		difficulty = 5;
+	/* Rounded progression: 100, 103, 105, 108, 110 percent. */
+	return (UBYTE)(100 + (((UWORD)(difficulty - 1) *
+		(ENHANCED_DIFFICULTY_MAX_PRESSURE_PERCENT - 100)) + 2) / 4);
 }
 
 static UBYTE enhancedRadarClearanceThreshold(const GameState* game) {
@@ -1885,8 +1926,8 @@ enum PowerupType {
 };
 
 #include "assets/level_route.h"
-#include "assets/cpc_promoted_assets.h"
-#include "assets/cpc_promoted_sprite_tiles.h"
+#include "assets/promoted_assets.h"
+#include "assets/promoted_sprite_tiles.h"
 #if WORLD_RENDER_GUNSHIP_WIDTH_TILES != HAR_GUNSHIP_TILES_WIDE
 #error "Runtime gunship width must match the promoted CPC+ composite"
 #endif
@@ -2066,7 +2107,7 @@ EMBED loadingPalette[] = {
 	#embed "assets/loading_screen.pal"
 };
 EMBED cpcFont8x8[] = {
-	#embed "assets/cpc_font8x8.bin"
+	#embed "assets/font8x8.bin"
 };
 EMBED gameTiles[] = {
 	#embed "assets/game_tiles.bpl"
@@ -4691,6 +4732,16 @@ static void buildDisplayCopperEx(USHORT* copper, const UBYTE* screen, const UWOR
 
 	for (int color = 0; color < 32; color++)
 		copPtr = copSetColor(copPtr, color, palette[color]);
+	/* Reassert the four pickup canopy colours after the imported base palette.
+	 * These registers are deliberately outside the mission-fade set. */
+	copPtr = copSetColor(copPtr, GAME_COLOR_YELLOW,
+		GAME_POWERUP_HEALTH_RGB);
+	copPtr = copSetColor(copPtr, GAME_COLOR_RED,
+		GAME_POWERUP_WINGMAN_RGB);
+	copPtr = copSetColor(copPtr, GAME_COLOR_POWERUP_GREEN,
+		GAME_POWERUP_BOMBS_RGB);
+	copPtr = copSetColor(copPtr, GAME_COLOR_POWERUP_BLUE,
+		GAME_POWERUP_ROCKETS_RGB);
 
 	*copPtr++ = 0xffff;
 	*copPtr++ = 0xfffe;
@@ -4821,6 +4872,18 @@ static void buildGameHudCopper(USHORT* copper, const UBYTE* world, const UBYTE* 
 
 	for (int color = 0; color < 32; color++)
 		copPtr = copSetColor(copPtr, color, palette[color]);
+	/* Pickup colours are gameplay identities, not mission atmosphere.  The
+	 * Field Guide uses the same fixed registers; reassert them in the game
+	 * Copper as well so later campaign palettes cannot turn live parachute
+	 * drops grey or black. */
+	copPtr = copSetColor(copPtr, GAME_COLOR_YELLOW,
+		GAME_POWERUP_HEALTH_RGB);
+	copPtr = copSetColor(copPtr, GAME_COLOR_RED,
+		GAME_POWERUP_WINGMAN_RGB);
+	copPtr = copSetColor(copPtr, GAME_COLOR_POWERUP_GREEN,
+		GAME_POWERUP_BOMBS_RGB);
+	copPtr = copSetColor(copPtr, GAME_COLOR_POWERUP_BLUE,
+		GAME_POWERUP_ROCKETS_RGB);
 	copPtr = copSetColor(copPtr, 29, WINGMAN_SPRITE_DARK_RGB);
 	copPtr = copSetColor(copPtr, 30, WINGMAN_SPRITE_MID_RGB);
 	copPtr = copSetColor(copPtr, 31, WINGMAN_SPRITE_LIGHT_RGB);
@@ -7476,7 +7539,7 @@ static void drawGameScrollTile(UBYTE* bitmap, short tileX, short tileY, UBYTE ti
 }
 
 /* Sprint 14.94 Part 6: like drawGameScrollTile(), but for pre-masked tiles
- * (tools/cpc_promoted_sprites_to_tiles.py's output - 8 rows x [4 colour-plane
+ * (the converted promoted-sprite output - 8 rows x [4 colour-plane
  * bytes + 1 opacity-mask byte], the same 40-byte footprint as a regular game
  * tile) rather than plain opaque ones. Unlike a flat overwrite, this only
  * replaces the pixels the mask marks as opaque (bit set = draw this pixel's
@@ -8176,7 +8239,7 @@ static void drawPromotedCpcCarrierAt(UBYTE* bitmap, short x, short y) {
  * HAR_CARRIER_TILES_TALL(3) pre-masked tile blits - the 6 source pieces
  * (back/body x2/top/top2/front) were composited into one HAR_CARRIER_TILES_
  * WIDE x HAR_CARRIER_TILES_TALL tile grid once, offline, by
- * tools/cpc_promoted_sprites_to_tiles.py (which also bakes in the body
+ * the promoted Amiga sprite-tile conversion (which also bakes in the body
  * piece's xScale=2 stretch, done live before). Always called for exactly one
  * buffer column (physicalTileX) at a time - see the call site in
  * drawDirectColumnRangeObjects() - so compositeColumn (0..WIDE-1) directly
@@ -8207,7 +8270,7 @@ static void drawPromotedCpcCarrierRangeRowAt(UBYTE* bitmap,
 	/* Canvas row 0 in the generator corresponds to world tile row 12
 	 * (pixel Y 96 = the caller's old fixed y=80 base + the 16px/2-tile
 	 * shift the generator applied so its own canvas starts at row 0 -
-	 * see tools/cpc_promoted_sprites_to_tiles.py's carrier canvas
+	 * see the promoted carrier canvas
 	 * comment). Only ever called with that same fixed base today. */
 	drawGameScrollTileMasked(bitmap, (short)physicalTileX, (short)(12 + row),
 		tileData + (ULONG)gridIndex * HAR_CARRIER_TILE_BYTES);
@@ -8501,7 +8564,7 @@ static void drawDebugGraphicsBrowser(UBYTE* bitmap, UWORD index) {
  * directly from the real spawn/placement code: 45 is a TANK_FRONT ground
  * target per targetTiles[] in objectCellForWorldColumnTile(), 20 is an
  * ENEMY_SHIP hull tile from level_route.h, 66 is town_block_0's one real
- * building tile in cpc_promoted_assets.h, 57 is a flak tile per
+ * building tile in promoted_assets.h, 57 is a flak tile per
  * trySpawnFlak()'s tile choice), or a promoted CPC sprite part
  * (cpcPlusPenToGameColor(), same pen data debugPromotedGraphics[] already
  * names "ENEMY FLYING LEFT"/"GUNSHIP LEFT"/"PARACHUTE"). Composite sprites
@@ -9609,10 +9672,10 @@ static void parityLogFlushToDisk(const GameState* game) {
 			targets++;
 	}
 
-	char report[896];
+	char report[1152];
 	char* out = report;
 	static const char header[] =
-		"skill,difficulty,mission,landLength,minY,maxY,flat,climb,descend,targets,enemySpawnOk,enemySpawnNo,enemyMissiles,flakSpawns,wingInterceptOk,wingInterceptNo,wingBombOk,wingBombNo,terrainEvents,pierEvents,enemyPlaneBlocked,townBlocks,townBuildingCols,townFlatCols,townLength,townOverflowCols,townRStart,townREnd,townRChecksum,townClippedCols,classicAirTicks,classicEnemyOutcomes,classicPowerupOutcomes,classicPowerupWhileEnemy,enhancedPowerupWhileEnemy,wingFormationStops,wingFormationCardinal,wingFormationDiagonal,wingFormationEvasive,highScoreLevel,finalScroll,landingState,missionComplete,reachedFinalCarrier\n";
+		"skill,difficulty,mission,landLength,minY,maxY,flat,climb,descend,targets,enemySpawnOk,enemySpawnNo,enemyMissiles,flakSpawns,wingInterceptOk,wingInterceptNo,wingBombOk,wingBombNo,terrainEvents,pierEvents,enemyPlaneBlocked,aircraftFailures,aircraftImpacts,playerFlakHits,playerMissileHits,playerCollisions,playerCrashes,playerRespawns,landingStarts,landingCompletes,townBlocks,townBuildingCols,townFlatCols,townLength,townOverflowCols,townRStart,townREnd,townRChecksum,townClippedCols,classicAirTicks,classicEnemyOutcomes,classicPowerupOutcomes,classicPowerupWhileEnemy,enhancedPowerupWhileEnemy,wingFormationStops,wingFormationCardinal,wingFormationDiagonal,wingFormationEvasive,highScoreLevel,finalScroll,landingState,missionComplete,reachedFinalCarrier\n";
 	for (UWORD i = 0; i < sizeof(header) - 1; i++)
 		*out++ = header[i];
 #define PARITY_VALUE(value) do { out = appendUnsignedLong(out, (ULONG)(value)); *out++ = ','; } while (0)
@@ -9637,6 +9700,15 @@ static void parityLogFlushToDisk(const GameState* game) {
 	PARITY_VALUE(telemetryGameEventCounters[TELEMETRY_GAME_EVENT_TERRAIN_STATE]);
 	PARITY_VALUE(telemetryGameEventCounters[TELEMETRY_GAME_EVENT_CITY_TO_PIER]);
 	PARITY_VALUE(telemetryGameEventCounters[TELEMETRY_GAME_EVENT_ENEMY_PLANE_BLOCKED]);
+	PARITY_VALUE(telemetryGameEventCounters[TELEMETRY_GAME_EVENT_AIRCRAFT_FAILURE]);
+	PARITY_VALUE(telemetryGameEventCounters[TELEMETRY_GAME_EVENT_AIRCRAFT_IMPACT]);
+	PARITY_VALUE(telemetryGameEventCounters[TELEMETRY_GAME_EVENT_PLAYER_FLAK_HIT]);
+	PARITY_VALUE(telemetryGameEventCounters[TELEMETRY_GAME_EVENT_PLAYER_MISSILE_HIT]);
+	PARITY_VALUE(telemetryGameEventCounters[TELEMETRY_GAME_EVENT_PLAYER_COLLISION]);
+	PARITY_VALUE(telemetryGameEventCounters[TELEMETRY_GAME_EVENT_PLAYER_CRASH]);
+	PARITY_VALUE(telemetryGameEventCounters[TELEMETRY_GAME_EVENT_PLAYER_RESPAWN]);
+	PARITY_VALUE(telemetryGameEventCounters[TELEMETRY_GAME_EVENT_LANDING_START]);
+	PARITY_VALUE(telemetryGameEventCounters[TELEMETRY_GAME_EVENT_LANDING_COMPLETE]);
 	PARITY_VALUE(cpcTownGeneratedBlockCount);
 	PARITY_VALUE(cpcTownGeneratedBuildingColumns);
 	PARITY_VALUE(cpcTownGeneratedFlatColumns);
@@ -15217,6 +15289,8 @@ static void updateRadarDetection(GameState* game, UBYTE eligible) {
 				gain = 1;
 			gain = (UWORD)(((ULONG)gain * RADAR_GAIN_RESPONSE_PERCENT + 50) /
 				100);
+			gain = (UWORD)(((ULONG)gain *
+				enhancedDifficultyPressurePercent(game) + 50) / 100);
 			if (gain > 53)
 				gain = 53;
 			UWORD room = (UWORD)(RADAR_DETECTION_MAX - game->radarDetection);
@@ -16613,6 +16687,14 @@ static UBYTE flakDamageThresholdForSkill(UBYTE skillLevel) {
 	return threshold < 5 ? 5 : (UBYTE)threshold;
 }
 
+static UBYTE flakDamageThresholdForGame(const GameState* game) {
+	UBYTE threshold = flakDamageThresholdForSkill(game->levelDifficulty);
+	UWORD pressure = enhancedDifficultyPressurePercent(game);
+	/* Ceil division avoids turning the requested ten-percent curve into a
+	 * much larger jump when the CPC hit budget is represented as an integer. */
+	return (UBYTE)(((UWORD)threshold * 100 + pressure - 1) / pressure);
+}
+
 #if HAR_HEADLESS_CLASSIC_CONTRACT_TEST
 static void writeClassicContractResult(const char* result) {
 	BPTR file = Open((CONST_STRPTR)"DH1:classic_contract.txt", MODE_NEWFILE);
@@ -16683,6 +16765,16 @@ static int runClassicGameplayContractTest(void) {
 		"Classic flak threshold skill 1");
 	CONTRACT_CHECK(flakDamageThresholdForSkill(5) == 15,
 		"Classic flak threshold skill 5");
+	CONTRACT_CHECK(enhancedDifficultyPressurePercent(&classic) == 100,
+		"Classic ignores Enhanced difficulty pressure");
+	enhanced.levelDifficulty = 1;
+	CONTRACT_CHECK(enhancedDifficultyPressurePercent(&enhanced) == 100,
+		"Enhanced pressure skill 1 unchanged");
+	enhanced.levelDifficulty = 5;
+	CONTRACT_CHECK(enhancedDifficultyPressurePercent(&enhanced) == 110,
+		"Enhanced pressure skill 5 plus ten percent");
+	CONTRACT_CHECK(flakDamageThresholdForGame(&enhanced) == 14,
+		"Enhanced skill 5 flak budget rounded safely");
 	CONTRACT_CHECK(cpcPlayerCollisionForObjectId(HAR_OBJ_CLOUD) ==
 		PLAYER_OBJECT_COLLISION_SAFE &&
 		cpcPlayerCollisionForObjectId(HAR_OBJ_SKY) ==
@@ -16967,7 +17059,18 @@ static void applyPlayerFlakDamage(GameState* game) {
 		game->aircraftFailureState != AIRCRAFT_FAILURE_NONE)
 		return;
 
-	UBYTE threshold = flakDamageThresholdForSkill(game->levelDifficulty);
+	UBYTE threshold = flakDamageThresholdForGame(game);
+#if HAR_HEADLESS_AUTOPLAY
+	/* A full-route performance/parity run audits every flak contact but must
+	 * not turn the synthetic pilot into a zero-armour actor.  Leaving armour
+	 * at zero while startAircraftFailure() is compiled as a no-op created an
+	 * impossible half-dead state and made later samples depend on whichever
+	 * object happened to touch that actor. */
+	telemetryLogGameEvent(TELEMETRY_GAME_EVENT_PLAYER_FLAK_HIT,
+		threshold, (UWORD)(((LONG)game->scrollX + game->playerX) >> 3), game,
+		(UWORD)(game->flakDamageCount + 1));
+	return;
+#endif
 	if (game->flakDamageCount < threshold)
 		game->flakDamageCount++;
 	game->armour = game->flakDamageCount < threshold ? (UWORD)(100 - (100 * (ULONG)game->flakDamageCount / threshold)) : 0;
@@ -17083,6 +17186,100 @@ static UBYTE updatePlayerCrash(GameState* game) {
 	return changed;
 }
 
+static UWORD nextAttractDemoRandom(AttractDemoState* demo) {
+	/* Small deterministic LFSR: enough variation for an attract recording,
+	 * with no dependency on (or disturbance of) the gameplay spawn RNG. */
+	UWORD value = demo->randomState ? demo->randomState : 0x5a3d;
+	value = (UWORD)((value >> 1) ^ (-(WORD)(value & 1) & 0xb400));
+	demo->randomState = value;
+	return value;
+}
+
+static void resetAttractDemoRun(AttractDemoState* demo, UBYTE usesWingman) {
+	demo->active = 1;
+	demo->airborneStarted = 0;
+	demo->diving = 0;
+	demo->airborneFrame = 0;
+	demo->nextManeuverFrame = 0;
+	demo->nextRocketFrame = 45;
+	demo->nextBombFrame = 80;
+	demo->randomState = usesWingman ? 0xa731 : 0x5a3d;
+	demo->targetY = 64;
+}
+
+static void driveAttractDemoInput(AttractDemoState* demo, GameState* game,
+	InputState* input) {
+	/* Physical input has already been sampled for the abort test. From here
+	 * the demo owns a clean controller state, which also gives rockets and
+	 * bombs genuine released frames between every scripted press. */
+	memset(input, 0, sizeof(*input));
+
+	if (game->takeoffState == TAKEOFF_STATE_READY) {
+		/* Pulse rather than hold so READY can never miss the required edge. */
+		input->up = (UBYTE)((frameCounter & 1) == 0);
+		return;
+	}
+	if (game->takeoffState != TAKEOFF_STATE_AIRBORNE ||
+		game->landingState != LANDING_STATE_NONE || game->missionComplete ||
+		game->gameOver || game->crashTimer || game->ejectState ||
+		game->aircraftFailureState != AIRCRAFT_FAILURE_NONE)
+		return;
+
+	if (!demo->airborneStarted) {
+		demo->airborneStarted = 1;
+		demo->airborneFrame = frameCounter;
+		demo->nextManeuverFrame = 0;
+	}
+	UWORD elapsed = (UWORD)(frameCounter - demo->airborneFrame);
+
+	if (elapsed >= ATTRACT_DEMO_FLIGHT_FRAMES)
+		demo->diving = 1;
+	if (demo->diving) {
+		input->down = 1;
+		/* Water, an unusually deep valley or a temporary safe state must not
+		 * leave attract mode running forever. The normal three-part crash and
+		 * impact sound still own the visible ending. */
+		if (elapsed >= ATTRACT_DEMO_FORCE_CRASH_FRAMES)
+			startPlayerCrash(game, game->playerX, game->playerY);
+		return;
+	}
+
+	if (game->speedLevel < ATTRACT_DEMO_SPEED_LEVEL)
+		input->right = 1;
+	else if (game->speedLevel > ATTRACT_DEMO_SPEED_LEVEL + 2)
+		input->left = 1;
+
+	if (elapsed >= demo->nextManeuverFrame) {
+		UWORD random = nextAttractDemoRandom(demo);
+		LONG worldColumn = ((LONG)game->scrollX + game->playerX) >> 3;
+		WORD surfaceY = terrainSurfacePixelYForWorldColumn(worldColumn);
+		WORD clearance = (WORD)(24 + (random % 70));
+		WORD targetY = (WORD)(surfaceY - PLAYER_SPRITE_HEIGHT - clearance);
+		if (targetY < PLAYER_MIN_Y)
+			targetY = PLAYER_MIN_Y;
+		if (targetY > PLAYER_MAX_Y - 8)
+			targetY = PLAYER_MAX_Y - 8;
+		demo->targetY = targetY;
+		demo->nextManeuverFrame = (UWORD)(elapsed + 45 +
+			(nextAttractDemoRandom(demo) % 70));
+	}
+	if (game->playerY > demo->targetY + 2)
+		input->up = 1;
+	else if (game->playerY < demo->targetY - 2)
+		input->down = 1;
+
+	if (elapsed >= demo->nextRocketFrame) {
+		input->fire = 1;
+		demo->nextRocketFrame = (UWORD)(elapsed + 55 +
+			(nextAttractDemoRandom(demo) % 90));
+	}
+	if (elapsed >= demo->nextBombFrame) {
+		input->bomb = 1;
+		demo->nextBombFrame = (UWORD)(elapsed + 85 +
+			(nextAttractDemoRandom(demo) % 125));
+	}
+}
+
 static UBYTE updateGameCollisions(GameState* game, UBYTE** worldBuffers,
 	UBYTE* hudChanged, UBYTE* weaponChanged, UBYTE* enemyMissileChanged,
 	UBYTE* wingmanChanged) {
@@ -17108,10 +17305,18 @@ static UBYTE updateGameCollisions(GameState* game, UBYTE** worldBuffers,
 		telemetryLogGameEvent(TELEMETRY_GAME_EVENT_PLAYER_COLLISION,
 			objectCollision, (UWORD)collisionWorldColumn, game,
 			(UWORD)collisionTileY);
+#if HAR_HEADLESS_AUTOPLAY
+		/* Keep collision detection and its telemetry active, but let the
+		 * invulnerable route driver continue.  Returning here every frame left
+		 * the driver embedded in one cell and made a renderer test look like a
+		 * gameplay restart. Interactive builds retain the real fatal path. */
+		objectCollision = PLAYER_OBJECT_COLLISION_SAFE;
+#else
 		startPlayerCrash(game, game->playerX, game->playerY);
 		*hudChanged = 1;
 		*weaponChanged = 1;
 		return enemyChanged;
+#endif
 	}
 	if (objectCollision == PLAYER_OBJECT_COLLISION_FLAK) {
 		telemetryLogRenderEvent(7, objectCollision, (UWORD)((game->scrollX + game->playerX) >> 3), game->scrollX, (UWORD)game->playerY);
@@ -17767,6 +17972,8 @@ int main(void) {
 	UWORD controlsCaptureSerial = 0;
 	UBYTE fieldGuideActive = 0;
 	UBYTE menuTickerFinished = 0;
+	AttractDemoState attractDemo;
+	memset(&attractDemo, 0, sizeof(attractDemo));
 	UBYTE debugHubSelected = DEBUG_ITEM_TELEMETRY;
 	UWORD debugGraphicIndex = 0;
 	UBYTE debugSoundIndex = 0;
@@ -17827,6 +18034,52 @@ int main(void) {
 			ReadPlayer2Input(&input2, game.gameMode);
 		else
 			memset(&input2, 0, sizeof(input2));
+
+		/* Attract mode samples real controls first so any player interaction can
+		 * reclaim the menu. Only then does it replace the controller with the
+		 * scripted recording. A completed crash advances solo <-> CPU Wingman;
+		 * an interrupted demo retries the same variant next time. */
+		if (attractDemo.active) {
+			UBYTE physicalAbort = input.any || input.cancel || input.space ||
+				input.p || input.d || input.r || input.shift || input.control;
+			UBYTE completed = game.gameOver;
+			if (physicalAbort || completed) {
+				if (completed)
+					attractDemo.nextUsesWingman =
+						(UBYTE)!attractDemo.nextUsesWingman;
+				attractDemo.active = 0;
+				inGameScene = 0;
+				gameCancelArmed = 0;
+				telemetryStatsPaused = 0;
+				gamePaused = 0;
+				stopAllSfx();
+				stopModMusic();
+				pendingGameScrollCopperUpdate = 0;
+				pendingPlayerSpriteUpdate = 0;
+				pendingCrashSpriteUpdate = 0;
+				pendingEnemySpriteUpdate = 0;
+				pendingEnemyMissileSpriteUpdate = 0;
+				pendingWingmanSpriteUpdate = 0;
+				hideHardwareSprite(playerSprite);
+				hideHardwareSprite(playerAttachSprite);
+				hideHardwareSprite(crashPart1Sprite);
+				hideHardwareSprite(enemyAttachSprite);
+				hideHardwareSprite(enemySprite);
+				hideHardwareSprite(enemyMissileSprite);
+				hideHardwareSprite(wingmanSprite);
+				hideHardwareSprite(unusedSprite7);
+				drawMenuScreen(screenBuffer, selected, skillLevel,
+					gameModeSetting, wingmanControl, highScore);
+				drawTelemetryMenuIndicator(screenBuffer);
+				buildMenuCopper(copper, screenBuffer, menuTickerBitmap,
+					menuPalette, nullSprite);
+				custom->copjmp1 = 0x7fff;
+				startModMusic();
+				lastInputMask = InputMask(&input);
+				continue;
+			}
+			driveAttractDemoInput(&attractDemo, &game, &input);
+		}
 #if HAR_HEADLESS_AUTOPLAY
 		{
 			static UBYTE headlessStartSent = 0;
@@ -17970,14 +18223,15 @@ int main(void) {
 #endif
 		UBYTE inputMask = InputMask(&input);
 
-		/* One complete ticker pass now drives the attract-mode transition.
-		 * This follows what the player can actually see: main menu -> guide
-		 * after the tribute's last glyph leaves, guide -> menu after the
-		 * gameplay/rules text leaves. Input still dismisses the guide. */
+		/* One complete ticker pass drives each attract-mode transition. This
+		 * follows what the player can actually see: main menu -> guide after
+		 * tribute text, then guide -> gameplay demo after the rules text. Input
+		 * still dismisses the guide directly back to the menu. */
 		if (!inGameScene && !gamePaused && !telemetryStatsPaused && !controlsActive &&
 			debugHubPage == DEBUG_HUB_CLOSED) {
 			if (fieldGuideActive) {
-				if (input.any || menuTickerFinished) {
+				if (input.any || input.cancel || input.space || input.p ||
+					input.d || input.r || input.shift || input.control) {
 					fieldGuideActive = 0;
 					drawMenuScreen(screenBuffer, selected, skillLevel,
 						gameModeSetting, wingmanControl, highScore);
@@ -17988,6 +18242,38 @@ int main(void) {
 						menuPalette, nullSprite);
 					custom->copjmp1 = 0x7fff;
 					lastInputMask = inputMask;
+				} else if (menuTickerFinished) {
+					/* The second one-shot ticker is the attract trigger. Start a
+					 * real generated mission rather than a canned background, but
+					 * give it one aircraft and no persistence authority. */
+					fieldGuideActive = 0;
+					stopModMusic();
+					UBYTE demoWingman = attractDemo.nextUsesWingman ?
+						WINGMAN_CONTROL_CPU : WINGMAN_CONTROL_OFF;
+					resetAttractDemoRun(&attractDemo,
+						attractDemo.nextUsesWingman);
+					startGameSession(&game, copper, worldBuffers,
+						&activeWorldBuffer, hudBuffer, playerSprite,
+						playerAttachSprite, crashPart1Sprite,
+						enemyAttachSprite, enemySprite,
+						enemyMissileSprite, wingmanSprite,
+						unusedSprite7,
+						&pendingGameScrollCopperUpdate,
+						&pendingPlayerSpriteUpdate,
+						&pendingCrashSpriteUpdate,
+						&pendingEnemySpriteUpdate,
+						&pendingEnemyMissileSpriteUpdate,
+						&pendingWingmanSpriteUpdate, &hudDirty,
+						highScore, 1, (UBYTE)skillLevel,
+						GAME_MODE_ENHANCED, demoWingman, 0);
+					/* One visible crash ends the demo regardless of the Enhanced
+					 * campaign's normal three-aircraft allowance. */
+					game.lives = 1;
+					drawHudValues(hudBuffer, &game, highScore, 0);
+					lastInputMask = 0;
+					inGameScene = 1;
+					gameCancelArmed = 0;
+					gamePaused = 0;
 				}
 				continue;
 			}
@@ -19105,7 +19391,7 @@ int main(void) {
 					game.aircraftFailureState == AIRCRAFT_FAILURE_NONE)
 					startAircraftFailure(&game, AIRCRAFT_FAILURE_CAUSE_FUEL);
 				if (game.gameOver) {
-					if (!game.highScoreCommitted &&
+					if (!attractDemo.active && !game.highScoreCommitted &&
 						!game.highScoreNameEntryActive) {
 						beginHighScoreNameEntry(&highScore, &game);
 						hudDirty = 1;

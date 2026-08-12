@@ -1,9 +1,9 @@
 #Requires -Version 5.1
 [CmdletBinding()]
 param(
-    [string]$GeneratedRoot = "amiga\assets\generated\cpc",
-    [string]$OutputHeader = "amiga\assets\cpc_promoted_assets.h",
-    [string]$OutputTileHeader = "amiga\assets\cpc_promoted_sprite_tiles.h"
+    [string]$GeneratedRoot = ".tmp\cpc-asset-audit",
+    [string]$OutputHeader = "amiga\assets\promoted_assets.h",
+    [string]$OutputTileHeader = "amiga\assets\promoted_sprite_tiles.h"
 )
 
 $ErrorActionPreference = "Stop"
@@ -25,14 +25,7 @@ $OutputPath = if ([System.IO.Path]::IsPathRooted($OutputHeader)) {
 }
 
 if (-not (Test-Path -LiteralPath $InputJson)) {
-    $ExtractorScript = Join-Path $RepoRoot "extract-cpc-assets.ps1"
-    if (-not (Test-Path -LiteralPath $ExtractorScript)) {
-        throw "Fant ikke generated CPC sprites eller extractor: $InputJson"
-    }
-    & $ExtractorScript
-    if ($LASTEXITCODE -ne 0) {
-        exit $LASTEXITCODE
-    }
+    throw "Fant ikke midlertidig CPC-audit: $InputJson. Kjor .\extract-cpc-assets.ps1 -CpcSourceRoot <separat-CPC-checkout> forst."
 }
 
 python $Promoter --input $InputJson --objects-input $ObjectsJson --output $OutputPath
