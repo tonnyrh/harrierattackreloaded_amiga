@@ -2,6 +2,13 @@
 #include <proto/exec.h>
 extern struct ExecBase* SysBase;
 
+/* Keep this implementation as a real loop.  With -Ofast/LTO GCC otherwise
+ * recognises the loop as strlen() and replaces it with a call to strlen().
+ * Because this function is the freestanding strlen implementation, that
+ * becomes recursion: the long menu/Field Guide ticker then consumes enough
+ * stack to overwrite the final BSS globals (including the Paula decode
+ * buffers). */
+__attribute__((optimize("no-tree-loop-distribute-patterns")))
 unsigned long strlen(const char* s) {
 	unsigned long t=0;
 	while(*s++)

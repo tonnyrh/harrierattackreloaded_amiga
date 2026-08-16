@@ -144,18 +144,8 @@ if (Test-Path -LiteralPath $MainObject) {
 $makeExitCode = $LASTEXITCODE
 
 if ($makeExitCode -eq 0) {
-    # A true loading page must live in a small executable that AmigaDOS can
-    # load before the much larger game hunk. The direct game executable is
-    # retained for normal F5 source debugging; the loader is an additional
-    # runnable/release entry point.
-    & $make -C $AmigaDir -j4 loader
-    $makeExitCode = $LASTEXITCODE
-}
-
-if ($makeExitCode -eq 0) {
     $Exe2Adf = Join-Path $bin "exe2adf.exe"
     $BuiltExe = Join-Path $AmigaDir "$Program.exe"
-    $LoaderExe = Join-Path $AmigaDir "out\harrier_loader.exe"
     $AdfPath = Join-Path $AmigaDir "$Program.adf"
     $ProgramDir = Split-Path -Parent $BuiltExe
     $RuntimeLoadingBpl = Join-Path $ProgramDir "loading_screen.bpl"
@@ -168,15 +158,31 @@ if ($makeExitCode -eq 0) {
     Copy-Item -LiteralPath $LoadingBpl -Destination $RuntimeLoadingBpl -Force
     Ensure-Directory -Path $AdfAssetsDir
     Copy-Item -LiteralPath $LoadingBpl -Destination (Join-Path $AdfAssetsDir "loading_screen.bpl") -Force
-    Copy-Item -LiteralPath $BuiltExe -Destination (Join-Path $AdfAssetsDir "harrier_amiga.exe") -Force
 
-    if ((Test-Path -LiteralPath $Exe2Adf) -and (Test-Path -LiteralPath $LoaderExe)) {
-        & $Exe2Adf -i $LoaderExe -l "Harrier Attack" -a $AdfPath -d $AdfAssetsDir
+    # Keep the release boot path deliberately simple on a stock 512 KiB Chip
+    # + 512 KiB Slow machine: AmigaDOS loads the game directly, and main()
+    # displays loading_screen.bpl after startup. A separate loader would keep
+    # its process/stack resident while LoadSeg allocates the game hunks and can
+    # make an otherwise valid 1 MiB build fail or return to the CLI.
+    foreach ($staleAdfAsset in @(
+        "harrier_amiga.exe",
+        "harrier_loader.exe",
+        "loading_screen_2plane.bpl",
+        "run_harrier"
+    )) {
+        $stalePath = Join-Path $AdfAssetsDir $staleAdfAsset
+        if (Test-Path -LiteralPath $stalePath) {
+            Remove-Item -LiteralPath $stalePath -Force
+        }
+    }
+
+    if ((Test-Path -LiteralPath $Exe2Adf) -and (Test-Path -LiteralPath $BuiltExe)) {
+        & $Exe2Adf -i $BuiltExe -l "Harrier Attack" -a $AdfPath -d $AdfAssetsDir
         if ($LASTEXITCODE -ne 0) {
             Write-Warning "exe2adf feilet (kode $LASTEXITCODE) - ADF ble ikke generert."
         }
     } else {
-        Write-Warning "Fant ikke exe2adf.exe eller $LoaderExe - hopper over ADF-generering."
+        Write-Warning "Fant ikke exe2adf.exe eller $BuiltExe - hopper over ADF-generering."
     }
 }
 

@@ -34,6 +34,16 @@ Target: stock Amiga 500, PAL, Kickstart 1.3, 68000, OCS, 512 KiB chip RAM + 512 
 
 ## Historical Sprint Log
 
+## Sprint 15.91.1 - bounded attract-demo lifetime
+
+- Kept the normal attract recording unchanged: takeoff, generated world,
+  weapons, twenty seconds airborne and the visible CPC-style three-part crash.
+- Added an absolute scene-entry watchdog independent of the airborne timer.
+  It requests the ordinary crash if takeoff/gameplay state stops progressing,
+  then forces `gameOver` only if even the crash state fails to complete.
+- Any physical key or joystick input still exits immediately. Ordinary player
+  sessions do not enter either watchdog path.
+
 ## Sprint 15.90.2 - any-input attract-demo exit
 
 - The attract demo still samples the configured joystick through the normal
@@ -6391,3 +6401,76 @@ route and shared R-register model remain approximations.
 - Detection gain/drain response, alarm thresholds and surface probes are
   unchanged. Classic still uses its separate CPC absolute-height admission
   rule and never enters the Enhanced radar accumulator.
+
+### Sprint 15.91.0 - Explicit reproducible procedural-world seeds
+
+- Kept procedural generation and the existing CPC-derived terrain, target,
+  cloud, flak and town rules. This does not add predesigned maps and does not
+  attempt to emulate the Z80 refresh register bit-for-bit.
+- Added a fresh explicit campaign seed when the player starts a new game and
+  a pure mission-world derivation from campaign seed plus mission number.
+- Retry and eject rescue retain the campaign seed; rescue also retains the
+  current mission. Advancing a mission retains the campaign seed but derives
+  a new world seed. Solo and Wingman attract demos use isolated fixed seeds.
+- World generation now receives its seed explicitly instead of reading
+  `frameCounter` internally. Defensive lazy accessors reuse the active seed,
+  so renderer query order cannot silently create a different map.
+- Both telemetry pages show `CAMP` and the actual `WORLD` seed in hexadecimal.
+  Reproduction additionally requires mission, skill/difficulty and game mode,
+  because difficulty remains an explicit rule input rather than being hidden
+  inside the RNG seed.
+- `HAR_VALIDATION_SESSION_SEED` overrides the derived world seed at one entry
+  point for headless A/B tests, and enemy-plane trace output reports the seed
+  that was actually used.
+# Sprint 15.91.2
+
+- Rakett-dropens stabile blå pickupfarge er lysnet til cyanblå for tydelig
+  kontrast mot alle tre himmelbånd. Riggingen forblir svart og de øvrige
+  drop-identitetene er uendret.
+
+# Sprint 15.91.3
+
+- Rettet våpen-dropene slik at CPC-verdien `&10` igjen tolkes som full måler,
+  ikke som 16 faktiske skudd. Amiga-porten lagrer CPC-målerens understell som
+  flate skuddtellere, så direkte lagring av 16 kunne redusere beholdningen.
+- Rakett- og bombedrop fyller nå til samme skill-avhengige kapasitet som HUD,
+  avgang og rearming bruker. En full beholdning forblir full og kan ikke runde
+  over maksimum.
+- Kapasitetsberegningen avgrenser defensivt skill til CPC-området 1-5, og
+  Classic-kontrakten verifiserer både tom og allerede full beholdning på alle
+  fem nivåer.
+
+# Sprint 15.91.4
+
+- Fjernet den feilaktige lokale rød/oransje/gule `COLOR17-19`-overstyringen
+  for fiendeflyet. Den ble lagt inn under feilsøking i Sprint 15.91.2 og gjorde
+  flyet rødt samtidig som seks CPC-nyanser ble redusert til tre.
+- Normalt og knust fiendefly bruker igjen de rå CPC+-pennene 1-6 mot den
+  statiske, kildeuttrukne spritepaletten i `COLOR17-22`. Dermed beholdes hele
+  den nøytrale gråtoneskalaen fra CPC i stedet for en oppfunnet fiendefarge.
+- Bekreftet i koden at landings- og nivåfaden kun endrer playfieldets
+  atmosfæreregister 0, 5 og 15. Spritepaletten 16-31 forblir isolert og skal
+  ikke skifte med brettet.
+
+# Sprint 15.91.5
+
+- Rettet ordinære raketters synlige rekkevidde ved scrolling. Rekkevidde-
+  telleren brukte tidligere hele verdensbevegelsen på 7 piksler per frame,
+  selv om kameraet samtidig trakk fra 1-4 piksler. På høy fart kunne en
+  standardrakett derfor bruke opp 80 pikslers rekkevidde etter bare rundt 36
+  piksler synlig fremdrift.
+- Standardraketten og Wingmans ordinære rakett teller nå faktisk fremdrift
+  relativt til skjermen. Menyområdet 10-20 CPC-celler, hastigheten og den
+  eksisterende world-space-fysikken er ellers uendret.
+- Classic-kontrakten simulerer alle scrollhastigheter 1-4 og krever samme
+  valgte synlige rakettrekkevidde ved hver hastighet.
+
+# Sprint 15.91.6
+
+- Gjenopprettet den eksakte femplanspaletten på oppstartsbildet. En
+  gameplay-overstyring for pickupfarger hadde ved en feil blitt lagt i den
+  generelle display-Copperen og erstattet oppstartsbildets penner 6, 8, 9 og
+  14 etter at `loading_screen.pal` var satt.
+- Pickupfargene forblir faste i `buildGameHudCopper()`, der de fire
+  overstyringene allerede hører hjemme. Oppstart, menyer og andre generelle
+  skjermer beholder nå paletten som kalleren faktisk sender inn.

@@ -25,6 +25,7 @@ objects := $(cpp_objects) $(c_objects) $(s_objects) $(vasm_objects)
 program = out/a
 OUT = $(program)
 CC = m68k-amiga-elf-gcc
+OBJCOPY = m68k-amiga-elf-objcopy
 AS = m68k-amiga-elf-as
 VASM = vasmm68k_mot
 
@@ -35,7 +36,7 @@ else
 endif
 
 EXTRA_CCFLAGS ?=
-CCFLAGS   = -g -MP -MMD -m68000 -Ofast -nostdlib -Wextra -Wno-unused-function -Wno-volatile-register-var -fomit-frame-pointer -fno-tree-loop-distribution -flto -fwhole-program -fno-exceptions -ffunction-sections -fdata-sections $(EXTRA_CCFLAGS)
+CCFLAGS   = -g -MP -MMD -m68000 -O2 -nostdlib -Wextra -Wno-unused-function -Wno-volatile-register-var -fomit-frame-pointer -fno-tree-loop-distribution -fno-builtin-strlen -flto -fwhole-program -fno-exceptions -ffunction-sections -fdata-sections $(EXTRA_CCFLAGS)
 CPPFLAGS  = $(CCFLAGS) -fno-rtti -fcoroutines -fno-use-cxa-atexit
 ASFLAGS   = -mcpu=68000 -g --register-prefix-optional -I$(SDKDIR)
 LDFLAGS   = -Wl,--emit-relocs,--gc-sections,-Ttext=0,-Map=$(OUT).map
@@ -61,7 +62,8 @@ $(loader_program).elf: $(loader_objects)
 
 $(OUT).exe: $(OUT).elf
 	$(info Elf2Hunk $(program).exe)
-	@elf2hunk $(OUT).elf $(OUT).exe
+	@$(OBJCOPY) --rename-section .text=.text.MEMF_FAST --rename-section .rodata=.rodata.MEMF_FAST --rename-section .data=.data.MEMF_FAST --rename-section .bss=.bss.MEMF_FAST $(OUT).elf $(OUT).hunk.elf
+	@elf2hunk $(OUT).hunk.elf $(OUT).exe
 
 $(OUT).elf: $(objects)
 	$(info Linking $(program).elf)

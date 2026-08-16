@@ -76,7 +76,7 @@ and accidentally shipped with autoplay enabled:
 | `HAR_HEADLESS_WINGMAN_CONTROL` | Selects Off, CPU or Player 2 for A/B workload measurements. |
 | `HAR_HEADLESS_GAME_MODE` | Selects Classic (`0`) or Enhanced (`1`, default) so profile-specific admission rules can be measured independently. |
 | `HAR_HEADLESS_WEAPON_STRESS` | With Player 2 selected, keeps both aircraft supplied/alive and alternates pressed/released rocket and bomb input for both players throughout the route. |
-| `HAR_VALIDATION_SESSION_SEED` | Pins the modeled CPC session RNG for true A/B runs. It defaults to `0` in F5/release builds, which keeps menu-time-derived random worlds. |
+| `HAR_VALIDATION_SESSION_SEED` | Pins the actual mission world seed for true A/B runs. It defaults to `0` in F5/release builds, where each new campaign receives a fresh explicit seed. |
 | `PERF_LOG_INTERVAL_FRAMES` | Overrides the normal 500-frame CSV window. Use 100 frames for position-aligned city profiling. |
 | `HAR_DEBUG_HUD_GUARD` | Expensive per-frame HUD corruption scan. Keep this `0` for performance measurements; enable it only when diagnosing HUD memory corruption. |
 | `HAR_USE_RING_WORLD_SCROLL` | The actual scrolling strategy being tested - not test-only, but this is the flag these tests exist to evaluate. |
@@ -153,6 +153,25 @@ includes it in every archived filename. Keep `-SessionSeed` identical when
 comparing builds or Wingman modes. Earlier runs seeded from the menu's elapsed
 frame count and could compare different terrain, cloud, flak and target
 sequences while appearing to be an A/B performance test.
+
+## Reproducing a procedural world
+
+Sprint 15.91 gives every campaign a 16-bit campaign seed and derives one
+16-bit world seed per mission. The complete terrain, target, cloud, flak and
+town state is still generated procedurally before the renderer needs it; the
+seed change does not introduce fixed maps or alter the CPC-derived rules.
+
+The paused telemetry pages show both values in hexadecimal as `CAMP` and
+`WORLD`. A useful bug report includes `WORLD`, mission, selected skill and
+Classic/Enhanced mode. Retry keeps the campaign seed, eject rescue keeps both
+campaign and current mission, and the next mission derives a different world
+seed from the same campaign. Attract demos use their own fixed seeds and do
+not leak into the next player-started campaign.
+
+To replay a reported mission world in the automated harness, convert the
+four-digit hexadecimal `WORLD` value to decimal and pass it as
+`-SessionSeed`. The validation override is applied once before precomputation,
+and telemetry/logs report that actual override value.
 
 ## Sprint 15.86 release-candidate baseline
 
