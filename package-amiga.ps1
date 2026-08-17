@@ -24,6 +24,7 @@ $debugDir = Join-Path $stagingDir "debug"
 $buildScript = Join-Path $Root "amiga-build.ps1"
 $amigaDir = Join-Path $Root "amiga"
 $exePath = Join-Path $amigaDir "out\harrier_amiga.exe"
+$iconPath = Join-Path $amigaDir "out\harrier_amiga.exe.info"
 $elfPath = Join-Path $amigaDir "out\harrier_amiga.elf"
 $mapPath = Join-Path $amigaDir "out\harrier_amiga.map"
 $asmPath = Join-Path $amigaDir "out\harrier_amiga.s"
@@ -49,6 +50,9 @@ New-Item -ItemType Directory -Force -Path $stagingDir | Out-Null
 New-Item -ItemType Directory -Force -Path $debugDir | Out-Null
 
 Copy-Item -LiteralPath $exePath -Destination (Join-Path $stagingDir "harrier_amiga.exe") -Force
+if (Test-Path -LiteralPath $iconPath) {
+    Copy-Item -LiteralPath $iconPath -Destination (Join-Path $stagingDir "harrier_amiga.exe.info") -Force
+}
 
 foreach ($debugFile in @($elfPath, $mapPath, $asmPath)) {
     if (Test-Path -LiteralPath $debugFile) {

@@ -1,5 +1,7 @@
 #include "gcc8_c_support.h"
 #include <proto/exec.h>
+#include <dos/dosextens.h>
+#include <workbench/startup.h>
 extern struct ExecBase* SysBase;
 
 /* Keep this implementation as a real loop.  With -Ofast/LTO GCC otherwise
@@ -124,6 +126,18 @@ __attribute__((used)) __attribute__((section(".text.unlikely"))) void _start() {
 	// initialize globals, ctors etc.
 	unsigned long count;
 	unsigned long i;
+	struct WBStartup* workbenchStartup = 0;
+
+	/* AmigaDOS starts a CLI tool with pr_CLI set.  Workbench instead sends a
+	 * WBStartup message and waits for the tool to reply.  Receiving it here
+	 * makes the same executable safe to launch by double-clicking its .info
+	 * icon; replying after main() lets Exit to DOS return to Workbench. */
+	SysBase = *((struct ExecBase**)4UL);
+	struct Process* process = (struct Process*)FindTask(0);
+	if (process && process->pr_CLI == 0) {
+		WaitPort(&process->pr_MsgPort);
+		workbenchStartup = (struct WBStartup*)GetMsg(&process->pr_MsgPort);
+	}
 
 	count = __preinit_array_end - __preinit_array_start;
 	for (i = 0; i < count; i++)
@@ -139,6 +153,11 @@ __attribute__((used)) __attribute__((section(".text.unlikely"))) void _start() {
 	count = __fini_array_end - __fini_array_start;
 	for (i = count; i > 0; i--)
 		__fini_array_start[i - 1]();
+
+	if (workbenchStartup) {
+		Forbid();
+		ReplyMsg((struct Message*)workbenchStartup);
+	}
 }
 
 void warpmode(int on) { // bool

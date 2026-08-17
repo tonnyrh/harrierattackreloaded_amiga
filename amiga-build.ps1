@@ -63,6 +63,7 @@ $GameSceneMap = Join-Path $AmigaDir "assets\game_scene.map"
 $GamePalette = Join-Path $AmigaDir "assets\game_palette.pal"
 $PromotedHeader = Join-Path $AmigaDir "assets\promoted_assets.h"
 $PromotedSpriteTiles = Join-Path $AmigaDir "assets\promoted_sprite_tiles.h"
+$WorkbenchIcon = Join-Path $AmigaDir "assets\workbench\harrier_amiga.exe.info"
 
 if (-not (Test-Path -LiteralPath $AmigaDir)) {
     throw "Fant ikke Amiga-mappen: $AmigaDir"
@@ -115,7 +116,8 @@ $RequiredAmigaAssets = @(
     $GameSceneMap,
     $GamePalette,
     $PromotedHeader,
-    $PromotedSpriteTiles
+    $PromotedSpriteTiles,
+    $WorkbenchIcon
 )
 foreach ($asset in $RequiredAmigaAssets) {
     if (-not (Test-Path -LiteralPath $asset -PathType Leaf)) {
@@ -150,14 +152,18 @@ if ($makeExitCode -eq 0) {
     $ProgramDir = Split-Path -Parent $BuiltExe
     $RuntimeLoadingBpl = Join-Path $ProgramDir "loading_screen.bpl"
     $AdfAssetsDir = Join-Path $ProgramDir "adf-assets"
+    $BuiltIconName = ([IO.Path]::GetFileName($BuiltExe) + ".info")
+    $RuntimeWorkbenchIcon = Join-Path $ProgramDir $BuiltIconName
 
     # Sprint 15.61: the loading bitmap is a runtime file rather than a
     # permanent 40 KiB EMBED_CHIP object. Keep it beside the executable for
     # Bartman/F5 (DH1:) and include the same file at the root of the ADF.
     Ensure-Directory -Path $ProgramDir
     Copy-Item -LiteralPath $LoadingBpl -Destination $RuntimeLoadingBpl -Force
+    Copy-Item -LiteralPath $WorkbenchIcon -Destination $RuntimeWorkbenchIcon -Force
     Ensure-Directory -Path $AdfAssetsDir
     Copy-Item -LiteralPath $LoadingBpl -Destination (Join-Path $AdfAssetsDir "loading_screen.bpl") -Force
+    Copy-Item -LiteralPath $WorkbenchIcon -Destination (Join-Path $AdfAssetsDir $BuiltIconName) -Force
 
     # Keep the release boot path deliberately simple on a stock 512 KiB Chip
     # + 512 KiB Slow machine: AmigaDOS loads the game directly, and main()

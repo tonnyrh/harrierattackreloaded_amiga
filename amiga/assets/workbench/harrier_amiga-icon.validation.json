@@ -1,0 +1,17 @@
+{
+  "valid": true,
+  "errors": [],
+  "corrections": [
+    "nearest-neighbor resize",
+    "indexed palette quantization",
+    "OCS 12-bit palette snap"
+  ],
+  "profile": "generic",
+  "width": 48,
+  "height": 22,
+  "colors": 4,
+  "transparent_index": null,
+  "input_sha256": "dd11442826eb297dcef89427ccd06005a2b55bba50bcd78a3afb84a3cf368e71",
+  "output_sha256": "b0da62d81ab4d709db48d56b5ec63a45ef9f4ab852523f47bef636fe72b3c13e",
+  "ilbm_sha256": null
+}

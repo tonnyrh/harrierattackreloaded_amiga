@@ -10,6 +10,33 @@ tools and converted build-ready Amiga assets. Original Amstrad CPC assembler,
 cartridge/disk builds, extraction tools and audit files are intentionally not
 kept here.
 
+## Project status
+
+**Sprint 15.92.4 is a feature-complete release candidate.** The complete
+mission loop is playable: carrier takeoff, generated sea/terrain/city route,
+air and ground combat, powerups, return flight, carrier landing and progression
+to the next mission. Solo, CPU Wingman and local Player 2 modes are available,
+along with the alternating attract demo.
+
+The port includes the CPC-derived weapon, collision, scoring, difficulty and
+level rules; hardware-assisted smooth scrolling; OCS sprites and pixel BOBs;
+terrain radar; eject/aircraft lives; persistent high scores; Paula sound and
+music; menus, Field Guide and an optional in-game telemetry/debug hub. Classic
+mode is the CPC gameplay contract, while Enhanced mode keeps that foundation
+and applies explicitly documented Amiga presentation and balancing additions.
+
+The primary release target is a stock PAL Amiga 500 with Kickstart 1.3,
+68000, OCS, 512 KiB chip RAM and 512 KiB expansion RAM. Builds are also
+regularly exercised in WinUAE and on faster compatible Amigas. Automated
+Classic-contract and headless full-route tests cover core gameplay and
+performance regressions.
+
+The remaining work is release QA rather than major feature development:
+extended real-hardware playtesting, edge-case and two-player regression,
+writable-media high-score verification, final packaging, and documentation
+and licence review. The CPC repository remains a read-only external gameplay
+reference and is not modified by this project.
+
 ## Development setup
 
 From PowerShell:
@@ -33,8 +60,13 @@ configuration with F5.
 Outputs are written under `amiga/out`:
 
 - `harrier_amiga.exe` — AmigaDOS executable
+- `harrier_amiga.exe.info` — Workbench 1.x tool icon (64 KiB stack)
 - `harrier_amiga.adf` — bootable floppy image
 - debug ELF/map artifacts used by the VS Code integration
+
+When `amiga/out` is mounted as an Amiga hard disk, open its drawer in
+Workbench and double-click the Harrier icon to start the game. **Exit to DOS**
+returns cleanly to Workbench. The build also places the icon on the ADF.
 
 The checked-in files under `amiga/assets` are authoritative Amiga build
 inputs. The build does not require the original CPC repository.
