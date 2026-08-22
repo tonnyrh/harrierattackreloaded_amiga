@@ -14,8 +14,7 @@
 #include <stddef.h>
 #include <string.h>
 #include "assets/harrier_menu_text.h"
-
-#define HAR_BUILD_LABEL "SPRINT 15.92.4"
+#define HAR_BUILD_LABEL "SPRINT 15.95.7"
 
 #define SCREEN_WIDTH 320
 #define LOADING_SCREEN_WIDTH 320
@@ -198,15 +197,17 @@
  * Enhanced difficulty must lower the masking clearance rather than raise it:
  * a higher skill therefore asks the pilot to fly progressively lower. */
 #define RADAR_DETECTION_MAX 1000
-#define RADAR_DETECTION_ALARM_START 700
+#define RADAR_DETECTION_CAUTION_START 600
+#define RADAR_DETECTION_WARNING_START 800
 #define RADAR_DETECTION_TICK_FRAMES 4
+#define RADAR_WARNING_PULSE_INTERVAL_TICKS 14
 #define RADAR_ENHANCED_MASKING_MARGIN_PIXELS 6
 #define RADAR_ENHANCED_DIFFICULTY_STEP_PIXELS 2
 /* Detection should be possible to shed by flying low and fast, but not be
  * erased as quickly as it is accumulated. Keep the existing altitude/speed
  * curves and bias only their final response: +10% gain and -10% drain versus
  * Sprint 15.51's shared 150-percent factor. */
-#define RADAR_GAIN_RESPONSE_PERCENT 165
+#define RADAR_GAIN_RESPONSE_PERCENT 200
 #define RADAR_DRAIN_RESPONSE_PERCENT 135
 /* Deliberate Enhanced-mode balance extension requested after the CPC-parity
  * pass. Skill 1 stays unchanged; skills 2..5 add 2.5 percentage points each,
@@ -251,7 +252,14 @@
 #define GAME_RUNTIME_FLAK_LOOKUP_SIZE 128
 #define GAME_DESTROYED_SHIP_CELL_MAX 32
 #define GAME_ENEMY_SHIP_GROUP_COUNT 2
-#define GAME_SHIP_WRECK_SMOKE_MAX 24
+/* Every destroyed target/ship cell can contribute Smoke 2 at the impact row
+ * and Smoke 1 immediately above it.  The former fixed 24-cell list filled
+ * after only twelve two-tile hits; Skill 5 reaches that naturally, after
+ * which scoring and destruction continued but new smoke silently vanished.
+ * Size the persistent world-state from the actual destruction capacities so
+ * it cannot fill before either owning state does. */
+#define GAME_PERSISTENT_HIT_SMOKE_MAX \
+	((GAME_DESTROYED_TARGET_MAX + GAME_DESTROYED_SHIP_CELL_MAX) * 2)
 #define GAME_SHIP_WRECK_SMOKE_TILE_A 51
 #define GAME_SHIP_WRECK_SMOKE_TILE_B 52
 #define GAME_LAND_CRATER_MAX 96
@@ -1319,6 +1327,7 @@ typedef struct GameState {
 	UWORD radarDetection;
 	UBYTE radarClearance;
 	UBYTE radarThreshold;
+	UBYTE radarAlarmTickCountdown;
 	UBYTE enemyShipMissileTriggerIndex;
 	UBYTE enemyMissileFromShip;
 	UBYTE enemyMissileTarget;   /* 1 = player, 2 = Wingman; CPC missiletargetwingman */
@@ -1573,9 +1582,9 @@ static UBYTE runtimeFlakLookupTiles[GAME_RUNTIME_FLAK_LOOKUP_SIZE];
 static UWORD destroyedShipCellColumns[GAME_DESTROYED_SHIP_CELL_MAX];
 static UBYTE destroyedShipCellRows[GAME_DESTROYED_SHIP_CELL_MAX];
 static UBYTE destroyedShipCellCount = 0;
-static UWORD shipWreckSmokeColumns[GAME_SHIP_WRECK_SMOKE_MAX];
-static UBYTE shipWreckSmokeRows[GAME_SHIP_WRECK_SMOKE_MAX];
-static UBYTE shipWreckSmokeTiles[GAME_SHIP_WRECK_SMOKE_MAX];
+static UWORD shipWreckSmokeColumns[GAME_PERSISTENT_HIT_SMOKE_MAX];
+static UBYTE shipWreckSmokeRows[GAME_PERSISTENT_HIT_SMOKE_MAX];
+static UBYTE shipWreckSmokeTiles[GAME_PERSISTENT_HIT_SMOKE_MAX];
 static UBYTE shipWreckSmokeCount = 0;
 static UWORD landCraterColumns[GAME_LAND_CRATER_MAX];
 static UBYTE landCraterRows[GAME_LAND_CRATER_MAX];
@@ -1855,7 +1864,7 @@ static UWORD hudRegLastDdfstop = 0;
  * user visually reports pixels moving at the bottom of the ROCKETS/BOMBS
  * gauges even with the game completely frozen (landed, no scroll, no value
  * changes). That row is the bottom BORDER pixel of both gauges - drawn once
- * by drawHudGaugeBar() and never touched again unless fillColor changes
+ * by drawHudCellGaugeFrame() and never touched again unless the HUD is reset
  * (which it doesn't for rockets/bombs). If this byte range ever deviates
  * from its snapshot while nothing gameplay-relevant changed, the buffer
  * itself is being written by something outside the normal HUD draw path; if
@@ -4206,31 +4215,29 @@ static __attribute__((always_inline)) inline short JoyFire1(void) {
 	return !(custom->potinp & (1 << 14));
 }
 
-/* User-reported bug: bomb/rocket sounds sometimes repeat several times for
- * one press. Most likely cause: the POT line (or a mechanical 2-button
- * joystick's real switch contacts) can flicker between reads, and Pressed()
- * (a plain now&&!previous edge check, one frame of history) interprets each
- * flicker as a brand new press. Requires JoyFire1() to read the same state
- * for 2 consecutive frames (40ms) before it's trusted - long enough to ride
- * out contact bounce, short enough not to add perceptible input lag. Reset
- * in InitInput() alongside the POTGO pull-up fix. */
+/* POT second-fire needs asymmetric filtering. A press is accepted on its
+ * first sampled frame so a short real-hardware bomb tap is never discarded;
+ * release must remain low for two consecutive samples before the next rising
+ * edge can arm. This rejects contact chatter without the former 40ms press
+ * qualification which made bombing feel intermittently unresponsive on an
+ * A500 whenever a busy frame happened to coincide with the tap. */
 static UBYTE joyFire1Stable;
-static UBYTE joyFire1LastRaw;
 static UBYTE joyFire1StableFrames;
 
 static UBYTE ReadJoyFire1Debounced(void) {
 	UBYTE raw = (UBYTE)JoyFire1();
 
-	if (raw == joyFire1LastRaw) {
-		if (joyFire1StableFrames < 2)
-			joyFire1StableFrames++;
+	if (raw) {
+		joyFire1Stable = 1;
+		joyFire1StableFrames = 0;
+	} else if (joyFire1Stable) {
+		if (++joyFire1StableFrames >= 2) {
+			joyFire1Stable = 0;
+			joyFire1StableFrames = 0;
+		}
 	} else {
-		joyFire1LastRaw = raw;
 		joyFire1StableFrames = 0;
 	}
-
-	if (joyFire1StableFrames >= 2)
-		joyFire1Stable = raw;
 
 	return joyFire1Stable;
 }
@@ -4316,7 +4323,6 @@ static void InitInput(void) {
 	custom->potgo = 0xff00;
 
 	joyFire1Stable = 0;
-	joyFire1LastRaw = 0;
 	joyFire1StableFrames = 0;
 }
 
@@ -6241,6 +6247,7 @@ static void initGameState(GameState* game, UWORD campaignSeed,
 	game->radarDetection = 0;
 	game->radarClearance = 0;
 	game->radarThreshold = 0;
+	game->radarAlarmTickCountdown = 0;
 	game->enemyShipMissileTriggerIndex = 0;
 	game->enemyMissileFromShip = 0;
 	game->enemyMissileTarget = ENEMY_TARGET_NONE;
@@ -6360,6 +6367,21 @@ static UBYTE beginHighScoreNameEntry(ULONG* highScore, GameState* game) {
 	game->highScoreNameJoyChar = 0;
 	memset(game->highScoreName, 0, sizeof(game->highScoreName));
 	return 1;
+}
+
+/* Game Over can be reached from several terminal paths. Direct collision
+ * damage reaches the shared end-of-game block in the same frame, while the
+ * crash/eject animations can call triggerGameOver() from a mutually exclusive
+ * branch and therefore arrive in the already-game-over branch one frame later.
+ * Keep the qualification gate in one idempotent helper so every terminal path
+ * gets exactly one chance to enter a name. Attract mode deliberately suppresses
+ * the table, because its synthetic score must never become a player record. */
+static UBYTE ensureHighScoreNameEntryAtGameOver(ULONG* highScore,
+	GameState* game, UBYTE attractDemoActive) {
+	if (!game->gameOver || attractDemoActive || game->highScoreCommitted ||
+		game->highScoreNameEntryActive)
+		return 0;
+	return beginHighScoreNameEntry(highScore, game);
 }
 
 static void commitHighScoreNameEntry(ULONG* highScore, GameState* game) {
@@ -6591,88 +6613,159 @@ static UBYTE updateLandingApproach(GameState* game) {
 	return 1;
 }
 
-/* CPC draws SPEED/FUEL/ROCKETS/BOMBS as tick-segmented
- * gauge bars (drawgauge, HarrierAttackSourceNew2_alt_CRTC_CART16.asm:5249-5261
- * - 15 "empty gauge" tiles plus one "marker" tile) and ARMOUR as a bar that
- * erases one segment per hit (updatehealth, :2963-2985). SCORE and LIV remain
- * numeric; LIV is an Enhanced-mode extension. */
-static void drawHudGaugeBar(UBYTE* hud, short x, short y, short width, short height, UBYTE fillColor, UWORD value, UWORD maxValue) {
-	short innerWidth = (short)(width - 2);
-	short filled = maxValue ? (short)(((ULONG)value * innerWidth) / maxValue) : 0;
-	if (filled > innerWidth)
-		filled = innerWidth;
-	if (filled < 0)
-		filled = 0;
+enum RadarLampVisual {
+	RADAR_LAMP_GREEN = 0,
+	RADAR_LAMP_YELLOW,
+	RADAR_LAMP_RED
+};
 
-	fillRect(hud, x, y, width, height, HUD_COLOR_LABEL);
-	fillRect(hud, x + 1, y + 1, innerWidth, (short)(height - 2), HUD_COLOR_BACKGROUND);
-	if (filled > 0)
-		fillRect(hud, x + 1, y + 1, filled, (short)(height - 2), fillColor);
-	/* 12px spacing matches the menu's drawMenuGaugeBar (the established
-	 * CPC-style reference) - an earlier 6px spacing here made the bar look
-	 * like a busy hatched texture rather than a clean segmented gauge. */
-	for (short tick = (short)(x + 6); tick < x + width - 2; tick = (short)(tick + 12))
-		fillRect(hud, tick, (short)(y + 1), 1, (short)(height - 2), HUD_COLOR_BACKGROUND);
+enum CockpitIndicatorVisual {
+	COCKPIT_INDICATOR_OFF = 0,
+	COCKPIT_INDICATOR_GREEN,
+	COCKPIT_INDICATOR_YELLOW,
+	COCKPIT_INDICATOR_RED
+};
+
+static UBYTE radarHudBandForValue(UWORD value) {
+	if (value >= RADAR_DETECTION_MAX)
+		return 3;
+	if (value >= RADAR_DETECTION_WARNING_START)
+		return 2;
+	if (value >= RADAR_DETECTION_CAUTION_START)
+		return 1;
+	return 0;
 }
 
-/* Delta-only version: redraws just the pixel span between the old and new
- * fill widths, not the whole bar every time. If fillColor itself changed
- * since the last draw (e.g. armour/fuel crossing into their WARN colour),
- * falls back to a full drawHudGaugeBar() - that only happens at rare
- * threshold crossings, not every frame. Returns 1 if anything was drawn. */
-static UBYTE drawHudGaugeBarDelta(UBYTE* hud, short x, short y, short width, short height, UBYTE fillColor, UBYTE oldFillColor, UWORD oldValue, UWORD newValue, UWORD maxValue) {
-	short innerWidth = (short)(width - 2);
-	short oldFilled = maxValue ? (short)(((ULONG)oldValue * innerWidth) / maxValue) : 0;
-	short newFilled = maxValue ? (short)(((ULONG)newValue * innerWidth) / maxValue) : 0;
-	if (oldFilled > innerWidth)
-		oldFilled = innerWidth;
-	if (newFilled > innerWidth)
-		newFilled = innerWidth;
-	if (oldFilled < 0)
-		oldFilled = 0;
-	if (newFilled < 0)
-		newFilled = 0;
+static UBYTE radarHudLampVisualForValue(UWORD value) {
+	UBYTE band = radarHudBandForValue(value);
+	if (band == 0)
+		return RADAR_LAMP_GREEN;
+	if (band == 1)
+		return RADAR_LAMP_YELLOW;
+	return RADAR_LAMP_RED;
+}
 
-	if (fillColor != oldFillColor) {
-		drawHudGaugeBar(hud, x, y, width, height, fillColor, newValue, maxValue);
-		return 1;
+static UBYTE radarHudLampVisualForGame(const GameState* game) {
+	/* Once detection launches an interceptor, keep the warning asserted until
+	 * that aircraft is gone. The accumulator itself still resets at spawn so
+	 * the next encounter starts from a clean gameplay state. */
+	if (game->enemyPlane.active)
+		return RADAR_LAMP_RED;
+	return radarHudLampVisualForValue(game->radarDetection);
+}
+
+/* The illustrated annunciator replaces both the RADAR label and its round
+ * LED. It is byte-aligned and preconverted to the HUD's four planar DMA
+ * planes, so a threshold change is only 576 sequential byte writes. The
+ * frame/silhouette is identical in every state; only existing palette pen
+ * numbers differ, avoiding Copper and global-palette changes. */
+/* Small byte-aligned cockpit annunciators.  The previous illustrated radar
+ * BOB copied 576 planar bytes for a state change.  R and E now each occupy a
+ * 24x12 fixed frame; changing one lamp is a tiny solid fill plus one 8x8
+ * glyph.  There is no mask, Blitter setup or global palette mutation. */
+static void drawCockpitIndicatorFrame(UBYTE* hud, short x) {
+	fillRect(hud, x, 17, 24, 12, GAME_COLOR_DARK_GREY);
+	fillRect(hud, x, 17, 24, 1, HUD_COLOR_LABEL);
+	fillRect(hud, x, 28, 24, 1, HUD_COLOR_LABEL);
+	fillRect(hud, x, 17, 1, 12, HUD_COLOR_LABEL);
+	fillRect(hud, (short)(x + 23), 17, 1, 12, HUD_COLOR_LABEL);
+}
+
+static void drawCockpitIndicator(UBYTE* hud, short x, char glyph,
+	UBYTE visual) {
+	UBYTE background = GAME_COLOR_DARK_GREY;
+	UBYTE foreground = HUD_COLOR_BACKGROUND;
+	char text[2];
+
+	if (visual == COCKPIT_INDICATOR_GREEN)
+		background = HUD_COLOR_SAFE;
+	else if (visual == COCKPIT_INDICATOR_YELLOW)
+		background = HUD_COLOR_VALUE;
+	else if (visual == COCKPIT_INDICATOR_RED)
+		background = HUD_COLOR_WARN;
+	else
+		foreground = GAME_COLOR_LIGHT_GREY;
+
+	/* State changes are rare, so colour the complete inner lamp rather than
+	 * making only the glyph cell light up. */
+	fillRect(hud, (short)(x + 1), 18, 22, 10, background);
+	text[0] = glyph;
+	text[1] = 0;
+	drawText(hud, (short)(x + 8), 19, text, foreground);
+}
+
+/* Compact cell gauges.  Frames are static.  A value change only paints the
+ * cells whose quantised state changed, so raw fuel/armour changes cannot
+ * wake a wide pixel bar every frame. Each cell is one byte: six scanlines of
+ * 11111100 give a visible six-pixel segment and two-pixel separator with no
+ * per-pixel plotting. */
+static void drawHudCellGaugeFrame(UBYTE* hud, short x, short y,
+	UBYTE cells, UBYTE height) {
+	/* End caps share the first and final data byte. drawHudCellGaugeDelta()
+	 * preserves their outer bits, so all eight visible bytes are real cells. */
+	short width = (short)(cells * 8);
+	fillRect(hud, x, y, width, height, HUD_COLOR_BACKGROUND);
+	fillRect(hud, x, y, width, 1, HUD_COLOR_LABEL);
+	fillRect(hud, x, (short)(y + height - 1), width, 1, HUD_COLOR_LABEL);
+	fillRect(hud, x, y, 1, height, HUD_COLOR_LABEL);
+	fillRect(hud, (short)(x + width - 1), y, 1, height, HUD_COLOR_LABEL);
+}
+
+static void drawHudCellGaugeDelta(UBYTE* hud, short x, short y,
+	UBYTE cells, UBYTE height,
+	UBYTE oldLevel, UBYTE newLevel, UBYTE fillColor, UBYTE oldFillColor) {
+	if (newLevel > cells)
+		newLevel = cells;
+	if (oldLevel > cells || oldFillColor != fillColor) {
+		oldLevel = 0;
+		for (UBYTE cell = 0; cell < cells; cell++) {
+			UBYTE color = cell < newLevel ? fillColor : HUD_COLOR_BACKGROUND;
+			for (short row = 1; row < height - 1; row++) {
+				UBYTE* target = hud + (y + row) * SCREEN_PLANES * SCREEN_ROW_BYTES +
+					(x >> 3) + cell;
+				for (UBYTE plane = 0; plane < SCREEN_PLANES; plane++) {
+					UBYTE bits = (color & (1 << plane)) ? 0xfc : 0x00;
+					if (HUD_COLOR_LABEL & (1 << plane)) {
+						if (cell == 0)
+							bits |= 0x80;
+						if (cell == cells - 1)
+							bits |= 0x01;
+					}
+					target[plane * SCREEN_ROW_BYTES] = bits;
+				}
+			}
+		}
+		return;
 	}
-	if (oldFilled == newFilled)
-		return 0;
-
-	short deltaStart = oldFilled < newFilled ? oldFilled : newFilled;
-	short deltaEnd = oldFilled < newFilled ? newFilled : oldFilled;
-	short deltaWidth = (short)(deltaEnd - deltaStart);
-	UBYTE growing = (UBYTE)(newFilled > oldFilled);
-	UBYTE deltaColor = growing ? fillColor : HUD_COLOR_BACKGROUND;
-
-	fillRect(hud, (short)(x + 1 + deltaStart), (short)(y + 1), deltaWidth, (short)(height - 2), deltaColor);
-	if (growing) {
-		/* Restore the thin background tick gaps inside the newly-filled
-		 * span, matching drawHudGaugeBar's segmented look (12px spacing). */
-		for (short tick = (short)(x + 6); tick < x + width - 2; tick = (short)(tick + 12)) {
-			short tickLocal = (short)(tick - (x + 1));
-			if (tickLocal >= deltaStart && tickLocal < deltaEnd)
-				fillRect(hud, tick, (short)(y + 1), 1, (short)(height - 2), HUD_COLOR_BACKGROUND);
+	if (oldLevel == newLevel)
+		return;
+	UBYTE first = oldLevel < newLevel ? oldLevel : newLevel;
+	UBYTE last = oldLevel < newLevel ? newLevel : oldLevel;
+	UBYTE color = newLevel > oldLevel ? fillColor : HUD_COLOR_BACKGROUND;
+	for (UBYTE cell = first; cell < last; cell++) {
+		for (short row = 1; row < height - 1; row++) {
+			UBYTE* target = hud + (y + row) * SCREEN_PLANES * SCREEN_ROW_BYTES +
+				(x >> 3) + cell;
+			for (UBYTE plane = 0; plane < SCREEN_PLANES; plane++) {
+				UBYTE bits = (color & (1 << plane)) ? 0xfc : 0x00;
+				if (HUD_COLOR_LABEL & (1 << plane)) {
+					if (cell == 0)
+						bits |= 0x80;
+					if (cell == cells - 1)
+						bits |= 0x01;
+				}
+				target[plane * SCREEN_ROW_BYTES] = bits;
+			}
 		}
 	}
-	return 1;
 }
 
-static UBYTE radarHudColorForValue(UWORD value) {
-	return (UBYTE)(value >= 900 ? HUD_COLOR_WARN :
-		(value >= RADAR_DETECTION_ALARM_START ? HUD_COLOR_VALUE :
-		HUD_COLOR_SAFE));
-}
-
-/* Radar has 1001 logical values but only 94 interior HUD pixels. Avoid
- * waking the HUD path for changes which alter neither fill nor colour. */
-static UBYTE radarHudVisualChanged(UWORD oldValue, UWORD newValue) {
-	const UWORD innerWidth = 94;
-	return (UBYTE)(radarHudColorForValue(oldValue) !=
-		radarHudColorForValue(newValue) ||
-		((ULONG)oldValue * innerWidth) / RADAR_DETECTION_MAX !=
-		((ULONG)newValue * innerWidth) / RADAR_DETECTION_MAX);
+static UBYTE quantiseGauge(UWORD value, UWORD maximum, UBYTE cells) {
+	if (value == 0 || maximum == 0)
+		return 0;
+	if (value >= maximum)
+		return cells;
+	return (UBYTE)(((ULONG)value * cells + maximum - 1) / maximum);
 }
 
 /* Delta-only version of drawUnsignedPadded(): only blanks+redraws the
@@ -6706,18 +6799,16 @@ static void drawUnsignedPaddedDelta(UBYTE* hud, short x, short y, ULONG oldValue
 	}
 }
 
-/* Full label-above-bar layout matching a WinAPE reference capture of the
- * real in-game HUD and the user's own ASCII mockup:
- *   SCORE ######   HIGH SCORE ######            (row 1, LIV - Amiga-only,
- *       ARMOUR  ---------------------------      no CPC equivalent - tucked
- *   SPEED             FUEL                       in at the end of row 1)
- *   OOOOOOOOOO        OOOOOOOOOO
- *   ROCKETS           BOMBS
- *   OOOOOOOOOO        OOOOOOOOOO
- * Needed HUD_HEIGHT growing from 32 to 88 (SCREEN_HEIGHT 200->256) to fit -
- * confirmed with the user this uses genuinely unused PAL scanline budget
- * (320x256 is a standard resolution) rather than shrinking HUD_TOP/the
- * gameplay viewport. */
+/* Compact two-column cockpit layout. Every gauge is left of its label and
+ * every row uses the same x coordinates, so the HUD reads as two aligned
+ * instrument stacks instead of six unrelated bars:
+ *
+ *   [ ARMOUR ] ARM       [ R ] [ E ]
+ *   [ SPEED  ] SPEED     [ FUEL   ] FUEL
+ *   [ ROCKET ] ROCKETS   [ BOMBS  ] BOMBS
+ *
+ * HUD_HEIGHT remains 88; the denser placement only reduces visual travel
+ * and does not shrink the gameplay viewport. */
 static void drawHudStatic(UBYTE* hud, UBYTE gameMode) {
 	fillRect(hud, 0, 0, SCREEN_WIDTH, HUD_HEIGHT, HUD_COLOR_BACKGROUND);
 	fillRect(hud, 0, 0, SCREEN_WIDTH, 1, GAME_COLOR_WHITE);
@@ -6728,15 +6819,23 @@ static void drawHudStatic(UBYTE* hud, UBYTE gameMode) {
 	drawTextStyled(hud, 252, 4, "SK", FONT_STYLE_CPC_HUD);
 	drawTextStyled(hud, 284, 4, "LV", FONT_STYLE_CPC_HUD);
 
-	drawTextStyled(hud, 8, 19, "ARMOUR", FONT_STYLE_CPC_HUD);
+	drawHudCellGaugeFrame(hud, 8, 17, 8, 12);
+	drawTextStyled(hud, 80, 19, "ARM", FONT_STYLE_CPC_HUD);
+	drawCockpitIndicatorFrame(hud, 168);
+	drawCockpitIndicatorFrame(hud, 208);
 
-	drawTextStyled(hud, 36, 36, "SPEED", FONT_STYLE_CPC_HUD);
-	drawTextStyled(hud, 144, 36, "FUEL", FONT_STYLE_CPC_HUD);
-	if (gameMode == GAME_MODE_ENHANCED)
-		drawTextStyled(hud, 240, 36, "RADAR", FONT_STYLE_CPC_HUD);
+	/* R is dark in Classic because terrain radar is an Enhanced feature. E is
+	 * common to both modes and lights only during fuel/airframe failure. */
+	(void)gameMode;
+	drawHudCellGaugeFrame(hud, 8, 46, 8, 10);
+	drawTextStyled(hud, 80, 47, "SPEED", FONT_STYLE_CPC_HUD);
+	drawHudCellGaugeFrame(hud, 168, 46, 8, 10);
+	drawTextStyled(hud, 240, 47, "FUEL", FONT_STYLE_CPC_HUD);
 
-	drawTextStyled(hud, 58, 66, "ROCKETS", FONT_STYLE_CPC_HUD);
-	drawTextStyled(hud, 214, 66, "BOMBS", FONT_STYLE_CPC_HUD);
+	drawHudCellGaugeFrame(hud, 8, 76, 8, 10);
+	drawTextStyled(hud, 80, 77, "ROCKETS", FONT_STYLE_CPC_HUD);
+	drawHudCellGaugeFrame(hud, 168, 76, 8, 10);
+	drawTextStyled(hud, 240, 77, "BOMBS", FONT_STYLE_CPC_HUD);
 }
 
 /* Per-buffer tracked "last drawn" state. The gameplay HUD is now the only
@@ -6747,14 +6846,19 @@ typedef struct HudRenderState {
 	ULONG score;
 	ULONG highScore;
 	UWORD armour;
+	UBYTE armourLevel;
 	UBYTE armourColor;
 	UWORD speedLevel;
+	UBYTE speedGaugeLevel;
 	UWORD fuel;
+	UBYTE fuelLevel;
 	UBYTE fuelColor;
 	UWORD rockets;
+	UBYTE rocketsLevel;
 	UWORD bombs;
-	UWORD radarDetection;
-	UBYTE radarColor;
+	UBYTE bombsLevel;
+	UBYTE radarIndicatorVisual;
+	UBYTE ejectIndicatorVisual;
 	UBYTE lives;
 	UBYTE livesColor;
 	UBYTE skillLevel;
@@ -6773,7 +6877,27 @@ static void drawHudValues(UBYTE* hud, const GameState* game, ULONG highScore, UB
 	UBYTE fuelColor = (UBYTE)(game->fuel < 100 ? HUD_COLOR_WARN :
 		HUD_COLOR_POWERUP_HEALTH);
 	UBYTE livesColor = (UBYTE)(game->lives == 0 ? HUD_COLOR_WARN : HUD_COLOR_SAFE);
-	UBYTE radarColor = radarHudColorForValue(game->radarDetection);
+	UBYTE armourLevel = quantiseGauge(game->armour, 100, 8);
+	UBYTE speedGaugeLevel = quantiseGauge(game->speedLevel,
+		GAME_SPEED_LEVEL_MAX, 8);
+	/* fuelGaugeLevel is CPC's native 0..16 state. Pair adjacent levels into
+	 * the common eight-cell cockpit scale without division or raw 0..999
+	 * fuel redraws. */
+	UBYTE fuelLevel = (UBYTE)((game->fuelGaugeLevel + 1) >> 1);
+	UBYTE rocketsLevel = quantiseGauge(game->rockets, fullRockets, 8);
+	UBYTE bombsLevel = quantiseGauge(game->bombs, fullBombs, 8);
+	UBYTE radarIndicatorVisual = COCKPIT_INDICATOR_OFF;
+	UBYTE ejectIndicatorVisual = (UBYTE)(
+		game->aircraftFailureState != AIRCRAFT_FAILURE_NONE ||
+		game->fuel == 0 || game->armour == 0 ?
+		COCKPIT_INDICATOR_RED : COCKPIT_INDICATOR_OFF);
+	if (game->gameMode == GAME_MODE_ENHANCED) {
+		UBYTE radarLampVisual = radarHudLampVisualForGame(game);
+		radarIndicatorVisual = radarLampVisual == RADAR_LAMP_GREEN ?
+			COCKPIT_INDICATOR_GREEN :
+			(radarLampVisual == RADAR_LAMP_YELLOW ?
+			COCKPIT_INDICATOR_YELLOW : COCKPIT_INDICATOR_RED);
+	}
 	UBYTE overlayMode = (UBYTE)(game->highScoreNameEntryActive ? 3 :
 		(game->gameOver ? 1 : (game->missionComplete ? 2 : 0)));
 
@@ -6781,15 +6905,15 @@ static void drawHudValues(UBYTE* hud, const GameState* game, ULONG highScore, UB
 	if (state->valid) {
 		if (state->score != game->score)
 			hudScoreChanges++;
-		if (state->fuel != game->fuel)
+		if (state->fuelLevel != fuelLevel)
 			hudFuelChanges++;
-		if (state->armour != game->armour)
+		if (state->armourLevel != armourLevel)
 			hudArmourChanges++;
-		if (state->speedLevel != game->speedLevel)
+		if (state->speedGaugeLevel != speedGaugeLevel)
 			hudSpeedChanges++;
-		if (state->rockets != game->rockets)
+		if (state->rocketsLevel != rocketsLevel)
 			hudRocketsChanges++;
-		if (state->bombs != game->bombs)
+		if (state->bombsLevel != bombsLevel)
 			hudBombsChanges++;
 	}
 
@@ -6808,16 +6932,20 @@ static void drawHudValues(UBYTE* hud, const GameState* game, ULONG highScore, UB
 		fillRect(hud, 300, 4, 16, 8, HUD_COLOR_BACKGROUND);
 		drawUnsignedPaddedStyled(hud, 300, 4, game->missionNumber, 2,
 			FONT_STYLE_CPC_HUD);
-		drawHudGaugeBar(hud, 64, 17, 232, 10, armourColor, game->armour, 100);
-		drawHudGaugeBar(hud, 8, 50, 96, 10, HUD_COLOR_VALUE, game->speedLevel, GAME_SPEED_LEVEL_MAX);
-		drawHudGaugeBar(hud, 112, 50, 96, 10, fuelColor, game->fuel, 999);
-		if (game->gameMode == GAME_MODE_ENHANCED)
-			drawHudGaugeBar(hud, 216, 50, 96, 10, radarColor,
-				game->radarDetection, RADAR_DETECTION_MAX);
-		drawHudGaugeBar(hud, 16, 80, 140, 8,
-			HUD_COLOR_POWERUP_ROCKETS, game->rockets, fullRockets);
-		drawHudGaugeBar(hud, 164, 80, 140, 8,
-			HUD_COLOR_POWERUP_BOMBS, game->bombs, fullBombs);
+		drawHudCellGaugeDelta(hud, 8, 17, 8, 12, 0xff,
+			armourLevel, armourColor, armourColor);
+		drawCockpitIndicator(hud, 168, 'R', radarIndicatorVisual);
+		drawCockpitIndicator(hud, 208, 'E', ejectIndicatorVisual);
+		drawHudCellGaugeDelta(hud, 8, 46, 8, 10, 0xff,
+			speedGaugeLevel, HUD_COLOR_VALUE, HUD_COLOR_VALUE);
+		drawHudCellGaugeDelta(hud, 168, 46, 8, 10, 0xff,
+			fuelLevel, fuelColor, fuelColor);
+		drawHudCellGaugeDelta(hud, 8, 76, 8, 10, 0xff,
+			rocketsLevel, HUD_COLOR_POWERUP_ROCKETS,
+			HUD_COLOR_POWERUP_ROCKETS);
+		drawHudCellGaugeDelta(hud, 168, 76, 8, 10, 0xff,
+			bombsLevel, HUD_COLOR_POWERUP_BOMBS,
+			HUD_COLOR_POWERUP_BOMBS);
 	} else {
 		if (state->score != game->score)
 			drawUnsignedPaddedDelta(hud, 52, 4, state->score, game->score, 6, FONT_STYLE_CPC_HUD);
@@ -6833,24 +6961,37 @@ static void drawHudValues(UBYTE* hud, const GameState* game, ULONG highScore, UB
 		if (state->missionNumber != game->missionNumber)
 			drawUnsignedPaddedDelta(hud, 300, 4, state->missionNumber,
 				game->missionNumber, 2, FONT_STYLE_CPC_HUD);
-		drawHudGaugeBarDelta(hud, 64, 17, 232, 10, armourColor, state->armourColor, state->armour, game->armour, 100);
+		/* A500: source values are quantised before this point. Guard each tiny
+		 * cell update by its visual level so raw fuel/armour changes do no work. */
+		if (state->armourLevel != armourLevel || state->armourColor != armourColor)
+			drawHudCellGaugeDelta(hud, 8, 17, 8, 12,
+				state->armourLevel, armourLevel, armourColor,
+				state->armourColor);
+		if (state->radarIndicatorVisual != radarIndicatorVisual)
+			drawCockpitIndicator(hud, 168, 'R', radarIndicatorVisual);
+		if (state->ejectIndicatorVisual != ejectIndicatorVisual)
+			drawCockpitIndicator(hud, 208, 'E', ejectIndicatorVisual);
 		/* SPEED/FUEL sit under the GAME OVER/LANDED overlay rect - skip
 		 * updating them while it's showing, no point drawing what the
 		 * overlay immediately covers; restored when the overlay clears. */
 		if (overlayMode == 0) {
-			drawHudGaugeBarDelta(hud, 8, 50, 96, 10, HUD_COLOR_VALUE, HUD_COLOR_VALUE, state->speedLevel, game->speedLevel, GAME_SPEED_LEVEL_MAX);
-			drawHudGaugeBarDelta(hud, 112, 50, 96, 10, fuelColor, state->fuelColor, state->fuel, game->fuel, 999);
-			if (game->gameMode == GAME_MODE_ENHANCED)
-				drawHudGaugeBarDelta(hud, 216, 50, 96, 10, radarColor,
-					state->radarColor, state->radarDetection,
-					game->radarDetection, RADAR_DETECTION_MAX);
+			if (state->speedGaugeLevel != speedGaugeLevel)
+				drawHudCellGaugeDelta(hud, 8, 46, 8, 10,
+					state->speedGaugeLevel, speedGaugeLevel,
+					HUD_COLOR_VALUE, HUD_COLOR_VALUE);
+			if (state->fuelLevel != fuelLevel || state->fuelColor != fuelColor)
+				drawHudCellGaugeDelta(hud, 168, 46, 8, 10,
+					state->fuelLevel, fuelLevel, fuelColor,
+					state->fuelColor);
 		}
-		drawHudGaugeBarDelta(hud, 16, 80, 140, 8,
-			HUD_COLOR_POWERUP_ROCKETS, HUD_COLOR_POWERUP_ROCKETS,
-			state->rockets, game->rockets, fullRockets);
-		drawHudGaugeBarDelta(hud, 164, 80, 140, 8,
-			HUD_COLOR_POWERUP_BOMBS, HUD_COLOR_POWERUP_BOMBS,
-			state->bombs, game->bombs, fullBombs);
+		if (state->rocketsLevel != rocketsLevel)
+			drawHudCellGaugeDelta(hud, 8, 76, 8, 10,
+				state->rocketsLevel, rocketsLevel, HUD_COLOR_POWERUP_ROCKETS,
+				HUD_COLOR_POWERUP_ROCKETS);
+		if (state->bombsLevel != bombsLevel)
+			drawHudCellGaugeDelta(hud, 168, 76, 8, 10,
+				state->bombsLevel, bombsLevel, HUD_COLOR_POWERUP_BOMBS,
+				HUD_COLOR_POWERUP_BOMBS);
 	}
 
 	if (state->overlayMode != overlayMode) {
@@ -6859,7 +7000,7 @@ static void drawHudValues(UBYTE* hud, const GameState* game, ULONG highScore, UB
 		 * the top 2 pixel rows off those glyphs every time the overlay
 		 * appeared or cleared, corrupting them until the next full
 		 * drawHudStatic(). */
-		fillRect(hud, 32, 30, 256, 36, HUD_COLOR_BACKGROUND);
+		fillRect(hud, 0, 30, SCREEN_WIDTH, 36, HUD_COLOR_BACKGROUND);
 		if (overlayMode == 1) {
 			/* High-contrast CPC-style status panel instead of loose text
 			 * floating over the normal SPEED/FUEL area. Outer border capped
@@ -6897,15 +7038,14 @@ static void drawHudValues(UBYTE* hud, const GameState* game, ULONG highScore, UB
 			drawTextCentered(hud, 52, entryText, HUD_COLOR_VALUE);
 		} else {
 			/* Overlay just cleared - restore what's normally there. */
-			drawTextStyled(hud, 36, 36, "SPEED", FONT_STYLE_CPC_HUD);
-			drawTextStyled(hud, 144, 36, "FUEL", FONT_STYLE_CPC_HUD);
-			if (game->gameMode == GAME_MODE_ENHANCED)
-				drawTextStyled(hud, 240, 36, "RADAR", FONT_STYLE_CPC_HUD);
-			drawHudGaugeBar(hud, 8, 50, 96, 10, HUD_COLOR_VALUE, game->speedLevel, GAME_SPEED_LEVEL_MAX);
-			drawHudGaugeBar(hud, 112, 50, 96, 10, fuelColor, game->fuel, 999);
-			if (game->gameMode == GAME_MODE_ENHANCED)
-				drawHudGaugeBar(hud, 216, 50, 96, 10, radarColor,
-					game->radarDetection, RADAR_DETECTION_MAX);
+			drawHudCellGaugeFrame(hud, 8, 46, 8, 10);
+			drawTextStyled(hud, 80, 47, "SPEED", FONT_STYLE_CPC_HUD);
+			drawHudCellGaugeFrame(hud, 168, 46, 8, 10);
+			drawTextStyled(hud, 240, 47, "FUEL", FONT_STYLE_CPC_HUD);
+			drawHudCellGaugeDelta(hud, 8, 46, 8, 10, 0xff,
+				speedGaugeLevel, HUD_COLOR_VALUE, HUD_COLOR_VALUE);
+			drawHudCellGaugeDelta(hud, 168, 46, 8, 10, 0xff,
+				fuelLevel, fuelColor, fuelColor);
 		}
 	}
 
@@ -6913,14 +7053,19 @@ static void drawHudValues(UBYTE* hud, const GameState* game, ULONG highScore, UB
 	state->score = game->score;
 	state->highScore = highScore;
 	state->armour = game->armour;
+	state->armourLevel = armourLevel;
 	state->armourColor = armourColor;
 	state->speedLevel = game->speedLevel;
+	state->speedGaugeLevel = speedGaugeLevel;
 	state->fuel = game->fuel;
+	state->fuelLevel = fuelLevel;
 	state->fuelColor = fuelColor;
 	state->rockets = game->rockets;
+	state->rocketsLevel = rocketsLevel;
 	state->bombs = game->bombs;
-	state->radarDetection = game->radarDetection;
-	state->radarColor = radarColor;
+	state->bombsLevel = bombsLevel;
+	state->radarIndicatorVisual = radarIndicatorVisual;
+	state->ejectIndicatorVisual = ejectIndicatorVisual;
 	state->lives = game->lives;
 	state->livesColor = livesColor;
 	state->skillLevel = game->skillLevel;
@@ -10248,9 +10393,51 @@ static void resetDestroyedTargets(void) {
 	destroyedTargetCount = 0;
 }
 
+/* CPC's tank is one logical target drawn as two consecutive character
+ * columns (45=TANK_FRONT, 46=TANK_REAR). Keep one destruction key on the
+ * front column. The old per-column bookkeeping made a hit on either half
+ * remove only that tile, leaving the familiar "half tank" behind. */
+static LONG groundTargetAnchorColumn(LONG worldColumn) {
+	const LevelSegmentDef* segment;
+	LONG localColumn;
+
+	if (worldColumn < 0)
+		return worldColumn;
+	segment = levelSegmentForWorldColumn(worldColumn);
+	if (!segment || segment->terrainKind != HAR_TERRAIN_CPC_RANDOM_LAND)
+		return worldColumn;
+	localColumn = worldColumn - segment->startColumn;
+	if (localColumn <= 0 || localColumn >= cpcLandProceduralLength)
+		return worldColumn;
+	if (cpcLandProceduralTarget((UWORD)localColumn) ==
+		CPC_LAND_TARGET_TANK_REAR &&
+		cpcLandProceduralTarget((UWORD)(localColumn - 1)) ==
+		CPC_LAND_TARGET_TANK_FRONT)
+		return worldColumn - 1;
+	return worldColumn;
+}
+
+static UBYTE groundTargetIsTwoColumnTank(LONG anchorColumn) {
+	const LevelSegmentDef* segment;
+	LONG localColumn;
+
+	if (anchorColumn < 0)
+		return 0;
+	segment = levelSegmentForWorldColumn(anchorColumn);
+	if (!segment || segment->terrainKind != HAR_TERRAIN_CPC_RANDOM_LAND)
+		return 0;
+	localColumn = anchorColumn - segment->startColumn;
+	return localColumn >= 0 && localColumn + 1 < cpcLandProceduralLength &&
+		cpcLandProceduralTarget((UWORD)localColumn) ==
+			CPC_LAND_TARGET_TANK_FRONT &&
+		cpcLandProceduralTarget((UWORD)(localColumn + 1)) ==
+			CPC_LAND_TARGET_TANK_REAR;
+}
+
 static UBYTE isTargetDestroyedAtColumn(LONG worldColumn) {
 	if (worldColumn < 0)
 		return 0;
+	worldColumn = groundTargetAnchorColumn(worldColumn);
 	for (UBYTE index = 0; index < destroyedTargetCount; index++) {
 		if (destroyedTargetColumns[index] == (UWORD)worldColumn)
 			return 1;
@@ -10259,6 +10446,7 @@ static UBYTE isTargetDestroyedAtColumn(LONG worldColumn) {
 }
 
 static void markTargetDestroyedAtColumn(LONG worldColumn) {
+	worldColumn = groundTargetAnchorColumn(worldColumn);
 	if (worldColumn < 0 || isTargetDestroyedAtColumn(worldColumn))
 		return;
 	if (destroyedTargetCount >= GAME_DESTROYED_TARGET_MAX)
@@ -10398,7 +10586,7 @@ static UBYTE markShipWreckSmokeAtColumnRow(LONG worldColumn, WORD tileY, UBYTE t
 		return 0;
 	if (shipWreckSmokeTileAtColumnRow(worldColumn, tileY))
 		return 0;
-	if (shipWreckSmokeCount >= GAME_SHIP_WRECK_SMOKE_MAX)
+	if (shipWreckSmokeCount >= GAME_PERSISTENT_HIT_SMOKE_MAX)
 		return 0;
 	shipWreckSmokeColumns[shipWreckSmokeCount] = (UWORD)worldColumn;
 	shipWreckSmokeRows[shipWreckSmokeCount] = (UBYTE)tileY;
@@ -10924,6 +11112,8 @@ static void buildWorldTileColumn(LONG worldColumn, RenderColumn* outColumn) {
 	const LevelSegmentDef* segment = levelSegmentForWorldColumn(worldColumn);
 	UBYTE stage = stageForWorldColumn(worldColumn, segment);
 	UBYTE terrainKind = segment ? segment->terrainKind : terrainKindForStage(stage);
+	LONG townRadarLocalColumn = -1;
+	UBYTE townRadarTopRow = TOWN_RADAR_TOP_EMPTY;
 #if HAR_DEBUG_FORCE_STAGE >= 0
 	terrainKind = terrainKindForStage(stage);
 #endif
@@ -11019,6 +11209,7 @@ static void buildWorldTileColumn(LONG worldColumn, RenderColumn* outColumn) {
 	if (terrainKind == HAR_TERRAIN_TOWN && terrainY != 255) {
 		LONG localColumn = segment ? worldColumn - segment->startColumn : worldColumn;
 		if (localColumn >= 0 && localColumn < CPC_TOWN_PROCEDURAL_CAPACITY) {
+			townRadarLocalColumn = localColumn;
 			UBYTE blockId = cpcTownProceduralBlockId((UWORD)localColumn);
 			if (blockId != CPC_TOWN_BLOCK_NONE) {
 				UBYTE blockLocalColumn = cpcTownProceduralLocalColumn((UWORD)localColumn);
@@ -11036,10 +11227,19 @@ static void buildWorldTileColumn(LONG worldColumn, RenderColumn* outColumn) {
 						continue;
 					outColumn->tile[outY] = tileId;
 					claimed[outY] = 1;
+					if (townRadarTopRow == TOWN_RADAR_TOP_EMPTY ||
+						outY < townRadarTopRow)
+						townRadarTopRow = (UBYTE)outY;
 				}
 			}
 		}
 	}
+	/* World streaming already resolved every town tile in this column. Publish
+	 * the result for radar now, while it is free, instead of making the first
+	 * radar sample over each new building repeat up to 15 object queries in a
+	 * gameplay frame. A damaged column invalidates this entry explicitly. */
+	if (townRadarLocalColumn >= 0)
+		townRadarTopRowByColumn[townRadarLocalColumn] = townRadarTopRow;
 
 	/* Priority 5: procedural land target (CPC_RANDOM_LAND terrain). */
 	if (terrainKind == HAR_TERRAIN_CPC_RANDOM_LAND && terrainY != 255 && !isTargetDestroyedAtColumn(worldColumn)) {
@@ -11462,6 +11662,15 @@ static void serviceRingWorldStream(UBYTE* bitmap, const GameState* game) {
 
 static void dirtyRedrawWorldColumn(UBYTE** worldBuffers, LONG worldColumn) {
 	renderRingWorldColumn(worldBuffers[0], worldColumn);
+}
+
+/* Repaint the complete logical target. Single-column radar/launcher/gun
+ * still cost one column; only CPC's paired tank repaints its neighbour. */
+static void dirtyRedrawGroundTarget(UBYTE** worldBuffers, LONG worldColumn) {
+	LONG anchorColumn = groundTargetAnchorColumn(worldColumn);
+	dirtyRedrawWorldColumn(worldBuffers, anchorColumn);
+	if (groundTargetIsTwoColumnTank(anchorColumn))
+		dirtyRedrawWorldColumn(worldBuffers, anchorColumn + 1);
 }
 
 static void dirtyRedrawNativeCarrierAt(UBYTE** worldBuffers, LONG carrierColumn) {
@@ -12503,6 +12712,50 @@ static void eraseRocketPixelBobFootprint(UBYTE* bitmap, UBYTE bufferIndex,
 	}
 	footprint->valid = 0;
 	footprint->placementCount = 0;
+}
+
+/* The scrolling playfield is intentionally single-buffered. On a fast frame
+ * the late retained-BOB erase/draw group could still run just as the beam was
+ * scanning the projectile's rows; on a slower frame it ran after them. That
+ * timing-dependent half-old/half-new silhouette looked like horizontal
+ * vibration even though worldX advanced uniformly. If the beam has not yet
+ * passed every old/new rocket row, wait only to that row (never to the whole
+ * playfield) and then update memory for the following display frame. */
+static UWORD currentRasterY(void) {
+	return (UWORD)((*(volatile ULONG*)0xDFF004 >> 8) & 0x01ff);
+}
+
+static void waitUntilRocketRowsPassed(UBYTE bufferIndex,
+	const GameState* game) {
+	if (bufferIndex >= GAME_WORLD_BUFFER_COUNT)
+		return;
+	WORD lastScreenY = -1;
+	const RocketShotFootprint* footprints[3] = {
+		&rocketShotFootprints[bufferIndex],
+		&wingmanRocketFootprints[bufferIndex],
+		&enemyMissileFootprints[bufferIndex]
+	};
+	for (UBYTE index = 0; index < 3; index++) {
+		if (footprints[index]->valid && footprints[index]->y > lastScreenY)
+			lastScreenY = footprints[index]->y;
+	}
+	const WeaponState* weapons[3] = {
+		&game->rocketShot, &game->wingman.rocket, &game->enemyMissile
+	};
+	for (UBYTE index = 0; index < 3; index++) {
+		if (weapons[index]->active && weapons[index]->y > lastScreenY)
+			lastScreenY = weapons[index]->y;
+	}
+	if (lastScreenY < 0)
+		return;
+	UWORD targetRasterY = (UWORD)(SCREEN_DIWSTRT_Y + lastScreenY +
+		ROCKET_PIXEL_BOB_HEIGHT);
+	UWORD rasterY = currentRasterY();
+	if (rasterY <= targetRasterY) {
+		do {
+			rasterY = currentRasterY();
+		} while (rasterY <= targetRasterY);
+	}
 }
 
 /* A retained projectile normally gets erased immediately before all missiles
@@ -13800,15 +14053,17 @@ static void updateWingmanPlayer2Bomb(GameState* game, UBYTE scrollPixels,
 		wingmanBombFootprints);
 
 	if (cell.id == HAR_OBJ_GROUND_TARGET) {
+		LONG targetAnchorColumn = groundTargetAnchorColumn(worldColumn);
 		game->bonusScore += GROUND_TARGET_SCORE_VALUE;
 		game->hitsCount++;
 		updateHudValues(game);
-		markTargetDestroyedAtColumn(worldColumn);
+		markTargetDestroyedAtColumn(targetAnchorColumn);
 		if (game->targetLock.active &&
-			game->targetLock.worldX / GAME_TILE_WIDTH == worldColumn)
+			groundTargetAnchorColumn(game->targetLock.worldX /
+				GAME_TILE_WIDTH) == targetAnchorColumn)
 			clearTargetLockWithTelemetry(game, cell.id);
 		addCpcHitSmokeAtColumnRow(worldColumn, tileY);
-		dirtyRedrawWorldColumn(worldBuffers, worldColumn);
+		dirtyRedrawGroundTarget(worldBuffers, targetAnchorColumn);
 		*hudDirty = 1;
 	} else if (cell.id == HAR_OBJ_ENEMY_SHIP) {
 		UBYTE shipChanged = damageEnemyShipAtColumnRow(worldColumn, tileY);
@@ -14039,6 +14294,20 @@ static void moveGuidedMaverick(WeaponState* rocket, UBYTE lockStillActive) {
 	}
 }
 
+static UBYTE guidedMaverickReachedCapturedTarget(const WeaponState* rocket) {
+	LONG dx = rocket->targetWorldX - (rocket->worldX + 8);
+	WORD dy = (WORD)(rocket->targetY - (rocket->y + 4));
+	return dx >= -MAVERICK_GUIDED_SPEED_PIXELS &&
+		dx <= MAVERICK_GUIDED_SPEED_PIXELS &&
+		dy >= -MAVERICK_GUIDED_SPEED_PIXELS &&
+		dy <= MAVERICK_GUIDED_SPEED_PIXELS;
+}
+
+static UBYTE rocketHasLeftPlayfield(const WeaponState* rocket) {
+	return rocket->x < -16 || rocket->x >= SCREEN_WIDTH - 18 ||
+		rocket->y <= -WEAPON_SPRITE_HEIGHT || rocket->y >= HUD_TOP;
+}
+
 static UBYTE launchBomb(GameState* game) {
 	/* Match CPC checklaunchbomb: bombing is legal from the first airborne
 	 * frame, including while the start carrier is still beneath the Harrier.
@@ -14147,6 +14416,7 @@ static UBYTE updateWeapons(GameState* game, UBYTE scrollPixels, UBYTE** worldBuf
 		ObjectCell rocketCell;
 		LONG rocketWorldColumn = -1;
 		WORD rocketTileY = -1;
+		UBYTE maverickReachedMissingTarget = 0;
 		WORD rocketProbeX = (WORD)(game->rocketShot.x +
 			((game->rocketShot.type == ROCKET_SHOT_MAVERICK_GUIDED &&
 				(game->rocketShot.direction == MAVERICK_DIRECTION_LEFT ||
@@ -14167,14 +14437,7 @@ static UBYTE updateWeapons(GameState* game, UBYTE scrollPixels, UBYTE** worldBuf
 			 * clamps the final pixel step to an exact axis, while this one-step
 			 * proximity fuse maps entry into the locked CPC cell to the target
 			 * object before the BOB can visually pass through it. */
-			LONG targetDx = game->rocketShot.targetWorldX -
-				(game->rocketShot.worldX + 8);
-			WORD targetDy = (WORD)(game->rocketShot.targetY -
-				(game->rocketShot.y + 4));
-			if (targetDx >= -MAVERICK_GUIDED_SPEED_PIXELS &&
-				targetDx <= MAVERICK_GUIDED_SPEED_PIXELS &&
-				targetDy >= -MAVERICK_GUIDED_SPEED_PIXELS &&
-				targetDy <= MAVERICK_GUIDED_SPEED_PIXELS) {
+			if (guidedMaverickReachedCapturedTarget(&game->rocketShot)) {
 				rocketWorldColumn = game->rocketShot.targetWorldX >>
 					3;
 				rocketTileY = game->rocketShot.targetY >> 3;
@@ -14187,6 +14450,7 @@ static UBYTE updateWeapons(GameState* game, UBYTE scrollPixels, UBYTE** worldBuf
 					 rocketCell.id == HAR_OBJ_OWN_FRIGATE ||
 					 rocketCell.id == HAR_OBJ_TOWN_BLOCK ||
 					 rocketCell.id == HAR_OBJ_LAND);
+				maverickReachedMissingTarget = !rocketHitObject;
 			}
 		}
 		if (rocketHitObject) {
@@ -14206,7 +14470,7 @@ static UBYTE updateWeapons(GameState* game, UBYTE scrollPixels, UBYTE** worldBuf
 				 * HAR_OBJ_GROUND_TARGET at tileY==terrainY-1). */
 				markTargetDestroyedAtColumn(rocketWorldColumn);
 				addCpcHitSmokeAtColumnRow(rocketWorldColumn, rocketTileY);
-				dirtyRedrawWorldColumn(worldBuffers, rocketWorldColumn);
+				dirtyRedrawGroundTarget(worldBuffers, rocketWorldColumn);
 			}
 			if (rocketCell.id == HAR_OBJ_ENEMY_SHIP) {
 				UBYTE shipChanged = damageEnemyShipAtColumnRow(rocketWorldColumn, rocketTileY);
@@ -14261,16 +14525,26 @@ static UBYTE updateWeapons(GameState* game, UBYTE scrollPixels, UBYTE** worldBuf
 				game->rocketShot.active = 0;
 			}
 			clearTargetLockWithTelemetry(game, rocketCell.id);
+		} else if (maverickReachedMissingTarget) {
+			/* A bomb, Wingman or a previous world mutation can remove the
+			 * captured CPC cell while this missile is already in flight. The old
+			 * code then kept the last direction forever; a vertical direction
+			 * left an invisible active missile outside the playfield and blocked
+			 * every later launch. Arriving at a now-empty captured cell consumes
+			 * the Maverick silently, just as an already-resolved target should. */
+			game->rocketShot.active = 0;
+			clearTargetLockWithTelemetry(game, 0);
 		} else if (game->rocketShot.type == ROCKET_SHOT_STANDARD &&
 			game->rocketShot.guidanceDistance >=
 				standardRocketRangePixels(game)) {
 			/* CPC checkplayermissilemove retires the ordinary rocket when its
 			 * character-range counter reaches the menu value. No impact occurs. */
 			game->rocketShot.active = 0;
-		} else if (game->rocketShot.x >= SCREEN_WIDTH - 18) {
-			startImpact(game, (WORD)(SCREEN_WIDTH - 28), game->rocketShot.y);
-			game->rocketShot.active = 0;
-		} else if (game->rocketShot.x < -16) {
+		} else if (rocketHasLeftPlayfield(&game->rocketShot)) {
+			if (game->rocketShot.x >= SCREEN_WIDTH - 18 &&
+				game->rocketShot.y > -WEAPON_SPRITE_HEIGHT &&
+				game->rocketShot.y < HUD_TOP)
+				startImpact(game, (WORD)(SCREEN_WIDTH - 28), game->rocketShot.y);
 			game->rocketShot.active = 0;
 		}
 		changed = 1;
@@ -14316,12 +14590,15 @@ static UBYTE updateWeapons(GameState* game, UBYTE scrollPixels, UBYTE** worldBuf
 			}
 			if (bombCell.id == HAR_OBJ_GROUND_TARGET) {
 				/* See the matching rocket branch above. */
-				markTargetDestroyedAtColumn(bombWorldColumn);
+				LONG targetAnchorColumn =
+					groundTargetAnchorColumn(bombWorldColumn);
+				markTargetDestroyedAtColumn(targetAnchorColumn);
 				if (game->targetLock.active &&
-					game->targetLock.worldX / GAME_TILE_WIDTH == bombWorldColumn)
+					groundTargetAnchorColumn(game->targetLock.worldX /
+						GAME_TILE_WIDTH) == targetAnchorColumn)
 					clearTargetLockWithTelemetry(game, bombCell.id);
 				addCpcHitSmokeAtColumnRow(bombWorldColumn, bombTileY);
-				dirtyRedrawWorldColumn(worldBuffers, bombWorldColumn);
+				dirtyRedrawGroundTarget(worldBuffers, targetAnchorColumn);
 			}
 			if (bombCell.id == HAR_OBJ_ENEMY_SHIP) {
 				UBYTE shipChanged = damageEnemyShipAtColumnRow(bombWorldColumn, bombTileY);
@@ -14718,7 +14995,11 @@ static void updateTargetLock(GameState* game) {
 		return;
 
 	UBYTE target = cpcLandProceduralTarget((UWORD)localColumn);
-	if (target == CPC_LAND_TARGET_NONE)
+	/* insertenemylandtile updates CPC's lock once at the tank's front. The
+	 * following TANK_REAR column is only drawspriteblock3 continuation and
+	 * must not replace that lock with a second logical target. */
+	if (target == CPC_LAND_TARGET_NONE ||
+		target == CPC_LAND_TARGET_TANK_REAR)
 		return;
 
 	UBYTE terrainY = terrainYForWorldColumn((LONG)checkColumn, segment, terrainKind);
@@ -15180,8 +15461,12 @@ static UBYTE powerupHitsSolidWorld(const GameState* game, const PowerupState* p)
 
 static UBYTE powerupHitsPlayer(const GameState* game, const PowerupState* p) {
 	WORD screenX = (WORD)(p->worldX - (LONG)game->scrollX);
-	WORD collisionY = p->logicalY;
-	if (rectsOverlap(screenX, collisionY, POWERUP_COLLISION_WIDTH,
+	/* Collection follows the visible, smoothly interpolated 16x8 Bob. Keep
+	 * POWERUP_COLLISION_WIDTH/logicalY for CPC-style world and projectile
+	 * interactions; using those here left the right-hand half (where the
+	 * Harrier's nose commonly touches) unable to collect the visible drop. */
+	WORD collisionY = p->y;
+	if (rectsOverlap(screenX, collisionY, POWERUP_SPRITE_WIDTH,
 		POWERUP_SPRITE_HEIGHT, game->playerX, game->playerY,
 		PLAYER_SPRITE_WIDTH, PLAYER_SPRITE_HEIGHT))
 		return 1;
@@ -15192,7 +15477,7 @@ static UBYTE powerupHitsPlayer(const GameState* game, const PowerupState* p) {
 	if (game->gameMode == GAME_MODE_ENHANCED &&
 		game->wingmanControl == WINGMAN_CONTROL_PLAYER2 &&
 		game->wingman.active && !game->wingman.destroyed)
-		return rectsOverlap(screenX, collisionY, POWERUP_COLLISION_WIDTH,
+		return rectsOverlap(screenX, collisionY, POWERUP_SPRITE_WIDTH,
 			POWERUP_SPRITE_HEIGHT, wingmanScreenX(game),
 			game->wingman.screenY, PLAYER_SPRITE_WIDTH,
 			PLAYER_SPRITE_HEIGHT);
@@ -15497,7 +15782,8 @@ static void updateRadarDetection(GameState* game, UBYTE eligible) {
 		clearance = 255;
 	/* Start from CPC's (3+skill) top-edge boundary, account for the one-row
 	 * aircraft body, then apply Enhanced's small extra low-flight demand.
-	 * The five belly-clearance limits are now 20/28/36/44/52 pixels. */
+	 * enhancedRadarClearanceThreshold() is the single source of truth for the
+	 * five difficulty-dependent belly clearances. */
 	UBYTE threshold = enhancedRadarClearanceThreshold(game);
 	game->radarClearance = (UBYTE)clearance;
 	game->radarThreshold = threshold;
@@ -15564,37 +15850,45 @@ static void updateRadarDetection(GameState* game, UBYTE eligible) {
 	if (telemetryEnabled)
 		telemetryRadarLevel = game->radarDetection;
 
-	/* Sound only while crossing 70/75/.../100 percent upwards. Holding a
-	 * high radar level is silent; falling through a boundary is also silent. */
-	if (!eligible || game->radarDetection <= previousDetection ||
-		game->radarDetection < RADAR_DETECTION_ALARM_START)
-		return;
-	UWORD previousStep = previousDetection / 50;
-	UWORD currentStep = game->radarDetection / 50;
-	UWORD crossedLevel;
-	if (previousDetection < RADAR_DETECTION_ALARM_START) {
-		crossedLevel = RADAR_DETECTION_ALARM_START;
-	} else if (currentStep > previousStep) {
-		crossedLevel = (UWORD)(currentStep * 50);
-		if (crossedLevel > RADAR_DETECTION_MAX)
-			crossedLevel = RADAR_DETECTION_MAX;
-	} else {
+	/* LED warning contract: one caution pip on the upward 60% crossing;
+	 * periodic background pips while red (80..99%); one distinct, highest
+	 * pitched tone on the 100% crossing. Falling crossings stay silent. */
+	if (!eligible) {
+		game->radarAlarmTickCountdown = 0;
 		return;
 	}
-	UWORD alarmRange = RADAR_DETECTION_MAX - RADAR_DETECTION_ALARM_START;
-	UWORD alarmLevel = crossedLevel - RADAR_DETECTION_ALARM_START;
-	UWORD volume = (UWORD)(RADAR_ALARM_MIN_VOLUME +
-		((ULONG)alarmLevel * (RADAR_ALARM_MAX_VOLUME -
-		RADAR_ALARM_MIN_VOLUME)) / alarmRange);
-	UWORD period = (UWORD)(RADAR_ALARM_LOW_PERIOD -
-		((ULONG)alarmLevel * (RADAR_ALARM_LOW_PERIOD -
-		RADAR_ALARM_HIGH_PERIOD)) / alarmRange);
-	playSfxAtTuned(SFX_RADAR_ALARM, SFX_POSITION_CENTER, volume,
-		period);
-	if (telemetryEnabled && telemetryRadarAlarmPulses < 0xffff)
-		telemetryRadarAlarmPulses++;
-	if (telemetryEnabled)
-		telemetryRadarLevel = game->radarDetection;
+	if (game->radarDetection >= RADAR_DETECTION_MAX) {
+		game->radarAlarmTickCountdown = 0;
+		if (previousDetection < RADAR_DETECTION_MAX) {
+			playSfxAtTuned(SFX_RADAR_ALARM, SFX_POSITION_CENTER,
+				RADAR_ALARM_MAX_VOLUME, RADAR_ALARM_HIGH_PERIOD);
+			if (telemetryEnabled && telemetryRadarAlarmPulses < 0xffff)
+				telemetryRadarAlarmPulses++;
+		}
+		return;
+	}
+	if (game->radarDetection >= RADAR_DETECTION_WARNING_START) {
+		if (previousDetection < RADAR_DETECTION_WARNING_START ||
+			game->radarAlarmTickCountdown == 0) {
+			playSfxAtTuned(SFX_RADAR_ALARM, SFX_POSITION_CENTER,
+				(UBYTE)((RADAR_ALARM_MIN_VOLUME + RADAR_ALARM_MAX_VOLUME) / 2),
+				(UBYTE)((RADAR_ALARM_LOW_PERIOD + RADAR_ALARM_HIGH_PERIOD) / 2));
+			game->radarAlarmTickCountdown = RADAR_WARNING_PULSE_INTERVAL_TICKS;
+			if (telemetryEnabled && telemetryRadarAlarmPulses < 0xffff)
+				telemetryRadarAlarmPulses++;
+		} else {
+			game->radarAlarmTickCountdown--;
+		}
+		return;
+	}
+	game->radarAlarmTickCountdown = 0;
+	if (previousDetection < RADAR_DETECTION_CAUTION_START &&
+		game->radarDetection >= RADAR_DETECTION_CAUTION_START) {
+		playSfxAtTuned(SFX_RADAR_ALARM, SFX_POSITION_CENTER,
+			RADAR_ALARM_MIN_VOLUME, RADAR_ALARM_LOW_PERIOD);
+		if (telemetryEnabled && telemetryRadarAlarmPulses < 0xffff)
+			telemetryRadarAlarmPulses++;
+	}
 }
 
 static void launchEnemyMissile(GameState* game);
@@ -15627,6 +15921,7 @@ static UBYTE spawnEnemyPlane(GameState* game, UWORD decisionColumn) {
 	game->enemyPlaneLogicPhase =
 		(UBYTE)(GAME_TILE_WIDTH - HAR_ENEMY_PLANE_INTERPOLATION_PIXELS);
 	game->radarDetection = 0;
+	game->radarAlarmTickCountdown = 0;
 	/* CPC chooses once when the plane approaches and keeps that identity
 	 * until its missile is gone. Only an airborne Wingman is eligible. */
 	game->enemyMissileTarget = ENEMY_TARGET_PLAYER;
@@ -16381,7 +16676,7 @@ static void updateWingmanBombingRun(GameState* game, UBYTE scrollPixels,
 			wingmanBombFootprints);
 		markTargetDestroyedAtColumn(targetColumn);
 		addCpcHitSmokeAtColumnRow(targetColumn, targetRow);
-		dirtyRedrawWorldColumn(worldBuffers, targetColumn);
+		dirtyRedrawGroundTarget(worldBuffers, targetColumn);
 		clearTargetLockWithTelemetry(game, HAR_OBJ_GROUND_TARGET);
 		game->bonusScore += GROUND_TARGET_SCORE_VALUE;
 		game->hitsCount++;
@@ -16961,6 +17256,7 @@ static void writeClassicContractResult(const char* result) {
 static int runClassicGameplayContractTest(void) {
 	GameState classic;
 	GameState enhanced;
+	GameState highScoreTest;
 	GameState bombTest;
 	GameState wingmanBombTest;
 	GameState townCollisionTest;
@@ -16969,9 +17265,11 @@ static int runClassicGameplayContractTest(void) {
 	UWORD bombMomentumFrames = 0;
 	UWORD bombDescentFrames = 0;
 	UWORD townSmokeCellsTested = 0;
+	UWORD tankPairsTested = 0;
 	UWORD failures = 0;
 	memset(&classic, 0, sizeof(classic));
 	memset(&enhanced, 0, sizeof(enhanced));
+	memset(&highScoreTest, 0, sizeof(highScoreTest));
 	memset(&bombTest, 0, sizeof(bombTest));
 	memset(&wingmanBombTest, 0, sizeof(wingmanBombTest));
 	memset(&townCollisionTest, 0, sizeof(townCollisionTest));
@@ -16985,12 +17283,71 @@ static int runClassicGameplayContractTest(void) {
 		failures++; \
 	} \
 } while (0)
+	/* Regression: animated crashes enter Game Over from a branch that is no
+	 * longer executing the live-game tail. The common Game Over handler must
+	 * still open the name editor. CPC accepts a score equal to the last table
+	 * row and rejects only values below it. */
+	resetHighScoreTableToDefaults();
+	{
+		ULONG testHighScore = 100;
+		highScoreTest.gameOver = 1;
+		highScoreTest.score = 99;
+		CONTRACT_CHECK(!ensureHighScoreNameEntryAtGameOver(&testHighScore,
+			&highScoreTest, 0) && highScoreTest.highScoreCommitted &&
+			!highScoreTest.highScoreNameEntryActive,
+			"Sub-table score skips high-score editor once");
+		memset(&highScoreTest, 0, sizeof(highScoreTest));
+		highScoreTest.gameOver = 1;
+		highScoreTest.score = 100;
+		CONTRACT_CHECK(ensureHighScoreNameEntryAtGameOver(&testHighScore,
+			&highScoreTest, 0) && highScoreTest.highScoreNameEntryActive,
+			"Equal CPC score opens high-score editor");
+		CONTRACT_CHECK(!ensureHighScoreNameEntryAtGameOver(&testHighScore,
+			&highScoreTest, 0), "High-score editor opens only once");
+		memset(&highScoreTest, 0, sizeof(highScoreTest));
+		highScoreTest.gameOver = 1;
+		highScoreTest.score = 101;
+		CONTRACT_CHECK(ensureHighScoreNameEntryAtGameOver(&testHighScore,
+			&highScoreTest, 0) && highScoreTest.highScoreNameEntryActive,
+			"Animated Game Over opens qualifying high-score editor");
+		memset(&highScoreTest, 0, sizeof(highScoreTest));
+		highScoreTest.gameOver = 1;
+		highScoreTest.score = 101;
+		CONTRACT_CHECK(!ensureHighScoreNameEntryAtGameOver(&testHighScore,
+			&highScoreTest, 1) && !highScoreTest.highScoreNameEntryActive,
+			"Attract demo never enters high-score table");
+	}
 	CONTRACT_CHECK(deriveWorldSeed(0x37A2, 1) == 0x07A4,
 		"World seed derivation is stable");
 	CONTRACT_CHECK(deriveWorldSeed(0x37A2, 1) !=
 		deriveWorldSeed(0x37A2, 2), "Mission changes derived world seed");
 	CONTRACT_CHECK(deriveWorldSeed(0, 1) != 0,
 		"Zero campaign seed resolves safely");
+	/* Regression for the half-tank bug: CPC tile 45/46 is one logical
+	 * target. The rear must be generated next to the front at the same row,
+	 * and destroying either half must consume just one destruction slot while
+	 * hiding both columns. */
+	resetCpcRandomSequence(0x37A2);
+	resetDestroyedTargets();
+	for (UWORD index = 0; index + 1 < cpcLandProceduralLength; index++) {
+		if (cpcLandProceduralTarget(index) != CPC_LAND_TARGET_TANK_FRONT)
+			continue;
+		LONG frontColumn = CPC_LAND_PROCEDURAL_WORLD_START + index;
+		CONTRACT_CHECK(cpcLandProceduralTarget(index + 1) ==
+			CPC_LAND_TARGET_TANK_REAR, "Tank front is followed by rear");
+		CONTRACT_CHECK(cpcLandProceduralProfile(index) ==
+			cpcLandProceduralProfile(index + 1), "Tank halves share terrain row");
+		CONTRACT_CHECK(groundTargetAnchorColumn(frontColumn + 1) ==
+			frontColumn, "Tank rear resolves to front anchor");
+		markTargetDestroyedAtColumn(frontColumn + 1);
+		CONTRACT_CHECK(isTargetDestroyedAtColumn(frontColumn) &&
+			isTargetDestroyedAtColumn(frontColumn + 1) &&
+			destroyedTargetCount == 1,
+			"One hit destroys both tank halves atomically");
+		resetDestroyedTargets();
+		tankPairsTested++;
+	}
+	CONTRACT_CHECK(tankPairsTested > 0, "Fixed test seed generates tank pair");
 	CONTRACT_CHECK(attractDemoWatchdogAction(
 		ATTRACT_DEMO_WATCHDOG_CRASH_FRAMES - 1, 0) ==
 		ATTRACT_DEMO_WATCHDOG_NONE, "Attract watchdog waits before crash");
@@ -17175,6 +17532,19 @@ static int runClassicGameplayContractTest(void) {
 	moveGuidedMaverick(&maverickTest, 0);
 	CONTRACT_CHECK(maverickTest.worldX == 99 && maverickTest.y == 38,
 		"CPC Maverick retains direction after lock loss");
+	maverickTest.worldX = 100;
+	maverickTest.y = 40;
+	maverickTest.targetWorldX = 108;
+	maverickTest.targetY = 44;
+	CONTRACT_CHECK(guidedMaverickReachedCapturedTarget(&maverickTest),
+		"Maverick recognizes arrival at an already-resolved target");
+	maverickTest.x = 120;
+	maverickTest.y = (WORD)-WEAPON_SPRITE_HEIGHT;
+	CONTRACT_CHECK(rocketHasLeftPlayfield(&maverickTest),
+		"Maverick retires after leaving the playfield vertically");
+	maverickTest.y = 40;
+	CONTRACT_CHECK(!rocketHasLeftPlayfield(&maverickTest),
+		"Visible Maverick remains active inside the playfield");
 
 	/* Source-derived CPC bomb contract: four downward momentum rows keep
 	 * screen X fixed against scrolling; subsequent descent keeps world X
@@ -17338,10 +17708,28 @@ static int runClassicGameplayContractTest(void) {
 			break;
 		}
 	}
-	CONTRACT_CHECK(townSmokeCellsTested > GAME_SHIP_WRECK_SMOKE_MAX,
+	CONTRACT_CHECK(townSmokeCellsTested > 24,
 		"Town smoke capacity exceeds old 24-cell list");
 	CONTRACT_CHECK(shipWreckSmokeCount == 0,
 		"Town smoke does not consume ship smoke list");
+
+	/* Regression: ordinary targets and ship cells still use the sparse
+	 * persistent-hit list.  More than twelve two-tile hits must remain
+	 * representable; the old 24-entry capacity failed exactly here. */
+	resetDestroyedShipColumns();
+	for (UWORD hit = 0; hit < 32; hit++) {
+		LONG column = (LONG)(120 + hit);
+		CONTRACT_CHECK(markShipWreckSmokeAtColumnRow(column, 10,
+			GAME_SHIP_WRECK_SMOKE_TILE_B),
+			"Persistent target impact smoke accepts Smoke 2");
+		CONTRACT_CHECK(markShipWreckSmokeAtColumnRow(column, 9,
+			GAME_SHIP_WRECK_SMOKE_TILE_A),
+			"Persistent target impact smoke accepts Smoke 1");
+	}
+	CONTRACT_CHECK(shipWreckSmokeCount == 64 &&
+		shipWreckSmokeTileAtColumnRow(151, 10) ==
+			GAME_SHIP_WRECK_SMOKE_TILE_B,
+		"Persistent target smoke exceeds old 24-cell capacity");
 
 	if (failures) {
 		KPrintF("CLASSIC CONTRACT: %ld failure(s)\n", (LONG)failures);
@@ -19747,12 +20135,13 @@ int main(void) {
 			maybeStartWingmanBombingRun(&game);
 			updatePowerup(&game);
 				{
-					UWORD radarBeforeEnemyUpdate = game.radarDetection;
+					UBYTE radarVisualBeforeEnemyUpdate =
+						radarHudLampVisualForGame(&game);
 					if (updateEnemyPlane(&game))
-					pendingEnemySpriteUpdate = 1;
+						pendingEnemySpriteUpdate = 1;
 					if (game.gameMode == GAME_MODE_ENHANCED &&
-						radarHudVisualChanged(radarBeforeEnemyUpdate,
-							game.radarDetection))
+						radarVisualBeforeEnemyUpdate !=
+							radarHudLampVisualForGame(&game))
 						hudDirty = 1;
 				}
 			/* Enhanced resolves a radar-qualified aircraft before either drop
@@ -19817,9 +20206,8 @@ int main(void) {
 					game.aircraftFailureState == AIRCRAFT_FAILURE_NONE)
 					startAircraftFailure(&game, AIRCRAFT_FAILURE_CAUSE_FUEL);
 				if (game.gameOver) {
-					if (!attractDemo.active && !game.highScoreCommitted &&
-						!game.highScoreNameEntryActive) {
-						beginHighScoreNameEntry(&highScore, &game);
+					if (ensureHighScoreNameEntryAtGameOver(&highScore, &game,
+						attractDemo.active)) {
 						hudDirty = 1;
 					}
 					pendingCrashSpriteUpdate = 1;
@@ -19834,6 +20222,13 @@ int main(void) {
 				}
 				}
 			} else {
+				/* Crash/eject animation paths can set gameOver in a sibling branch
+				 * after the live-game tail above has already been skipped. This is
+				 * the authoritative fallback and makes qualification independent of
+				 * which terminal animation ended the run. */
+				if (ensureHighScoreNameEntryAtGameOver(&highScore, &game,
+					attractDemo.active))
+					drawHudValues(hudBuffer, &game, highScore, 0);
 				if (game.highScoreNameEntryActive) {
 					UBYTE nameEntryUpdate = updateHighScoreNameEntry(
 						&highScore, &game, &input, &previousInput);
@@ -19948,7 +20343,10 @@ int main(void) {
 				wingmanBombFootprints, game.scrollX);
 			/* Keep the single-buffer erase interval extremely short. All three
 			 * old missile footprints are removed together immediately before the
-			 * new silhouettes are composited, preserving correct overlap order. */
+			 * new silhouettes are composited, preserving correct overlap order.
+			 * Synchronise only when the raster has not passed these exact rows yet;
+			 * this prevents partial old/new rockets without a full-frame wait. */
+			waitUntilRocketRowsPassed(activeWorldBuffer, &game);
 			eraseRocketPixelBobFootprint(worldBuffers[activeWorldBuffer],
 				activeWorldBuffer, rocketShotFootprints);
 			eraseRocketPixelBobFootprint(worldBuffers[activeWorldBuffer],
