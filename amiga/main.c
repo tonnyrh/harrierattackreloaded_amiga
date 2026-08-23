@@ -14,7 +14,7 @@
 #include <stddef.h>
 #include <string.h>
 #include "assets/harrier_menu_text.h"
-#define HAR_BUILD_LABEL "SPRINT 15.95.7"
+#define HAR_BUILD_LABEL "SPRINT 15.96.0"
 
 #define SCREEN_WIDTH 320
 #define LOADING_SCREEN_WIDTH 320
@@ -559,6 +559,15 @@
 #define POWERUP_DESPAWN_LEFT_X (-16)
 #define POWERUP_ALTITUDE_FLOOR_BASE 11
 #define POWERUP_SPAWN_ROLL_MASK 0x0f
+/* Enhanced deliberately spaces pickups a little farther apart than CPC
+ * Classic: of the eight R states which pass the low-nibble gate, reject two.
+ * This is exactly 25 percent fewer admissions without adding frame timing or
+ * another RNG stream. */
+#define POWERUP_ENHANCED_REJECT_MASK 0x30
+#define POWERUP_ENHANCED_REJECT_VALUE 0x30
+/* Losing Wingman must have a tactical cost.  Travel at least 64 newly
+ * admitted world columns before the red revive parachute becomes eligible. */
+#define POWERUP_WINGMAN_REVIVE_DELAY_COLUMNS 64
 #define POWERUP_PICKUP_SCORE_VALUE 0
 #define POWERUP_EXTRA_AIRCRAFT_SCORE 2000
 #define POWERUP_EXTRA_AIRCRAFT_SCROLL_X (LANDING_APPROACH_SCROLL_X - 320)
@@ -1379,6 +1388,7 @@ typedef struct GameState {
 	UWORD hitsCount;
 	TargetLock targetLock;
 	PowerupState powerup;
+	UWORD wingmanReviveDelayColumns;
 	UBYTE wingmanControl;
 	WingmanState wingman;
 } GameState;
@@ -4992,6 +5002,23 @@ static void buildGameHudCopper(USHORT* copper, const UBYTE* world, const UBYTE* 
 }
 
 static void fillScreen(UBYTE* bitmap, UBYTE color) {
+	UBYTE planeMask = (UBYTE)((1 << SCREEN_PLANES) - 1);
+	/* Every current full-screen page clear is black.  A solid zero/all-one
+	 * colour is contiguous across all interleaved planes, so clear eight rows
+	 * per call instead of making 5 * 256 tiny memset calls. Keep the existing
+	 * eight-row music cadence: faster menus must not starve the MOD player. */
+	if ((color & planeMask) == 0 || (color & planeMask) == planeMask) {
+		UBYTE fill = (color & planeMask) ? 0xff : 0x00;
+		short rowStride = SCREEN_PLANES * SCREEN_ROW_BYTES;
+		for (short y = 0; y < SCREEN_HEIGHT; y += 8) {
+			short rows = (short)(SCREEN_HEIGHT - y);
+			if (rows > 8)
+				rows = 8;
+			memset(bitmap + y * rowStride, fill, rows * rowStride);
+			serviceModMusicToCurrentVbl();
+		}
+		return;
+	}
 	for (int y = 0; y < SCREEN_HEIGHT; y++) {
 		UBYTE* row = bitmap + y * SCREEN_PLANES * SCREEN_ROW_BYTES;
 		for (int plane = 0; plane < SCREEN_PLANES; plane++)
@@ -5020,27 +5047,94 @@ static void putPixel(UBYTE* bitmap, short x, short y, UBYTE color) {
 	}
 }
 
-static void fillRect(UBYTE* bitmap, short x, short y, short width, short height, UBYTE color) {
-	if (width <= 0 || height <= 0)
-		return;
+/* Fill an arbitrary rectangle directly in interleaved planar bytes.  The old
+ * non-byte-aligned fallback called putPixel() once per pixel and repeated its
+ * clipping/address/plane work every time.  GAME OVER's three nested borders
+ * alone caused roughly 22,000 such calls on a stock 68000.  Only the first
+ * and last bytes need read/modify/write; complete bytes remain memset-fast.
+ *
+ * Keep all SCREEN_PLANES in sync even though the HUD Copper band displays
+ * four.  Several buffers are reused under a five-plane world display and
+ * leaving the spare plane stale has caused palette-looking corruption before. */
+static void fillPlanarRect(UBYTE* bitmap, short x, short y,
+	short width, short height, short surfaceWidth, short surfaceHeight,
+	short rowBytes, UBYTE color) {
+	LONG left = x;
+	LONG top = y;
+	LONG right = (LONG)x + width;
+	LONG bottom = (LONG)y + height;
 
-	if (((x | width) & 7) == 0) {
-		short byteX = x >> 3;
-		short byteWidth = width >> 3;
-		for (short py = 0; py < height; py++) {
-			UBYTE* row = bitmap + (y + py) * SCREEN_PLANES * SCREEN_ROW_BYTES + byteX;
+	if (width <= 0 || height <= 0 || right <= 0 || bottom <= 0 ||
+		left >= surfaceWidth || top >= surfaceHeight)
+		return;
+	if (left < 0)
+		left = 0;
+	if (top < 0)
+		top = 0;
+	if (right > surfaceWidth)
+		right = surfaceWidth;
+	if (bottom > surfaceHeight)
+		bottom = surfaceHeight;
+
+	short clippedWidth = (short)(right - left);
+	short clippedHeight = (short)(bottom - top);
+	short firstByte = (short)(left >> 3);
+	short lastByte = (short)((right - 1) >> 3);
+	UBYTE leftMask = (UBYTE)(0xff >> (left & 7));
+	UBYTE rightBits = (UBYTE)(right & 7);
+	UBYTE rightMask = rightBits ?
+		(UBYTE)(0xff << (8 - rightBits)) : 0xff;
+	short rowStride = (short)(SCREEN_PLANES * rowBytes);
+	UBYTE planeMask = (UBYTE)((1 << SCREEN_PLANES) - 1);
+
+	/* A full-width black/white band is one contiguous memory interval even in
+	 * the interleaved layout. This is the common HUD panel/overlay clear. */
+	if (left == 0 && clippedWidth == surfaceWidth &&
+		((color & planeMask) == 0 || (color & planeMask) == planeMask)) {
+		UBYTE fill = (color & planeMask) ? 0xff : 0x00;
+		memset(bitmap + top * rowStride, fill, clippedHeight * rowStride);
+		return;
+	}
+
+	/* Preserve the original all-byte fast path for the common full-panel and
+	 * tile-aligned clears. */
+	if (((left | clippedWidth) & 7) == 0) {
+		short byteWidth = clippedWidth >> 3;
+		for (short py = 0; py < clippedHeight; py++) {
+			UBYTE* row = bitmap + (top + py) * rowStride + firstByte;
 			for (short plane = 0; plane < SCREEN_PLANES; plane++) {
 				UBYTE fill = (color & (1 << plane)) ? 0xff : 0x00;
-				memset(row + plane * SCREEN_ROW_BYTES, fill, byteWidth);
+				memset(row + plane * rowBytes, fill, byteWidth);
 			}
 		}
 		return;
 	}
 
-	for (short py = 0; py < height; py++) {
-		for (short px = 0; px < width; px++)
-			putPixel(bitmap, x + px, y + py, color);
+	for (short py = 0; py < clippedHeight; py++) {
+		UBYTE* row = bitmap + (top + py) * rowStride;
+		for (short plane = 0; plane < SCREEN_PLANES; plane++) {
+			UBYTE* planeRow = row + plane * rowBytes;
+			UBYTE fill = (color & (1 << plane)) ? 0xff : 0x00;
+			if (firstByte == lastByte) {
+				UBYTE mask = (UBYTE)(leftMask & rightMask);
+				planeRow[firstByte] = (UBYTE)((planeRow[firstByte] &
+					(UBYTE)~mask) | (fill & mask));
+				continue;
+			}
+			planeRow[firstByte] = (UBYTE)((planeRow[firstByte] &
+				(UBYTE)~leftMask) | (fill & leftMask));
+			short middleBytes = (short)(lastByte - firstByte - 1);
+			if (middleBytes > 0)
+				memset(planeRow + firstByte + 1, fill, middleBytes);
+			planeRow[lastByte] = (UBYTE)((planeRow[lastByte] &
+				(UBYTE)~rightMask) | (fill & rightMask));
+		}
 	}
+}
+
+static void fillRect(UBYTE* bitmap, short x, short y, short width, short height, UBYTE color) {
+	fillPlanarRect(bitmap, x, y, width, height, SCREEN_WIDTH,
+		SCREEN_HEIGHT, SCREEN_ROW_BYTES, color);
 }
 
 static void putPixelScroll(UBYTE* bitmap, short x, short y, UBYTE color) {
@@ -5060,49 +5154,9 @@ static void putPixelScroll(UBYTE* bitmap, short x, short y, UBYTE color) {
 }
 
 static void fillRectScroll(UBYTE* bitmap, short x, short y, short width, short height, UBYTE color) {
-	if (width <= 0 || height <= 0)
-		return;
-
-	if (x < 0) {
-		width += x;
-		x = 0;
-	}
-	if (y < 0) {
-		height += y;
-		y = 0;
-	}
-	if (x + width > GAME_WORLD_BUFFER_WIDTH)
-		width = GAME_WORLD_BUFFER_WIDTH - x;
-	if (y + height > GAME_WORLD_HEIGHT)
-		height = GAME_WORLD_HEIGHT - y;
-	if (width <= 0 || height <= 0)
-		return;
-
-	if (((x | width) & 7) == 0) {
-		short byteX = x >> 3;
-		short byteWidth = width >> 3;
-		for (short py = 0; py < height; py++) {
-			UBYTE* row = bitmap + (y + py) * SCREEN_PLANES * GAME_WORLD_ROW_BYTES + byteX;
-			for (short plane = 0; plane < SCREEN_PLANES; plane++) {
-				UBYTE fill = (color & (1 << plane)) ? 0xff : 0x00;
-				memset(row + plane * GAME_WORLD_ROW_BYTES, fill, byteWidth);
-			}
-		}
-		return;
-	}
-
-	for (short py = 0; py < height; py++) {
-		for (short px = 0; px < width; px++)
-			putPixelScroll(bitmap, x + px, y + py, color);
-	}
-}
-
-static short glyphHasPixels(const UBYTE* glyph) {
-	for (short row = 0; row < FONT_HEIGHT; row++) {
-		if (glyph[row])
-			return 1;
-	}
-	return 0;
+	fillPlanarRect(bitmap, x, y, width, height,
+		GAME_WORLD_BUFFER_WIDTH, GAME_WORLD_HEIGHT,
+		GAME_WORLD_ROW_BYTES, color);
 }
 
 static const UBYTE* getMenuGlyph(char ch) {
@@ -5110,25 +5164,22 @@ static const UBYTE* getMenuGlyph(char ch) {
 	if (value >= 'a' && value <= 'z')
 		value -= ('a' - 'A');
 
-	/* Prefer the original CPC Mode 1 font exported as an 8x8 1bpp mask. */
+	/* font8x8.bin is a complete 32..126 export.  The old defensive scan read
+	 * all eight rows once merely to discover that every embedded glyph exists;
+	 * direct indexing matters now that the actual plot is byte-fast. */
 	if (value >= FONT_FIRST_CHAR && value < FONT_LAST_CHAR) {
-		const UBYTE* glyph = cpcFont8x8 + (value - FONT_FIRST_CHAR) * FONT_HEIGHT;
-		if (value == ' ' || glyphHasPixels(glyph))
-			return glyph;
+		return cpcFont8x8 + (value - FONT_FIRST_CHAR) * FONT_HEIGHT;
 	}
 
 	/* Keep the hand-authored font as a fallback for absent CPC glyphs. */
-	if (value >= 32 && value < 96) {
-		const UBYTE* glyph = &menuFont8x8[value - 32][0];
-		if (value == ' ' || glyphHasPixels(glyph))
-			return glyph;
-	}
+	if (value >= 32 && value < 96)
+		return &menuFont8x8[value - 32][0];
 
 	return &menuFont8x8[0][0];
 }
 
-static void drawChar(UBYTE* bitmap, short x, short y, char ch, UBYTE color) {
-	const UBYTE* glyph = getMenuGlyph(ch);
+static void drawGlyphPixelsClipped(UBYTE* bitmap, short x, short y,
+	const UBYTE* glyph, UBYTE color) {
 	for (short row = 0; row < FONT_HEIGHT; row++) {
 		UBYTE bits = glyph[row];
 		for (short col = 0; col < FONT_WIDTH; col++) {
@@ -5136,6 +5187,14 @@ static void drawChar(UBYTE* bitmap, short x, short y, char ch, UBYTE color) {
 				putPixel(bitmap, x + col, y + row, color);
 		}
 	}
+}
+
+static void drawGlyphPlanar(UBYTE* bitmap, short x, short y,
+	const UBYTE* glyph, short style, UBYTE plainColor);
+
+static void drawChar(UBYTE* bitmap, short x, short y, char ch, UBYTE color) {
+	const UBYTE* glyph = getMenuGlyph(ch);
+	drawGlyphPlanar(bitmap, x, y, glyph, 0, color);
 }
 
 typedef enum FontStyle {
@@ -5156,25 +5215,66 @@ static UBYTE cpcFontRowColor(FontStyle style, short row, UBYTE plainColor) {
 	return row < 2 ? CPC_FONT_HUD_TOP : (row < 5 ? CPC_FONT_HUD_MIDDLE : CPC_FONT_HUD_BOTTOM);
 }
 
-static void drawCharStyled(UBYTE* bitmap, short x, short y, char ch, FontStyle style, UBYTE plainColor) {
-	const UBYTE* glyph = getMenuGlyph(ch);
-	for (short row = 0; row < FONT_HEIGHT; row++) {
-		UBYTE bits = glyph[row];
-		UBYTE color = cpcFontRowColor(style, row, plainColor);
-		for (short col = 0; col < FONT_WIDTH; col++) {
-			if (bits & (0x80 >> col))
-				putPixel(bitmap, x + col, y + row, color);
+static void drawGlyphPlanar(UBYTE* bitmap, short x, short y,
+	const UBYTE* glyph, short style, UBYTE plainColor) {
+	/* Clipped text is rare (mostly a ticker entering/leaving the viewport).
+	 * Keep that edge path simple and byte-identical to the former renderer. */
+	if (x < 0 || x + FONT_WIDTH > SCREEN_WIDTH ||
+		y < 0 || y + FONT_HEIGHT > SCREEN_HEIGHT) {
+		if (style == FONT_STYLE_PLAIN) {
+			drawGlyphPixelsClipped(bitmap, x, y, glyph, plainColor);
+			return;
+		}
+		for (short row = 0; row < FONT_HEIGHT; row++) {
+			UBYTE bits = glyph[row];
+			UBYTE color = cpcFontRowColor(style, row, plainColor);
+			for (short col = 0; col < FONT_WIDTH; col++) {
+				if (bits & (0x80 >> col))
+					putPixel(bitmap, x + col, y + row, color);
+			}
+		}
+		return;
+	}
+
+	short byteX = x >> 3;
+	UBYTE shift = (UBYTE)(x & 7);
+	short rowStride = SCREEN_PLANES * SCREEN_ROW_BYTES;
+	for (short glyphRow = 0; glyphRow < FONT_HEIGHT; glyphRow++) {
+		UBYTE bits = glyph[glyphRow];
+		if (!bits)
+			continue;
+		UBYTE color = cpcFontRowColor(style, glyphRow, plainColor);
+		UBYTE leftMask = shift ? (UBYTE)(bits >> shift) : bits;
+		UBYTE rightMask = shift ? (UBYTE)(bits << (8 - shift)) : 0;
+		UBYTE* row = bitmap + (y + glyphRow) * rowStride + byteX;
+		for (short plane = 0; plane < SCREEN_PLANES; plane++) {
+			UBYTE* target = row + plane * SCREEN_ROW_BYTES;
+			if (color & (1 << plane)) {
+				target[0] |= leftMask;
+				if (rightMask)
+					target[1] |= rightMask;
+			} else {
+				target[0] &= (UBYTE)~leftMask;
+				if (rightMask)
+					target[1] &= (UBYTE)~rightMask;
+			}
 		}
 	}
 }
 
+static void drawCharStyled(UBYTE* bitmap, short x, short y, char ch, FontStyle style, UBYTE plainColor) {
+	const UBYTE* glyph = getMenuGlyph(ch);
+	drawGlyphPlanar(bitmap, x, y, glyph, style, plainColor);
+}
+
 static void drawText(UBYTE* bitmap, short x, short y, const char* text, UBYTE color) {
+	serviceModMusicToCurrentVbl();
 	while (*text) {
 		drawChar(bitmap, x, y, *text, color);
 		x += FONT_WIDTH;
 		text++;
-		serviceModMusicToCurrentVbl();
 	}
+	serviceModMusicToCurrentVbl();
 }
 
 /* Gameplay overlays do not need to service the menu MOD replayer. Keeping
@@ -5191,12 +5291,13 @@ static void drawTextWithoutMusicService(UBYTE* bitmap, short x, short y,
 }
 
 static void drawTextStyled(UBYTE* bitmap, short x, short y, const char* text, FontStyle style) {
+	serviceModMusicToCurrentVbl();
 	while (*text) {
 		drawCharStyled(bitmap, x, y, *text, style, 0);
 		x += FONT_WIDTH;
 		text++;
-		serviceModMusicToCurrentVbl();
 	}
+	serviceModMusicToCurrentVbl();
 }
 
 static void drawTextCentered(UBYTE* bitmap, short y, const char* text, UBYTE color) {
@@ -5353,22 +5454,53 @@ static void putMenuTickerPixel(UBYTE* bitmap, WORD x, WORD y,
 }
 
 static void drawMenuTickerText(UBYTE* bitmap, WORD x, const char* text) {
+	UBYTE glyphsUntilMusicService = 16;
+	serviceModMusicToCurrentVbl();
 	while (*text) {
 		const UBYTE* glyph = getMenuGlyph(*text++);
 		for (WORD row = 0; row < FONT_HEIGHT; row++) {
 			UBYTE bits = glyph[row];
+			if (!bits)
+				continue;
 			UBYTE color = cpcFontRowColor(FONT_STYLE_CPC_GREEN, row, 0);
-			for (WORD col = 0; col < FONT_WIDTH; col++) {
-				if (bits & (0x80 >> col))
-					putMenuTickerPixel(bitmap, x + col, row, color);
+			if (x >= 0 && x + FONT_WIDTH <= (WORD)MENU_TICKER_SOURCE_WIDTH) {
+				WORD byteX = x >> 3;
+				UBYTE shift = (UBYTE)(x & 7);
+				UBYTE leftMask = shift ? (UBYTE)(bits >> shift) : bits;
+				UBYTE rightMask = shift ?
+					(UBYTE)(bits << (8 - shift)) : 0;
+				UBYTE* targetRow = bitmap +
+					row * SCREEN_PLANES * MENU_TICKER_ROW_BYTES + byteX;
+				for (WORD plane = 0; plane < SCREEN_PLANES; plane++) {
+					UBYTE* target = targetRow + plane * MENU_TICKER_ROW_BYTES;
+					if (color & (1 << plane)) {
+						target[0] |= leftMask;
+						if (rightMask)
+							target[1] |= rightMask;
+					} else {
+						target[0] &= (UBYTE)~leftMask;
+						if (rightMask)
+							target[1] &= (UBYTE)~rightMask;
+					}
+				}
+			} else {
+				/* Defensive clipped path for future editable ticker changes. */
+				for (WORD col = 0; col < FONT_WIDTH; col++) {
+					if (bits & (0x80 >> col))
+						putMenuTickerPixel(bitmap, x + col, row, color);
+				}
 			}
 		}
 		x += FONT_WIDTH;
-		/* Long editable tickers take several PAL frames to rasterise on a
-		 * 68000.  Poll the MOD clock after every glyph so Paula never waits
-		 * for the complete off-screen string. */
-		serviceModMusicToCurrentVbl();
+		/* Keep menu music serviced during a long editable text, but the direct
+		 * byte renderer is cheap enough that a call for every glyph would now
+		 * cost more than useful raster work. */
+		if (--glyphsUntilMusicService == 0) {
+			serviceModMusicToCurrentVbl();
+			glyphsUntilMusicService = 16;
+		}
 	}
+	serviceModMusicToCurrentVbl();
 }
 
 static const char* fieldGuideTickerTextForMode(short gameMode) {
@@ -6191,6 +6323,7 @@ static void initGameState(GameState* game, UWORD campaignSeed,
 	resetDestroyedShipColumns();
 	resetLandCraters();
 	resetPowerup(game);
+	game->wingmanReviveDelayColumns = 0;
 	game->scrollX = 0;
 	game->playerX = PLAYER_START_X;
 	game->playerY = PLAYER_START_Y;
@@ -6790,11 +6923,11 @@ static void drawUnsignedPaddedDelta(UBYTE* hud, short x, short y, ULONG oldValue
 	for (UBYTE i = 0; i < digits; i++) {
 		if (oldText[i] != newText[i]) {
 			short cellX = (short)(x + i * FONT_WIDTH);
-			char ch[2];
-			ch[0] = newText[i];
-			ch[1] = 0;
 			fillRect(hud, cellX, y, FONT_WIDTH, FONT_HEIGHT, HUD_COLOR_BACKGROUND);
-			drawTextStyled(hud, cellX, y, ch, style);
+			/* Gameplay digits are already one-cell deltas. Avoid constructing a
+			 * temporary string and entering the menu-MOD service path for each
+			 * changed digit. */
+			drawCharStyled(hud, cellX, y, newText[i], style, 0);
 		}
 	}
 }
@@ -6867,6 +7000,25 @@ typedef struct HudRenderState {
 } HudRenderState;
 
 static HudRenderState hudRenderState[HUD_BUFFER_COUNT];
+
+/* The high-score panel itself is static while the player edits a name.  Keep
+ * the hot input path to the six glyph cells instead of invalidating and
+ * rebuilding the complete HUD for every keyboard/joystick edge. */
+static void drawHighScoreNameEditor(UBYTE* hud, const GameState* game) {
+	char entryText[7];
+	for (UBYTE i = 0; i < 6; i++) {
+		if (i < game->highScoreNameLength)
+			entryText[i] = game->highScoreName[i];
+		else if (i == game->highScoreNameLength &&
+			game->highScoreNameJoyChar)
+			entryText[i] = game->highScoreNameJoyChar;
+		else
+			entryText[i] = '_';
+	}
+	entryText[6] = 0;
+	fillRect(hud, 136, 52, 48, 8, HUD_COLOR_BACKGROUND);
+	drawText(hud, 136, 52, entryText, HUD_COLOR_VALUE);
+}
 
 static void drawHudValues(UBYTE* hud, const GameState* game, ULONG highScore, UBYTE hudBufferIndex) {
 	HudRenderState* state = &hudRenderState[hudBufferIndex];
@@ -7020,22 +7172,11 @@ static void drawHudValues(UBYTE* hud, const GameState* game, ULONG highScore, UB
 			fillRect(hud, 46, 35, 228, 28, HUD_COLOR_BACKGROUND);
 			drawTextCentered(hud, 45, "LANDED", HUD_COLOR_SAFE);
 		} else if (overlayMode == 3) {
-			char entryText[7];
-			for (UBYTE i = 0; i < 6; i++) {
-				if (i < game->highScoreNameLength)
-					entryText[i] = game->highScoreName[i];
-				else if (i == game->highScoreNameLength &&
-					game->highScoreNameJoyChar)
-					entryText[i] = game->highScoreNameJoyChar;
-				else
-					entryText[i] = '_';
-			}
-			entryText[6] = 0;
 			fillRect(hud, 42, 31, 236, 35, HUD_COLOR_SAFE);
 			fillRect(hud, 44, 33, 232, 32, HUD_COLOR_VALUE);
 			fillRect(hud, 46, 35, 228, 28, HUD_COLOR_BACKGROUND);
 			drawTextCentered(hud, 38, "HIGH SCORE", HUD_COLOR_SAFE);
-			drawTextCentered(hud, 52, entryText, HUD_COLOR_VALUE);
+			drawHighScoreNameEditor(hud, game);
 		} else {
 			/* Overlay just cleared - restore what's normally there. */
 			drawHudCellGaugeFrame(hud, 8, 46, 8, 10);
@@ -13505,6 +13646,7 @@ static void setWingmanDestroyedState(GameState* game, UBYTE** worldBuffers) {
 	wingman->active = 0;
 	wingman->destroyed = 1;
 	wingman->mode = WINGMAN_DESTROYED;
+	game->wingmanReviveDelayColumns = POWERUP_WINGMAN_REVIVE_DELAY_COLUMNS;
 	wingman->rocket.active = 0;
 	wingman->bomb.active = 0;
 	wingman->returningToFormation = 0;
@@ -15249,6 +15391,12 @@ static UBYTE nextPowerupTypeForSpawnId(UBYTE spawnId) {
 	}
 }
 
+static UBYTE enhancedPowerupRollPasses(UBYTE rState) {
+	return (rState & POWERUP_SPAWN_ROLL_MASK) == 0 &&
+		(rState & POWERUP_ENHANCED_REJECT_MASK) !=
+			POWERUP_ENHANCED_REJECT_VALUE;
+}
+
 static void trySpawnPowerup(GameState* game) {
 	PowerupState* p = &game->powerup;
 	/* Classic owns one ordered launchenemyplane decision in
@@ -15270,6 +15418,8 @@ static void trySpawnPowerup(GameState* game) {
 	if (checkColumn == p->lastSpawnCheckColumn)
 		return;
 	p->lastSpawnCheckColumn = checkColumn;
+	if (game->wingmanReviveDelayColumns > 0)
+		game->wingmanReviveDelayColumns--;
 
 	if (p->active)
 		return;
@@ -15285,7 +15435,9 @@ static void trySpawnPowerup(GameState* game) {
 	/* CPC: ld a,r; and #0f; ret nz. Use the modeled R value belonging to
 	 * this generated column rather than a frame counter. */
 	UBYTE rState = cpcRStateForWorldColumn(checkColumn);
-	if ((rState & POWERUP_SPAWN_ROLL_MASK) != 0)
+	/* Enhanced-only balance adjustment. Classic's ordered CPC admission path
+	 * in updateClassicAirAdmission() never calls this function. */
+	if (!enhancedPowerupRollPasses(rState))
 		return;
 
 	/* CPC's wingman-resurrection branch: if wingman was destroyed (status
@@ -15294,6 +15446,8 @@ static void trySpawnPowerup(GameState* game) {
 	 * not consume a spawnId slot, so the rotation resumes exactly where it
 	 * left off once the wingman is back. */
 	if (game->wingman.destroyed) {
+		if (game->wingmanReviveDelayColumns > 0)
+			return;
 		LONG spawnWorldColumn = checkColumn;
 		UBYTE startRow = (UBYTE)(cpcRandomStateForWorldColumn(spawnWorldColumn) & POWERUP_SPAWN_MAX_ROW);
 		telemetryLogGameEvent(TELEMETRY_GAME_EVENT_WING_POWERUP, 0,
@@ -15394,6 +15548,7 @@ static void activatePowerup(GameState* game, UBYTE type) {
 				WORD pickupScreenX = (WORD)(game->powerup.worldX - (LONG)game->scrollX);
 				wingman->active = 1;
 				wingman->destroyed = 0;
+				game->wingmanReviveDelayColumns = 0;
 				wingman->mode = (game->wingmanControl == WINGMAN_CONTROL_PLAYER2) ?
 					WINGMAN_PLAYER2_FLIGHT : WINGMAN_TAKEOFF;
 				wingman->interceptScreenX = pickupScreenX;
@@ -17245,6 +17400,52 @@ static UBYTE attractDemoWatchdogAction(UWORD now, UWORD startFrame) {
 }
 
 #if HAR_HEADLESS_CLASSIC_CONTRACT_TEST
+static void referencePutPixel(UBYTE* bitmap, short x, short y, UBYTE color) {
+	if (x < 0 || x >= SCREEN_WIDTH || y < 0 || y >= SCREEN_HEIGHT)
+		return;
+	short byteX = x >> 3;
+	UBYTE mask = (UBYTE)(0x80 >> (x & 7));
+	UBYTE* row = bitmap + y * SCREEN_PLANES * SCREEN_ROW_BYTES + byteX;
+	for (short plane = 0; plane < SCREEN_PLANES; plane++) {
+		UBYTE* pixelByte = row + plane * SCREEN_ROW_BYTES;
+		if (color & (1 << plane))
+			*pixelByte |= mask;
+		else
+			*pixelByte &= (UBYTE)~mask;
+	}
+}
+
+static void referenceFillRect(UBYTE* bitmap, short x, short y,
+	short width, short height, UBYTE color) {
+	for (short py = 0; py < height; py++) {
+		for (short px = 0; px < width; px++)
+			referencePutPixel(bitmap, (short)(x + px), (short)(y + py), color);
+	}
+}
+
+static void referenceDrawCharStyled(UBYTE* bitmap, short x, short y,
+	char ch, FontStyle style, UBYTE plainColor) {
+	const UBYTE* glyph = getMenuGlyph(ch);
+	for (short row = 0; row < FONT_HEIGHT; row++) {
+		UBYTE bits = glyph[row];
+		UBYTE color = cpcFontRowColor(style, row, plainColor);
+		for (short col = 0; col < FONT_WIDTH; col++) {
+			if (bits & (0x80 >> col))
+				referencePutPixel(bitmap, (short)(x + col),
+					(short)(y + row), color);
+		}
+	}
+}
+
+static UBYTE referenceBuffersEqual(const UBYTE* left, const UBYTE* right,
+	ULONG byteCount) {
+	while (byteCount--) {
+		if (*left++ != *right++)
+			return 0;
+	}
+	return 1;
+}
+
 static void writeClassicContractResult(const char* result) {
 	BPTR file = Open((CONST_STRPTR)"DH1:classic_contract.txt", MODE_NEWFILE);
 	if (!file)
@@ -17283,6 +17484,71 @@ static int runClassicGameplayContractTest(void) {
 		failures++; \
 	} \
 } while (0)
+	/* The optimized planar primitives are deliberately compared against the
+	 * former pixel-at-a-time semantics over complete, non-zero buffers.  This
+	 * catches edge masks which would otherwise show up as HUD or menu damage. */
+	{
+		UBYTE* optimized = (UBYTE*)AllocMem(SCREEN_BITMAP_BYTES, MEMF_PUBLIC);
+		UBYTE* reference = (UBYTE*)AllocMem(SCREEN_BITMAP_BYTES, MEMF_PUBLIC);
+		CONTRACT_CHECK(optimized && reference,
+			"Planar renderer contract buffers allocate");
+		if (optimized && reference) {
+			for (ULONG i = 0; i < SCREEN_BITMAP_BYTES; i++)
+				optimized[i] = reference[i] = (UBYTE)(i * 37 + 11);
+
+			fillRect(optimized, 42, 31, 236, 35, HUD_COLOR_SAFE);
+			referenceFillRect(reference, 42, 31, 236, 35, HUD_COLOR_SAFE);
+			fillRect(optimized, 44, 33, 232, 32, HUD_COLOR_VALUE);
+			referenceFillRect(reference, 44, 33, 232, 32, HUD_COLOR_VALUE);
+			fillRect(optimized, 46, 35, 228, 28, HUD_COLOR_BACKGROUND);
+			referenceFillRect(reference, 46, 35, 228, 28, HUD_COLOR_BACKGROUND);
+			fillRect(optimized, -3, 2, 10, 5, 0x1b);
+			referenceFillRect(reference, -3, 2, 10, 5, 0x1b);
+			fillRect(optimized, 317, 190, 8, 7, 0x12);
+			referenceFillRect(reference, 317, 190, 8, 7, 0x12);
+			fillRect(optimized, 0, 100, SCREEN_WIDTH, 12,
+				HUD_COLOR_BACKGROUND);
+			referenceFillRect(reference, 0, 100, SCREEN_WIDTH, 12,
+				HUD_COLOR_BACKGROUND);
+			fillRect(optimized, 0, 112, SCREEN_WIDTH, 3, 0x1f);
+			referenceFillRect(reference, 0, 112, SCREEN_WIDTH, 3, 0x1f);
+			CONTRACT_CHECK(referenceBuffersEqual(optimized, reference,
+				SCREEN_BITMAP_BYTES),
+				"Masked planar rectangle matches pixel reference");
+
+			drawCharStyled(optimized, 44, 42, 'G', FONT_STYLE_CPC_HUD, 0);
+			referenceDrawCharStyled(reference, 44, 42, 'G',
+				FONT_STYLE_CPC_HUD, 0);
+			drawCharStyled(optimized, 157, 60, 'R', FONT_STYLE_PLAIN,
+				GAME_COLOR_RED);
+			referenceDrawCharStyled(reference, 157, 60, 'R',
+				FONT_STYLE_PLAIN, GAME_COLOR_RED);
+			drawCharStyled(optimized, 316, 193, 'A', FONT_STYLE_CPC_GREEN, 0);
+			referenceDrawCharStyled(reference, 316, 193, 'A',
+				FONT_STYLE_CPC_GREEN, 0);
+			CONTRACT_CHECK(referenceBuffersEqual(optimized, reference,
+				SCREEN_BITMAP_BYTES),
+				"Direct planar glyph matches pixel reference");
+		}
+		if (optimized)
+			FreeMem(optimized, SCREEN_BITMAP_BYTES);
+		if (reference)
+			FreeMem(reference, SCREEN_BITMAP_BYTES);
+	}
+	{
+		UBYTE classicPasses = 0;
+		UBYTE enhancedPasses = 0;
+		for (UBYTE rState = 0; rState < 128; rState++) {
+			if ((rState & POWERUP_SPAWN_ROLL_MASK) == 0)
+				classicPasses++;
+			if (enhancedPowerupRollPasses(rState))
+				enhancedPasses++;
+		}
+		CONTRACT_CHECK(classicPasses == 8,
+			"Classic retains CPC powerup admission rate");
+		CONTRACT_CHECK(enhancedPasses == 6,
+			"Enhanced powerup admission is reduced by 25 percent");
+	}
 	/* Regression: animated crashes enter Game Over from a branch that is no
 	 * longer executing the live-game tail. The common Game Over handler must
 	 * still open the name editor. CPC accepts a score equal to the last table
@@ -17316,6 +17582,38 @@ static int runClassicGameplayContractTest(void) {
 		CONTRACT_CHECK(!ensureHighScoreNameEntryAtGameOver(&testHighScore,
 			&highScoreTest, 1) && !highScoreTest.highScoreNameEntryActive,
 			"Attract demo never enters high-score table");
+		memset(&highScoreTest, 0, sizeof(highScoreTest));
+		InputState highScoreInput;
+		InputState previousHighScoreInput;
+		memset(&highScoreInput, 0, sizeof(highScoreInput));
+		memset(&previousHighScoreInput, 0, sizeof(previousHighScoreInput));
+		highScoreTest.score = 101;
+		CONTRACT_CHECK(beginHighScoreNameEntry(&testHighScore,
+			&highScoreTest), "Joystick high-score editor starts");
+		highScoreInput.up = 1;
+		CONTRACT_CHECK(updateHighScoreNameEntry(&testHighScore,
+			&highScoreTest, &highScoreInput, &previousHighScoreInput) == 1 &&
+			highScoreTest.highScoreNameJoyChar == 'A',
+			"Joystick up selects high-score letter");
+		memset(&highScoreInput, 0, sizeof(highScoreInput));
+		highScoreInput.right = 1;
+		CONTRACT_CHECK(updateHighScoreNameEntry(&testHighScore,
+			&highScoreTest, &highScoreInput, &previousHighScoreInput) == 1 &&
+			highScoreTest.highScoreNameLength == 1 &&
+			highScoreTest.highScoreName[0] == 'A',
+			"Joystick right accepts high-score letter");
+		memset(&highScoreInput, 0, sizeof(highScoreInput));
+		highScoreInput.left = 1;
+		CONTRACT_CHECK(updateHighScoreNameEntry(&testHighScore,
+			&highScoreTest, &highScoreInput, &previousHighScoreInput) == 1 &&
+			highScoreTest.highScoreNameLength == 0,
+			"Joystick left deletes high-score letter");
+		memset(&highScoreInput, 0, sizeof(highScoreInput));
+		highScoreInput.select = 1;
+		CONTRACT_CHECK(updateHighScoreNameEntry(&testHighScore,
+			&highScoreTest, &highScoreInput, &previousHighScoreInput) == 2 &&
+			highScoreTest.highScoreCommitted,
+			"Joystick fire commits high-score name");
 	}
 	CONTRACT_CHECK(deriveWorldSeed(0x37A2, 1) == 0x07A4,
 		"World seed derivation is stable");
@@ -19752,6 +20050,8 @@ int main(void) {
 						UBYTE rescuedExtraAircraftBonusSpawned =
 							game.extraAircraftBonusSpawned;
 						UBYTE rescuedWingmanDestroyed = game.wingman.destroyed;
+						UWORD rescuedWingmanReviveDelayColumns =
+							game.wingmanReviveDelayColumns;
 						UBYTE rescuedTargetCount = destroyedTargetCount;
 						UBYTE rescuedShipCellCount = destroyedShipCellCount;
 						UBYTE rescuedCraterCount = landCraterCount;
@@ -19791,6 +20091,8 @@ int main(void) {
 						game.extraAircraftBonusSpawned =
 							rescuedExtraAircraftBonusSpawned;
 						game.wingman.destroyed = rescuedWingmanDestroyed;
+						game.wingmanReviveDelayColumns =
+							rescuedWingmanReviveDelayColumns;
 						if (rescuedWingmanDestroyed)
 							game.wingman.mode = WINGMAN_DESTROYED;
 						destroyedTargetCount = rescuedTargetCount;
@@ -19912,6 +20214,8 @@ int main(void) {
 						 * pickup should bring it back, not a free respawn
 						 * every time the carrier resets for the next sortie. */
 						UBYTE nextWingmanDestroyed = game.wingman.destroyed;
+						UWORD nextWingmanReviveDelayColumns =
+							game.wingmanReviveDelayColumns;
 
 						startGameSession(&game, copper, worldBuffers,
 							&activeWorldBuffer, hudBuffer, playerSprite,
@@ -19932,6 +20236,8 @@ int main(void) {
 						game.lives = nextLives;
 						game.missionNumber = nextMissionNumber;
 						game.wingman.destroyed = nextWingmanDestroyed;
+						game.wingmanReviveDelayColumns =
+							nextWingmanReviveDelayColumns;
 						if (nextWingmanDestroyed) {
 							game.wingman.active = 0;
 							game.wingman.mode = WINGMAN_DESTROYED;
@@ -20232,8 +20538,10 @@ int main(void) {
 				if (game.highScoreNameEntryActive) {
 					UBYTE nameEntryUpdate = updateHighScoreNameEntry(
 						&highScore, &game, &input, &previousInput);
-					if (nameEntryUpdate)
-						drawHudBuffer(hudBuffer, &game, highScore, 0);
+					if (nameEntryUpdate == 1)
+						drawHighScoreNameEditor(hudBuffer, &game);
+					else if (nameEntryUpdate == 2)
+						drawHudValues(hudBuffer, &game, highScore, 0);
 				} else if (Pressed(input.select, previousInput.select)) {
 					stopModMusic();
 					stopAllSfx();
