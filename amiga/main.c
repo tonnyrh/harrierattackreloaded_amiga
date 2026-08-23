@@ -14,7 +14,7 @@
 #include <stddef.h>
 #include <string.h>
 #include "assets/harrier_menu_text.h"
-#define HAR_BUILD_LABEL "SPRINT 15.96.5"
+#define HAR_BUILD_LABEL "SPRINT 15.97.1"
 
 #define SCREEN_WIDTH 320
 #define LOADING_SCREEN_WIDTH 320
@@ -779,6 +779,13 @@ static UBYTE* menuTickerBitmap = 0;
 #define GAME_HUD_PANEL_SEA_RGB GAME_SKY_LOW_SEA_RGB
 #define GAME_SKY_MID_Y 56
 #define GAME_SKY_LOW_Y 112
+/* Nine fixed COLOR00 bands cost only six more WAIT/MOVE pairs than the old
+ * three-anchor sky. The Copper list is still built once; mission fades patch
+ * only these operand words. Keeping the last band at y=112 leaves the
+ * timing-sensitive HUD transition at y=168 completely untouched. */
+#define GAME_SKY_GRADIENT_BAND_COUNT 9
+#define GAME_SKY_GRADIENT_HALF_BANDS 4
+#define GAME_SKY_GRADIENT_STEP_Y 14
 /* Normal hardware sprites 6/7 use COLOR29-31. The attached player art only
  * reaches CPC pen 12 (COLOR28), so these three registers can safely give the
  * flying Wingman a stable, dedicated grey ramp. */
@@ -904,9 +911,7 @@ static UWORD* activeMenuTickerBplcon1 = 0;
  * session, not every frame). current*Rgb hold what's currently baked into
  * those words; resetCityFade() selects the campaign mission's day or night
  * start phase so stale colours can never leak between sessions. */
-static UWORD* activeCopperSkyTopColor = 0;
-static UWORD* activeCopperSkyMidColor = 0;
-static UWORD* activeCopperSkyLowColor = 0;
+static UWORD* activeCopperSkyGradientColors[GAME_SKY_GRADIENT_BAND_COUNT];
 static UWORD* activeCopperCloudTopColor = 0;
 static UWORD* activeCopperLandColor = 0;
 static UWORD* activeCopperSeaLowColor = 0;
@@ -4689,19 +4694,59 @@ static USHORT* copWaitDisplayY(USHORT* copListEnd, USHORT displayY) {
 	return copWaitDisplayYAt(copListEnd, displayY, 0);
 }
 
+static UWORD interpolateSkyGradientColor(UBYTE band) {
+	UWORD from;
+	UWORD to;
+	UBYTE step;
+	if (band <= GAME_SKY_GRADIENT_HALF_BANDS) {
+		from = currentSkyTopRgb;
+		to = currentSkyMidRgb;
+		step = band;
+	} else {
+		from = currentSkyMidRgb;
+		to = currentSkyLowRgb;
+		step = (UBYTE)(band - GAME_SKY_GRADIENT_HALF_BANDS);
+	}
+	UWORD red = (UWORD)((((from >> 8) & 0x0f) *
+		(GAME_SKY_GRADIENT_HALF_BANDS - step) +
+		((to >> 8) & 0x0f) * step + 2) /
+		GAME_SKY_GRADIENT_HALF_BANDS);
+	UWORD green = (UWORD)((((from >> 4) & 0x0f) *
+		(GAME_SKY_GRADIENT_HALF_BANDS - step) +
+		((to >> 4) & 0x0f) * step + 2) /
+		GAME_SKY_GRADIENT_HALF_BANDS);
+	UWORD blue = (UWORD)(((from & 0x0f) *
+		(GAME_SKY_GRADIENT_HALF_BANDS - step) +
+		(to & 0x0f) * step + 2) /
+		GAME_SKY_GRADIENT_HALF_BANDS);
+	return (UWORD)((red << 8) | (green << 4) | blue);
+}
+
+static void patchCopperSkyGradient(void) {
+	for (UBYTE band = 0; band < GAME_SKY_GRADIENT_BAND_COUNT; band++) {
+		if (activeCopperSkyGradientColors[band])
+			*activeCopperSkyGradientColors[band] =
+				interpolateSkyGradientColor(band);
+	}
+}
+
 static USHORT* copSetGameSkyGradient(USHORT* copListEnd, const UWORD* palette) {
-	activeCopperSkyTopColor = (UWORD*)(copListEnd + 1);
-	copListEnd = copSetColor(copListEnd, GAME_COLOR_SKY, currentSkyTopRgb);
-	activeCopperLandColor = (UWORD*)(copListEnd + 1);
-	copListEnd = copSetColor(copListEnd, GAME_COLOR_LAND, currentLandRgb);
-	activeCopperCloudTopColor = (UWORD*)(copListEnd + 1);
-	copListEnd = copSetColor(copListEnd, GAME_COLOR_SEA, currentCloudTopRgb);
-	copListEnd = copWaitDisplayY(copListEnd, GAME_SKY_MID_Y);
-	activeCopperSkyMidColor = (UWORD*)(copListEnd + 1);
-	copListEnd = copSetColor(copListEnd, GAME_COLOR_SKY, currentSkyMidRgb);
-	copListEnd = copWaitDisplayY(copListEnd, GAME_SKY_LOW_Y);
-	activeCopperSkyLowColor = (UWORD*)(copListEnd + 1);
-	copListEnd = copSetColor(copListEnd, GAME_COLOR_SKY, currentSkyLowRgb);
+	for (UBYTE band = 0; band < GAME_SKY_GRADIENT_BAND_COUNT; band++) {
+		if (band)
+			copListEnd = copWaitDisplayY(copListEnd,
+				(USHORT)(band * GAME_SKY_GRADIENT_STEP_Y));
+		activeCopperSkyGradientColors[band] = (UWORD*)(copListEnd + 1);
+		copListEnd = copSetColor(copListEnd, GAME_COLOR_SKY,
+			interpolateSkyGradientColor(band));
+		/* Land and cloud pens must be established before the first raster line;
+		 * all later bands change only COLOR00. */
+		if (band)
+			continue;
+		activeCopperLandColor = (UWORD*)(copListEnd + 1);
+		copListEnd = copSetColor(copListEnd, GAME_COLOR_LAND, currentLandRgb);
+		activeCopperCloudTopColor = (UWORD*)(copListEnd + 1);
+		copListEnd = copSetColor(copListEnd, GAME_COLOR_SEA, currentCloudTopRgb);
+	}
 	activeCopperSeaLowColor = (UWORD*)(copListEnd + 1);
 	copListEnd = copSetColor(copListEnd, GAME_COLOR_SEA, currentSeaLowRgb);
 	(void)palette;
@@ -15278,12 +15323,7 @@ static void applyMissionPaletteFadeStep(UBYTE fromPhase, UBYTE toPhase,
 	currentSeaLowRgb = lerpFadeRgb(GAME_SKY_LOW_SEA_RGB, GAME_SKY_LOW_SEA_DUSK_RGB, step);
 	currentPanelSeaRgb = lerpFadeRgb(GAME_HUD_PANEL_SEA_RGB, GAME_HUD_PANEL_SEA_DUSK_RGB, step);
 
-	if (activeCopperSkyTopColor)
-		*activeCopperSkyTopColor = currentSkyTopRgb;
-	if (activeCopperSkyMidColor)
-		*activeCopperSkyMidColor = currentSkyMidRgb;
-	if (activeCopperSkyLowColor)
-		*activeCopperSkyLowColor = currentSkyLowRgb;
+	patchCopperSkyGradient();
 	if (activeCopperCloudTopColor)
 		*activeCopperCloudTopColor = currentCloudTopRgb;
 	if (activeCopperLandColor)
