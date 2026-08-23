@@ -14,7 +14,7 @@
 #include <stddef.h>
 #include <string.h>
 #include "assets/harrier_menu_text.h"
-#define HAR_BUILD_LABEL "SPRINT 15.96.0"
+#define HAR_BUILD_LABEL "SPRINT 15.96.5"
 
 #define SCREEN_WIDTH 320
 #define LOADING_SCREEN_WIDTH 320
@@ -238,6 +238,11 @@
  * the opening carrier's X=64 before installing the next sortie. */
 #define LANDING_RESTART_SCROLL_PIXELS 80
 #define LANDING_RESTART_SLIDE_PIXELS 1
+/* Ten fresh sea columns are needed during the 80-pixel post-landing slide.
+ * Two tile rows per frame prepare them comfortably inside the preceding
+ * hold + slide window, while leaving a stock 68000 enough time to keep the
+ * carrier motion and display updates even. */
+#define LANDING_RESTART_STREAM_ROWS_PER_FRAME 2
 #define GAME_OBJECT_MAP_WIDTH_TILES GAME_WORLD_BUFFER_TILES
 #define GAME_OBJECT_MAP_HEIGHT_TILES GAME_MAP_HEIGHT
 #define GAME_OBJECT_MAP_CELL_COUNT (GAME_OBJECT_MAP_WIDTH_TILES * GAME_OBJECT_MAP_HEIGHT_TILES)
@@ -1306,6 +1311,7 @@ typedef struct GameState {
 	UBYTE missionComplete;
 	UWORD missionCompleteTimer;
 	UBYTE postLandingSlide;
+	UBYTE postLandingMusicStarted;
 	UBYTE landingState;
 	UBYTE takeoffState;
 	UBYTE lives;
@@ -6349,6 +6355,7 @@ static void initGameState(GameState* game, UWORD campaignSeed,
 	game->missionComplete = 0;
 	game->missionCompleteTimer = 0;
 	game->postLandingSlide = 0;
+	game->postLandingMusicStarted = 0;
 	game->landingState = LANDING_STATE_NONE;
 	game->takeoffState = TAKEOFF_STATE_AIRBORNE;
 	game->lives = PLAYER_START_LIVES;
@@ -6637,6 +6644,26 @@ static UBYTE updateHighScoreNameEntry(ULONG* highScore, GameState* game,
 }
 
 static UBYTE scrollPixelsForSpeedLevel(UBYTE speedLevel) {
+	if (speedLevel > GAME_SPEED_LEVEL_MAX)
+		speedLevel = GAME_SPEED_LEVEL_MAX;
+	if (speedLevel == 0)
+		return 1;
+	if (speedLevel < 5)
+		return 2;
+	/* A PAL display can present the playfield only once per 50 Hz field.
+	 * Four low-resolution pixels per field is therefore a visible 4 px stair
+	 * even when BPLCON1 and the Copper are perfectly synchronized.  On a real
+	 * A500/CRT this reads as a constant sawtooth although the telemetry still
+	 * reports 50/50/50 FPS and no missed VBLs.  Keep every camera step at
+	 * most three pixels; the higher throttle levels still move the aircraft's
+	 * screen anchor, radar model and fuel use, so they remain distinct. */
+	return 3;
+}
+
+/* Engine tone used the old four-band camera step as its compact intensity
+ * input.  Preserve that sound progression while the presentation camera is
+ * capped at three pixels per PAL field. */
+static UBYTE engineSpeedForSpeedLevel(UBYTE speedLevel) {
 	if (speedLevel > GAME_SPEED_LEVEL_MAX)
 		speedLevel = GAME_SPEED_LEVEL_MAX;
 	if (speedLevel == 0)
@@ -7502,7 +7529,10 @@ static void telemetryUpdate(const GameState* game, UBYTE activeWorldBuffer) {
 	sample->maxVblScrollX = telemetryMaxVblScrollX;
 	(void)activeWorldBuffer;
 	sample->worldOrigin = ringWorldLastStreamedColumn;
-	sample->bytesToPage = 0;
+	/* Reuse the retired BTP field for the actual low-resolution fine-scroll
+	 * phase.  This makes a real-hardware photo sufficient to distinguish a
+	 * missed frame from ordinary multi-pixel presentation cadence. */
+	sample->bytesToPage = (UWORD)(game->scrollX & 15);
 	sample->desiredOrigin = 0;
 	sample->readyOrigin = 0;
 	sample->nextOrigin = 0;
@@ -7629,50 +7659,47 @@ static void drawTelemetryStatsScreen(UBYTE* bitmap, const GameState* game) {
 	drawTelemetryUnsignedPadded(bitmap, 230, 92, s->maxScrollWait, 2, MENU_COLOR_YELLOW);
 	drawTelemetryUnsignedPadded(bitmap, 270, 92, s->currentScrollWait, 2, MENU_COLOR_YELLOW);
 
-	drawTelemetryText(bitmap, 12, 104, "SCROLL SPD BTP", MENU_COLOR_WHITE);
+	drawTelemetryText(bitmap, 12, 104, "SCROLL X SPD PH", MENU_COLOR_WHITE);
 	drawTelemetryUnsignedPadded(bitmap, 150, 104, s->scrollX, 5, MENU_COLOR_YELLOW);
 	drawTelemetryUnsignedPadded(bitmap, 220, 104, s->speedLevel, 2, MENU_COLOR_YELLOW);
 	drawTelemetryUnsignedPadded(bitmap, 260, 104, s->bytesToPage, 3, MENU_COLOR_YELLOW);
 
-	drawTelemetryText(bitmap, 12, 116, "DES RDY ACT NXT", MENU_COLOR_WHITE);
-	drawTelemetryUnsignedPadded(bitmap, 150, 116, s->desiredOrigin, 4, MENU_COLOR_YELLOW);
-	if (s->readyOrigin == 0xffff)
-		drawTelemetryText(bitmap, 200, 116, "----", MENU_COLOR_YELLOW);
-	else
-		drawTelemetryUnsignedPadded(bitmap, 200, 116, s->readyOrigin, 4, MENU_COLOR_YELLOW);
-	drawTelemetryUnsignedPadded(bitmap, 250, 116, s->worldOrigin, 4, MENU_COLOR_YELLOW);
-	drawTelemetryUnsignedPadded(bitmap, 290, 116, s->nextOrigin, 4, MENU_COLOR_YELLOW);
+	drawTelemetryText(bitmap, 12, 116, "STREAM LAST ACT ROW", MENU_COLOR_WHITE);
+	drawTelemetryUnsignedPadded(bitmap, 150, 116, s->worldOrigin, 4, MENU_COLOR_YELLOW);
+	drawTelemetryUnsignedPadded(bitmap, 210, 116, s->renderActive, 1, MENU_COLOR_YELLOW);
+	drawTelemetryUnsignedPadded(bitmap, 250, 116, s->renderTileX, 3, MENU_COLOR_YELLOW);
 
-	drawTelemetryText(bitmap, 12, 128, "A X B0 B1", MENU_COLOR_WHITE);
-	drawTelemetryUnsignedPadded(bitmap, 150, 128, s->renderActive, 1, MENU_COLOR_YELLOW);
-	drawTelemetryUnsignedPadded(bitmap, 170, 128, s->renderTileX, 3, MENU_COLOR_YELLOW);
+	drawTelemetryText(bitmap, 12, 128, "BUF0 BUF1", MENU_COLOR_WHITE);
 	if (s->buffer0Origin == 0xffff)
-		drawTelemetryText(bitmap, 205, 128, "----", MENU_COLOR_YELLOW);
+		drawTelemetryText(bitmap, 150, 128, "----", MENU_COLOR_YELLOW);
 	else
-		drawTelemetryUnsignedPadded(bitmap, 205, 128, s->buffer0Origin, 4, MENU_COLOR_YELLOW);
+		drawTelemetryUnsignedPadded(bitmap, 150, 128, s->buffer0Origin, 4, MENU_COLOR_YELLOW);
 	if (s->buffer1Origin == 0xffff)
-		drawTelemetryText(bitmap, 250, 128, "----", MENU_COLOR_YELLOW);
+		drawTelemetryText(bitmap, 220, 128, "----", MENU_COLOR_YELLOW);
 	else
-		drawTelemetryUnsignedPadded(bitmap, 250, 128, s->buffer1Origin, 4, MENU_COLOR_YELLOW);
+		drawTelemetryUnsignedPadded(bitmap, 220, 128, s->buffer1Origin, 4, MENU_COLOR_YELLOW);
 
 	drawTelemetryText(bitmap, 12, 140, "COL TILE OBJ PAGE", MENU_COLOR_WHITE);
 	drawTelemetryUnsignedPadded(bitmap, 150, 140, s->tileColumns, 4, MENU_COLOR_YELLOW);
 	drawTelemetryUnsignedPadded(bitmap, 210, 140, s->objectColumns, 4, MENU_COLOR_YELLOW);
 	drawTelemetryUnsignedPadded(bitmap, 270, 140, s->pages, 2, MENU_COLOR_YELLOW);
 
-	drawTelemetryText(bitmap, 12, 152, "E0 C B ORG SCR X", MENU_COLOR_WHITE);
-	drawTelemetryUnsignedPadded(bitmap, 110, 152, s->event0Code, 2, MENU_COLOR_YELLOW);
+	drawTelemetryText(bitmap, 12, 152, "EVENT C B ORG SCR X", MENU_COLOR_WHITE);
+	drawTelemetryUnsignedPadded(bitmap, 115, 152, s->event0Code, 2, MENU_COLOR_YELLOW);
 	drawTelemetryUnsignedPadded(bitmap, 145, 152, s->event0Buffer, 1, MENU_COLOR_YELLOW);
 	drawTelemetryUnsignedPadded(bitmap, 175, 152, s->event0Origin, 4, MENU_COLOR_YELLOW);
 	drawTelemetryUnsignedPadded(bitmap, 230, 152, s->event0Scroll, 5, MENU_COLOR_YELLOW);
 	drawTelemetryUnsignedPadded(bitmap, 295, 152, s->event0X, 3, MENU_COLOR_YELLOW);
 
-	drawTelemetryText(bitmap, 12, 164, "HCH D A S ORG SCR X", MENU_COLOR_WHITE);
-	drawTelemetryUnsignedPadded(bitmap, 92, 164, s->hitchDelta, 2, MENU_COLOR_YELLOW);
-	drawTelemetryUnsignedPadded(bitmap, 125, 164, s->hitchRenderActive, 1, MENU_COLOR_YELLOW);
-	drawTelemetryUnsignedPadded(bitmap, 155, 164, s->hitchRenderStage, 1, MENU_COLOR_YELLOW);
-	drawTelemetryUnsignedPadded(bitmap, 185, 164, s->hitchRenderOrigin, 4, MENU_COLOR_YELLOW);
-	drawTelemetryUnsignedPadded(bitmap, 235, 164, s->hitchScroll, 5, MENU_COLOR_YELLOW);
+	/* Keep the first value to the right of the complete label.  The former
+	 * x=92 started inside "HCH D A S ORG SCR X" and mixed yellow digits into
+	 * the white explanation on real PAL displays. */
+	drawTelemetryText(bitmap, 12, 164, "HITCH D A S ORG SCR X", MENU_COLOR_WHITE);
+	drawTelemetryUnsignedPadded(bitmap, 125, 164, s->hitchDelta, 2, MENU_COLOR_YELLOW);
+	drawTelemetryUnsignedPadded(bitmap, 150, 164, s->hitchRenderActive, 1, MENU_COLOR_YELLOW);
+	drawTelemetryUnsignedPadded(bitmap, 170, 164, s->hitchRenderStage, 1, MENU_COLOR_YELLOW);
+	drawTelemetryUnsignedPadded(bitmap, 195, 164, s->hitchRenderOrigin, 4, MENU_COLOR_YELLOW);
+	drawTelemetryUnsignedPadded(bitmap, 240, 164, s->hitchScroll, 5, MENU_COLOR_YELLOW);
 	drawTelemetryUnsignedPadded(bitmap, 295, 164, s->hitchRenderX, 3, MENU_COLOR_YELLOW);
 }
 
@@ -11182,11 +11209,10 @@ static UBYTE replenishPlayerFromFrigate(GameState* game) {
 		telemetryLogGameEvent(TELEMETRY_GAME_EVENT_LANDING_COMPLETE, 0,
 			(UWORD)(((LONG)game->scrollX + game->playerX) >> 3), game,
 			game->missionNumber);
-		/* Landing is a one-shot state transition, so the fanfare starts
-		 * exactly once here rather than being retriggered while LANDED is
-		 * displayed. Give its four MOD voices sole ownership of Paula. */
+		/* Keep Paula quiet while the carrier is repositioned. The landing
+		 * fanfare starts only after the scripted slide has completed, so its
+		 * MOD ticks never compete with streamed world-column construction. */
 		stopAllSfx();
-		startCarrierLandingMusic();
 		changed = 1;
 	}
 
@@ -11713,6 +11739,24 @@ static RenderColumn ringStreamTileColumn;
 static LONG ringStreamTouchedFirstColumn = -1;
 static LONG ringStreamTouchedLastColumn = -1;
 
+/* The completed-landing camera still moves one pixel per frame while the
+ * carrier is repositioned for the next takeoff.  Treat that scripted motion
+ * as real stream demand even though ordinary gameplay scrolling is disabled
+ * by missionComplete.  Starting this during the LANDED hold and slide gives
+ * the single-buffer renderer ample time to replace the recycled ring slots
+ * with the authoritative open-sea columns before they reach the right edge.
+ *
+ * Returning zero here used to leave those slots untouched.  The following
+ * 80-pixel slide then exposed terrain/building bytes left over from an older
+ * ring page and made the partially updated rightmost column flicker. */
+static UBYTE ringStreamPixelsForGameState(const GameState* game) {
+	if (game->missionComplete)
+		return LANDING_RESTART_SLIDE_PIXELS;
+	if (game->landingState == LANDING_STATE_HOVER)
+		return 0;
+	return scrollPixelsForSpeedLevel(game->speedLevel);
+}
+
 /* Conservative pre-stream test used by retained BOBs. It simulates only the
  * columns the fixed row budget can touch this frame. False positives merely
  * cause one harmless redraw; false negatives would leave a BOB partially
@@ -11721,11 +11765,12 @@ static UBYTE ringStreamMayTouchColumnRange(const GameState* game,
 	LONG firstColumn, LONG lastColumn) {
 	if (useFixedTakeoffWorldWindow(game))
 		return 0;
-	UBYTE scrollPixels = (game->missionComplete ||
-		game->landingState == LANDING_STATE_HOVER) ? 0 :
-		scrollPixelsForSpeedLevel(game->speedLevel);
+	UBYTE scrollPixels = ringStreamPixelsForGameState(game);
 	UWORD rows = (UWORD)((ringStreamRowCredit +
 		scrollPixels * GAME_OBJECT_MAP_HEIGHT_TILES) / GAME_TILE_WIDTH);
+	if (game->missionComplete &&
+		rows > LANDING_RESTART_STREAM_ROWS_PER_FRAME)
+		rows = LANDING_RESTART_STREAM_ROWS_PER_FRAME;
 	if (!rows)
 		return 0;
 	LONG streamFirst = ringStreamColumn >= 0 ? ringStreamColumn :
@@ -11751,12 +11796,18 @@ static void serviceRingWorldStream(UBYTE* bitmap, const GameState* game) {
 	UWORD leftColumn = scrollLeftWorldColumnForScroll(game->scrollX);
 	UWORD maxAheadColumn = (UWORD)(leftColumn + RING_WORLD_STREAM_MAX_AHEAD_TILES);
 
-	UBYTE scrollPixels = (game->missionComplete || game->landingState == LANDING_STATE_HOVER) ?
-		0 : scrollPixelsForSpeedLevel(game->speedLevel);
+	UBYTE scrollPixels = ringStreamPixelsForGameState(game);
 	UWORD rowWork = (UWORD)(ringStreamRowCredit +
 		scrollPixels * GAME_OBJECT_MAP_HEIGHT_TILES);
 	UWORD rowBudget = (UWORD)(rowWork / GAME_TILE_WIDTH);
 	ringStreamRowCredit = (UBYTE)(rowWork % GAME_TILE_WIDTH);
+	/* The scripted landing slide has 180 frames of hold/slide time for only
+	 * ten columns.  Do not spend the normal speed-derived 3/4-row burst here:
+	 * spreading it over two rows removes the periodic 68000 spike which made
+	 * the carrier movement visibly hitch. */
+	if (game->missionComplete &&
+		rowBudget > LANDING_RESTART_STREAM_ROWS_PER_FRAME)
+		rowBudget = LANDING_RESTART_STREAM_ROWS_PER_FRAME;
 	while (rowBudget > 0) {
 		if (ringStreamColumn < 0) {
 			if (!(ringWorldLastStreamedColumn < maxAheadColumn))
@@ -11764,6 +11815,11 @@ static void serviceRingWorldStream(UBYTE* bitmap, const GameState* game) {
 			ringStreamColumn = (LONG)ringWorldLastStreamedColumn + 1;
 			ringStreamRow = 0;
 			buildWorldTileColumn(ringStreamColumn, &ringStreamTileColumn);
+			/* A procedural town/object column can cross a VBlank on a stock
+			 * 68000. Service the replayer immediately instead of waiting for
+			 * the next complete gameplay loop and dropping that music tick. */
+			if (modPlaying)
+				serviceModMusicToCurrentVbl();
 		}
 
 		UWORD tileX = ringWorldTileXForColumn(ringStreamColumn);
@@ -11790,6 +11846,8 @@ static void serviceRingWorldStream(UBYTE* bitmap, const GameState* game) {
 			drawDirectColumnRangeObjects(bitmap, tileX, ringStreamColumn);
 			if (hasDuplicate)
 				drawDirectColumnRangeObjects(bitmap, duplicateTileX, ringStreamColumn);
+			if (modPlaying)
+				serviceModMusicToCurrentVbl();
 			ringWorldLastStreamedColumn = (UWORD)ringStreamColumn;
 			ringStreamColumn = -1;
 			if (telemetryEnabled && telemetryAvailable)
@@ -14384,25 +14442,29 @@ static UBYTE directionToMaverickTarget(const WeaponState* rocket) {
 	return dx < 0 ? MAVERICK_DIRECTION_LEFT : MAVERICK_DIRECTION_RIGHT;
 }
 
-static void moveGuidedMaverick(WeaponState* rocket, UBYTE lockStillActive) {
+static void moveGuidedMaverick(WeaponState* rocket) {
 	WORD stepX = MAVERICK_GUIDED_SPEED_PIXELS;
 	WORD stepY = MAVERICK_GUIDED_SPEED_PIXELS;
-	if (lockStillActive) {
-		UBYTE newDirection = directionToMaverickTarget(rocket);
-		LONG dx = rocket->targetWorldX - (rocket->worldX + 8);
-		WORD dy = (WORD)(rocket->targetY - (rocket->y + 4));
-		/* Preserve CPC's last direction when getdirectionfromcoords returns 0.
-		 * For a non-zero residual, shorten only the final pixel step so the
-		 * four-pixel presentation cannot oscillate around an exact CPC axis. */
-		if (newDirection != MAVERICK_DIRECTION_NONE)
-			rocket->direction = newDirection;
-		if (dx != 0 && dx > -MAVERICK_GUIDED_SPEED_PIXELS &&
-			dx < MAVERICK_GUIDED_SPEED_PIXELS)
-			stepX = (WORD)(dx < 0 ? -dx : dx);
-		if (dy != 0 && dy > -MAVERICK_GUIDED_SPEED_PIXELS &&
-			dy < MAVERICK_GUIDED_SPEED_PIXELS)
-			stepY = (WORD)(dy < 0 ? -dy : dy);
-	}
+	UBYTE newDirection = directionToMaverickTarget(rocket);
+	LONG dx = rocket->targetWorldX - (rocket->worldX + 8);
+	WORD dy = (WORD)(rocket->targetY - (rocket->y + 4));
+	/* The launch captures an immutable world-space target. Keep steering to
+	 * that captured point even after the scrolling target-lock marker expires.
+	 * Otherwise a last direction of RIGHT advances by the same four pixels as
+	 * full-speed scrolling and leaves an active Maverick fixed on screen
+	 * forever. CPC screen-coordinate movement cannot enter that Amiga-only
+	 * deadlock. Preserve the last direction only at the exact target, where the
+	 * proximity/collision check below consumes the projectile this frame. */
+	if (newDirection != MAVERICK_DIRECTION_NONE)
+		rocket->direction = newDirection;
+	/* Shorten only the final pixel step so the four-pixel presentation cannot
+	 * oscillate around an exact CPC axis. */
+	if (dx != 0 && dx > -MAVERICK_GUIDED_SPEED_PIXELS &&
+		dx < MAVERICK_GUIDED_SPEED_PIXELS)
+		stepX = (WORD)(dx < 0 ? -dx : dx);
+	if (dy != 0 && dy > -MAVERICK_GUIDED_SPEED_PIXELS &&
+		dy < MAVERICK_GUIDED_SPEED_PIXELS)
+		stepY = (WORD)(dy < 0 ? -dy : dy);
 
 	switch (rocket->direction) {
 		case MAVERICK_DIRECTION_UP:
@@ -14548,9 +14610,7 @@ static UBYTE updateWeapons(GameState* game, UBYTE scrollPixels, UBYTE** worldBuf
 			if (game->rocketShot.guidanceDistance >= MAVERICK_GUIDANCE_DELAY_PIXELS)
 				game->rocketShot.type = ROCKET_SHOT_MAVERICK_GUIDED;
 		} else {
-			UBYTE lockStillActive = game->targetLock.active &&
-				game->targetLock.worldX + GAME_TILE_WIDTH / 2 == game->rocketShot.targetWorldX;
-			moveGuidedMaverick(&game->rocketShot, lockStillActive);
+			moveGuidedMaverick(&game->rocketShot);
 		}
 		game->rocketShot.x = (WORD)(game->rocketShot.worldX - game->scrollX);
 		if (game->rocketShot.timer < 255)
@@ -17484,6 +17544,20 @@ static int runClassicGameplayContractTest(void) {
 		failures++; \
 	} \
 } while (0)
+	/* A completed landing disables normal speed/throttle scrolling, but its
+	 * scripted 80-pixel carrier reposition still exposes ten new columns.
+	 * Those columns must continue to receive one-pixel-equivalent streaming
+	 * work during both the LANDED hold and the slide itself. */
+	classic.missionComplete = 1;
+	classic.landingState = LANDING_STATE_HOVER;
+	classic.speedLevel = 0;
+	CONTRACT_CHECK(ringStreamPixelsForGameState(&classic) ==
+		LANDING_RESTART_SLIDE_PIXELS,
+		"Landing restart continues right-edge ring streaming");
+	classic.missionComplete = 0;
+	CONTRACT_CHECK(ringStreamPixelsForGameState(&classic) == 0,
+		"Stationary landing hover keeps gameplay camera fixed");
+	classic.landingState = LANDING_STATE_NONE;
 	/* The optimized planar primitives are deliberately compared against the
 	 * former pixel-at-a-time semantics over complete, non-zero buffers.  This
 	 * catches edge masks which would otherwise show up as HUD or menu damage. */
@@ -17760,11 +17834,12 @@ static int runClassicGameplayContractTest(void) {
 		scrollPixelsForSpeedLevel(4) == 2,
 		"Amiga low speed scroll band");
 	CONTRACT_CHECK(scrollPixelsForSpeedLevel(5) == 3 &&
-		scrollPixelsForSpeedLevel(8) == 3,
-		"Amiga medium speed scroll band");
-	CONTRACT_CHECK(scrollPixelsForSpeedLevel(9) == 4 &&
-		scrollPixelsForSpeedLevel(15) == 4,
-		"Amiga high speed scroll band");
+		scrollPixelsForSpeedLevel(15) == 3,
+		"A500 camera caps medium/high speed at three pixels per frame");
+	CONTRACT_CHECK(engineSpeedForSpeedLevel(8) == 3 &&
+		engineSpeedForSpeedLevel(9) == 4 &&
+		engineSpeedForSpeedLevel(15) == 4,
+		"Engine keeps the original four intensity bands");
 	CONTRACT_CHECK(ROCKET_RANGE_MIN_TILES == 10 &&
 		ROCKET_RANGE_MAX_TILES == 20 &&
 		ROCKET_RANGE_DEFAULT_TILES == 10,
@@ -17797,9 +17872,10 @@ static int runClassicGameplayContractTest(void) {
 	}
 
 	/* Source-derived CPC Maverick contract: range 2..10 gives eight launch
-	 * columns before guidance, getdirectionfromcoords has exact 3x3 signs,
-	 * and a lost/arrived lock retains the last non-zero direction. Pixel
-	 * interpolation may shorten only its final step to land on an exact axis. */
+	 * columns before guidance and getdirectionfromcoords has exact 3x3 signs.
+	 * The projectile's captured world target remains authoritative after the
+	 * global marker expires; this is required by the Amiga world-space port.
+	 * Pixel interpolation may shorten only its final step to an exact axis. */
 	CONTRACT_CHECK(MAVERICK_GUIDANCE_DELAY_PIXELS == 8 * GAME_TILE_WIDTH,
 		"CPC Maverick has eight-column launch phase");
 	classic.targetLock.active = 1;
@@ -17823,13 +17899,21 @@ static int runClassicGameplayContractTest(void) {
 	maverickTest.targetWorldX = 111;
 	maverickTest.targetY = 42;
 	maverickTest.direction = MAVERICK_DIRECTION_RIGHT;
-	moveGuidedMaverick(&maverickTest, 1);
+	moveGuidedMaverick(&maverickTest);
 	CONTRACT_CHECK(maverickTest.worldX == 103 && maverickTest.y == 38,
 		"Amiga Maverick clamps final guided pixel step");
+	/* A stale RIGHT direction at full scroll used to keep the BOB stationary
+	 * forever once targetLock.active had expired. Steering uses only the
+	 * captured projectile target, so no external lock state is needed here. */
+	maverickTest.worldX = 100;
+	maverickTest.y = 40;
+	maverickTest.targetWorldX = 80;
+	maverickTest.targetY = 44;
 	maverickTest.direction = MAVERICK_DIRECTION_LEFT;
-	moveGuidedMaverick(&maverickTest, 0);
-	CONTRACT_CHECK(maverickTest.worldX == 99 && maverickTest.y == 38,
-		"CPC Maverick retains direction after lock loss");
+	moveGuidedMaverick(&maverickTest);
+	CONTRACT_CHECK(maverickTest.worldX == 96 && maverickTest.y == 40 &&
+		maverickTest.direction == MAVERICK_DIRECTION_LEFT,
+		"Maverick follows captured target after global lock expiry");
 	maverickTest.worldX = 100;
 	maverickTest.y = 40;
 	maverickTest.targetWorldX = 108;
@@ -18037,7 +18121,7 @@ static int runClassicGameplayContractTest(void) {
 	KPrintF("CLASSIC CONTRACT PASS: fuel=%ld frames, GameState=%ld bytes\n",
 		(LONG)fuelFrames, (LONG)sizeof(GameState));
 	writeClassicContractResult(
-		"PASS fuelFrames=9558 cpcX=8..15 amigaX=96..186 scroll=1..4 "
+		"PASS fuelFrames=9558 cpcX=8..15 amigaX=96..186 scroll=1..3 engine=1..4 "
 		"bombMomentumFrames=13 bombDescentFrames=3 maverick=exact-9dir "
 		"collision=cpc-table carrierTower=2x4\n");
 	return 0;
@@ -19481,7 +19565,7 @@ int main(void) {
 				if (!game.gameOver && game.takeoffState == TAKEOFF_STATE_AIRBORNE &&
 					!game.crashTimer && !game.ejectState &&
 					game.aircraftFailureState == AIRCRAFT_FAILURE_NONE)
-					startEngineSound(scrollPixelsForSpeedLevel(game.speedLevel));
+					startEngineSound(engineSpeedForSpeedLevel(game.speedLevel));
 				pendingGameScrollCopperUpdate = 1;
 				pendingPlayerSpriteUpdate = 1;
 				pendingCrashSpriteUpdate = 1;
@@ -19504,7 +19588,7 @@ int main(void) {
 					!game.crashTimer && !game.ejectState &&
 					game.aircraftFailureState == AIRCRAFT_FAILURE_NONE)
 					startEngineSound(
-						scrollPixelsForSpeedLevel(game.speedLevel));
+						engineSpeedForSpeedLevel(game.speedLevel));
 				pendingGameScrollCopperUpdate = 1;
 				pendingPlayerSpriteUpdate = 1;
 				pendingCrashSpriteUpdate = 1;
@@ -19980,7 +20064,7 @@ int main(void) {
 						game.playerX = TAKEOFF_PLAYER_DECK_X;
 						game.playerY = TAKEOFF_PLAYER_DECK_Y - PLAYER_MOVE_SPEED_PIXELS;
 						updatePlayerSprite(playerSprite, playerAttachSprite, &game);
-						startEngineSound(scrollPixelsForSpeedLevel(game.speedLevel));
+						startEngineSound(engineSpeedForSpeedLevel(game.speedLevel));
 						pendingGameScrollCopperUpdate = 1;
 						pendingPlayerSpriteUpdate = 1;
 					}
@@ -20177,12 +20261,27 @@ int main(void) {
 							game.postLandingSlide++;
 							pendingGameScrollCopperUpdate = 1;
 							pendingPlayerSpriteUpdate = 1;
-						} else if (!modPlaying) {
+						} else {
+						/* Start the fanfare exactly once, after all scripted carrier
+						 * motion and its ring-buffer streaming work are finished. */
+						if (!game.postLandingMusicStarted) {
+							stopAllSfx();
+							startCarrierLandingMusic();
+							game.postLandingMusicStarted = 1;
+						}
+
+						/* Fire/Space or Up means "fly on". End the non-looping
+						 * fanfare immediately; otherwise let it finish naturally. */
+						if ((Pressed(input.select, previousInput.select) ||
+							 Pressed(input.up, previousInput.up)) && modPlaying)
+							stopModMusic();
+
+						if (!modPlaying) {
 						/* CPC beginlandingapproach: after four delays, raise
 						 * difficulty (up to 5), replenish, reset level
 						 * progress and return to newlevelloop/checkliftoff.
-						 * The Amiga landing fanfare also gets to finish
-						 * before this transition starts the next sortie.
+						 * The Amiga fanfare may finish or be skipped before this
+						 * transition starts the next sortie.
 						 * startGameSession supplies the same complete world/
 						 * actor reset; restore run-persistent values afterward
 						 * and skip the initial carrier-entry animation. */
@@ -20252,6 +20351,7 @@ int main(void) {
 						pendingPlayerSpriteUpdate = 0;
 						lastInputMask = inputMask;
 						gameCancelArmed = 0;
+						}
 						}
 					}
 				} else {
@@ -20405,7 +20505,7 @@ int main(void) {
 					updatePlayerFuel(&game))
 					hudDirty = 1;
 
-				updateEngineSound(scrollPixels);
+				updateEngineSound(engineSpeedForSpeedLevel(game.speedLevel));
 
 				if (game.scrollX != oldScrollX) {
 					pendingGameScrollCopperUpdate = 1;
@@ -20623,6 +20723,10 @@ int main(void) {
 			}
 			if (!deferRingWorldStream) {
 				serviceRingWorldStream(worldBuffers[0], &game);
+				/* Cheap when no VBlank elapsed; essential when a streamed
+				 * column consumed the end of the current PAL frame. */
+				if (modPlaying)
+					serviceModMusicToCurrentVbl();
 			} else {
 				/* No columns were touched this frame; do not leave the previous
 				 * frame's diagnostic/restore range looking current. */
