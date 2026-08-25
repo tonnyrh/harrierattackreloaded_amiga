@@ -1,10 +1,11 @@
 #Requires -Version 5.1
 [CmdletBinding()]
 param(
+    [string]$Version = "0.9.0-beta.1",
     [switch]$NoBuild,
     [switch]$NoZip,
-    [string]$OutputRoot = "dist\amiga",
-    [string]$PackageName = "HarrierAttackReloaded-Amiga-A500-playtest"
+    [switch]$IncludeDebug,
+    [string]$OutputRoot = "dist\release"
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,21 +17,33 @@ $OutputRootPath = if ([System.IO.Path]::IsPathRooted($OutputRoot)) {
     Join-Path $Root $OutputRoot
 }
 
-$timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$packageBaseName = "$PackageName-$timestamp"
-$stagingDir = Join-Path $OutputRootPath $packageBaseName
-$debugDir = Join-Path $stagingDir "debug"
+$normalizedVersion = $Version.Trim()
+if ($normalizedVersion.StartsWith("v", [System.StringComparison]::OrdinalIgnoreCase)) {
+    $normalizedVersion = $normalizedVersion.Substring(1)
+}
+if ($normalizedVersion -notmatch '^[0-9A-Za-z][0-9A-Za-z.-]*$') {
+    throw "Ugyldig releaseversjon: $Version"
+}
+
+$tagName = "v$normalizedVersion"
+$assetBaseName = "HarrierAttackReloaded-Amiga-$tagName"
+$hdPackageName = "$assetBaseName-HD"
+$stagingDir = Join-Path $OutputRootPath $hdPackageName
+$zipPath = Join-Path $OutputRootPath "$hdPackageName.zip"
+$releaseAdfPath = Join-Path $OutputRootPath "$assetBaseName.adf"
+$checksumPath = Join-Path $OutputRootPath "$assetBaseName-SHA256SUMS.txt"
+$debugZipPath = Join-Path $OutputRootPath "$assetBaseName-debug-symbols.zip"
 
 $buildScript = Join-Path $Root "amiga-build.ps1"
 $amigaDir = Join-Path $Root "amiga"
-$exePath = Join-Path $amigaDir "out\harrier_amiga.exe"
-$iconPath = Join-Path $amigaDir "out\harrier_amiga.exe.info"
-$elfPath = Join-Path $amigaDir "out\harrier_amiga.elf"
-$mapPath = Join-Path $amigaDir "out\harrier_amiga.map"
-$asmPath = Join-Path $amigaDir "out\harrier_amiga.s"
-$playtestReadme = Join-Path $amigaDir "README_PLAYTEST.md"
-$sfxReadme = Join-Path $amigaDir "assets\sfx\README.md"
-$portPlan = Join-Path $Root "AMIGA_PORT_PLAN.md"
+$outDir = Join-Path $amigaDir "out"
+$exePath = Join-Path $outDir "harrier_amiga.exe"
+$iconPath = Join-Path $outDir "harrier_amiga.exe.info"
+$loadingScreenPath = Join-Path $outDir "loading_screen.bpl"
+$adfPath = Join-Path $outDir "harrier_amiga.adf"
+$elfPath = Join-Path $outDir "harrier_amiga.elf"
+$mapPath = Join-Path $outDir "harrier_amiga.map"
+$publicReadme = Join-Path $amigaDir "README_PUBLIC_BETA.txt"
 
 if (-not $NoBuild) {
     if (-not (Test-Path -LiteralPath $buildScript)) {
@@ -42,33 +55,29 @@ if (-not $NoBuild) {
     }
 }
 
-if (-not (Test-Path -LiteralPath $exePath)) {
-    throw "Fant ikke bygget Amiga executable: $exePath"
-}
-
-New-Item -ItemType Directory -Force -Path $stagingDir | Out-Null
-New-Item -ItemType Directory -Force -Path $debugDir | Out-Null
-
-Copy-Item -LiteralPath $exePath -Destination (Join-Path $stagingDir "harrier_amiga.exe") -Force
-if (Test-Path -LiteralPath $iconPath) {
-    Copy-Item -LiteralPath $iconPath -Destination (Join-Path $stagingDir "harrier_amiga.exe.info") -Force
-}
-
-foreach ($debugFile in @($elfPath, $mapPath, $asmPath)) {
-    if (Test-Path -LiteralPath $debugFile) {
-        Copy-Item -LiteralPath $debugFile -Destination $debugDir -Force
+foreach ($requiredFile in @(
+    $exePath,
+    $iconPath,
+    $loadingScreenPath,
+    $adfPath,
+    $publicReadme
+)) {
+    if (-not (Test-Path -LiteralPath $requiredFile)) {
+        throw "Mangler releasefil: $requiredFile"
     }
 }
 
-if (Test-Path -LiteralPath $playtestReadme) {
-    Copy-Item -LiteralPath $playtestReadme -Destination (Join-Path $stagingDir "README_PLAYTEST.md") -Force
+New-Item -ItemType Directory -Force -Path $OutputRootPath | Out-Null
+if (Test-Path -LiteralPath $stagingDir) {
+    Remove-Item -LiteralPath $stagingDir -Recurse -Force
 }
-if (Test-Path -LiteralPath $sfxReadme) {
-    Copy-Item -LiteralPath $sfxReadme -Destination (Join-Path $stagingDir "SFX_README.md") -Force
-}
-if (Test-Path -LiteralPath $portPlan) {
-    Copy-Item -LiteralPath $portPlan -Destination (Join-Path $stagingDir "AMIGA_PORT_PLAN.md") -Force
-}
+New-Item -ItemType Directory -Force -Path $stagingDir | Out-Null
+
+Copy-Item -LiteralPath $exePath -Destination (Join-Path $stagingDir "harrier_amiga.exe") -Force
+Copy-Item -LiteralPath $iconPath -Destination (Join-Path $stagingDir "harrier_amiga.exe.info") -Force
+Copy-Item -LiteralPath $loadingScreenPath -Destination (Join-Path $stagingDir "loading_screen.bpl") -Force
+Copy-Item -LiteralPath $publicReadme -Destination (Join-Path $stagingDir "README.txt") -Force
+Copy-Item -LiteralPath $adfPath -Destination $releaseAdfPath -Force
 
 $gitCommit = "unknown"
 try {
@@ -80,39 +89,71 @@ try {
     $gitCommit = "unknown"
 }
 
-$exeHash = Get-FileHash -Algorithm SHA256 -LiteralPath $exePath
-$exeInfo = Get-Item -LiteralPath $exePath
 $versionText = @(
-    "Harrier Attack Reloaded - Amiga A500 playtest package",
-    "Created: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')",
-    "Source: $Root",
+    "Harrier Attack Reloaded - Amiga Public Beta",
+    "Version: $tagName",
     "Git commit: $gitCommit",
-    "Target: Amiga 500, OCS, PAL, Kickstart 1.3, 68000, 512 KiB chip + 512 KiB slow RAM",
+    "Created: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')",
+    "",
+    "Target: stock PAL Amiga 500, OCS, 68000",
+    "Memory: 512 KiB chip RAM + 512 KiB expansion RAM",
     "Kickstart ROM: not included",
     "",
-    "Executable: harrier_amiga.exe",
-    "Size: $($exeInfo.Length) bytes",
-    "SHA256: $($exeHash.Hash)",
+    "Hard-disk files:",
+    "  harrier_amiga.exe",
+    "  harrier_amiga.exe.info",
+    "  loading_screen.bpl",
     "",
-    "Build command:",
-    ".\amiga-build.ps1",
-    "",
-    "Package command:",
-    ".\package-amiga.ps1",
-    "",
-    "Run/debug from repository:",
-    "Open VS Code and press F5 using 'Amiga 500 debug (KS1.3, 1MB)'."
+    "Source repository:",
+    "https://github.com/tonnyrh/harrierattackreloaded_amiga"
 )
-Set-Content -LiteralPath (Join-Path $stagingDir "VERSION.txt") -Value $versionText -Encoding UTF8
+Set-Content -LiteralPath (Join-Path $stagingDir "VERSION.txt") `
+    -Value $versionText -Encoding ASCII
 
 if (-not $NoZip) {
-    $zipPath = Join-Path $OutputRootPath "$packageBaseName.zip"
     if (Test-Path -LiteralPath $zipPath) {
         Remove-Item -LiteralPath $zipPath -Force
     }
     Compress-Archive -Path (Join-Path $stagingDir "*") -DestinationPath $zipPath -Force
-    Write-Host "Pakket zip: $zipPath"
 }
 
-Write-Host "Pakket mappe: $stagingDir"
-Write-Host "Amiga executable: $(Join-Path $stagingDir 'harrier_amiga.exe')"
+$releaseAssets = @($releaseAdfPath)
+if (-not $NoZip) {
+    $releaseAssets += $zipPath
+}
+
+if ($IncludeDebug) {
+    $debugStagingDir = Join-Path $OutputRootPath "$assetBaseName-debug-symbols"
+    if (Test-Path -LiteralPath $debugStagingDir) {
+        Remove-Item -LiteralPath $debugStagingDir -Recurse -Force
+    }
+    New-Item -ItemType Directory -Force -Path $debugStagingDir | Out-Null
+    foreach ($debugFile in @($elfPath, $mapPath)) {
+        if (Test-Path -LiteralPath $debugFile) {
+            Copy-Item -LiteralPath $debugFile -Destination $debugStagingDir -Force
+        }
+    }
+    if (Test-Path -LiteralPath $debugZipPath) {
+        Remove-Item -LiteralPath $debugZipPath -Force
+    }
+    Compress-Archive -Path (Join-Path $debugStagingDir "*") `
+        -DestinationPath $debugZipPath -Force
+    $releaseAssets += $debugZipPath
+}
+
+$checksumLines = foreach ($assetPath in $releaseAssets) {
+    $hash = Get-FileHash -Algorithm SHA256 -LiteralPath $assetPath
+    "{0}  {1}" -f $hash.Hash.ToLowerInvariant(), (Split-Path -Leaf $assetPath)
+}
+Set-Content -LiteralPath $checksumPath -Value $checksumLines -Encoding ASCII
+
+Write-Host "Public beta-pakke er klar:"
+Write-Host "  ADF:       $releaseAdfPath"
+if (-not $NoZip) {
+    Write-Host "  HD ZIP:    $zipPath"
+}
+if ($IncludeDebug) {
+    Write-Host "  Debug ZIP: $debugZipPath"
+}
+Write-Host "  SHA256:    $checksumPath"
+Write-Host "  Tag:       $tagName"

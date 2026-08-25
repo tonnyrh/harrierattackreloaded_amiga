@@ -12,7 +12,7 @@ kept here.
 
 ## Project status
 
-**Sprint 15.92.4 is a feature-complete release candidate.** The complete
+**Sprint 15.97.1 is the first public-beta candidate.** The complete
 mission loop is playable: carrier takeoff, generated sea/terrain/city route,
 air and ground combat, powerups, return flight, carrier landing and progression
 to the next mission. Solo, CPU Wingman and local Player 2 modes are available,
@@ -31,11 +31,16 @@ regularly exercised in WinUAE and on faster compatible Amigas. Automated
 Classic-contract and headless full-route tests cover core gameplay and
 performance regressions.
 
-The remaining work is release QA rather than major feature development:
+The remaining work is beta QA rather than major feature development:
 extended real-hardware playtesting, edge-case and two-player regression,
 writable-media high-score verification, final packaging, and documentation
 and licence review. The CPC repository remains a read-only external gameplay
 reference and is not modified by this project.
+
+Public-beta downloads are published under
+[GitHub Releases](https://github.com/tonnyrh/harrierattackreloaded_amiga/releases).
+Use the ADF on real hardware, MiniMig or an emulator, or use the HD ZIP for a
+Workbench/hard-disk installation. Kickstart ROMs are never included.
 
 ## Development setup
 
@@ -76,8 +81,12 @@ inputs. The build does not require the original CPC repository.
 ```powershell
 .\run-amiga-classic-contract.ps1
 .\run-amiga-parity.ps1
-.\package-amiga.ps1
+.\package-amiga.ps1 -Version 0.9.0-beta.1
 ```
+
+The packaging command creates versioned ADF and HD ZIP release assets plus a
+SHA-256 checksum file under `dist/release`. Debug symbols are excluded from the
+player package; add `-IncludeDebug` to generate a separate symbols archive.
 
 See [amiga/HEADLESS_TESTING.md](amiga/HEADLESS_TESTING.md) for the headless
 WinUAE regression setup and [AMIGA_PORT_PLAN.md](AMIGA_PORT_PLAN.md) for the
