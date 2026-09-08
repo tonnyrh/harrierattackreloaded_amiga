@@ -61,7 +61,32 @@ void memclr(void* dest, unsigned long len) { // dest: 16bit-aligned, len: multip
 
 __attribute__((optimize("no-tree-loop-distribute-patterns"))) 
 void* memset(void *dest, int val, unsigned long len) {
+	typedef unsigned long FillWord __attribute__((__may_alias__));
 	unsigned char *ptr = (unsigned char *)dest;
+	/* 68000 long stores require an even address. Keep short/odd tails
+	 * bytewise, but do not pay a loop and byte store for every HUD byte. */
+	if (len >= 16) {
+		if ((unsigned long)ptr & 1) {
+			*ptr++ = (unsigned char)val;
+			len--;
+		}
+		unsigned long fill = (unsigned char)val;
+		fill |= fill << 8;
+		fill |= fill << 16;
+		while (len >= 16) {
+			((FillWord*)ptr)[0] = fill;
+			((FillWord*)ptr)[1] = fill;
+			((FillWord*)ptr)[2] = fill;
+			((FillWord*)ptr)[3] = fill;
+			ptr += 16;
+			len -= 16;
+		}
+		while (len >= 4) {
+			*(FillWord*)ptr = fill;
+			ptr += 4;
+			len -= 4;
+		}
+	}
 	while(len-- > 0)
 		*ptr++ = val;
 	return dest;
@@ -69,8 +94,32 @@ void* memset(void *dest, int val, unsigned long len) {
 
 __attribute__((optimize("no-tree-loop-distribute-patterns"))) 
 void* memcpy(void *dest, const void *src, unsigned long len) {
+	typedef unsigned long CopyWord __attribute__((__may_alias__));
 	char *d = (char *)dest;
 	const char *s = (const char *)src;
+	/* A 68000 can copy longs only when both addresses are even. Equal
+	 * parity lets one leading byte align both; unlike parity stays bytewise. */
+	if (len >= 16 && !(((unsigned long)d ^ (unsigned long)s) & 1)) {
+		if ((unsigned long)d & 1) {
+			*d++ = *s++;
+			len--;
+		}
+		while (len >= 16) {
+			((CopyWord*)d)[0] = ((const CopyWord*)s)[0];
+			((CopyWord*)d)[1] = ((const CopyWord*)s)[1];
+			((CopyWord*)d)[2] = ((const CopyWord*)s)[2];
+			((CopyWord*)d)[3] = ((const CopyWord*)s)[3];
+			d += 16;
+			s += 16;
+			len -= 16;
+		}
+		while (len >= 4) {
+			*(CopyWord*)d = *(const CopyWord*)s;
+			d += 4;
+			s += 4;
+			len -= 4;
+		}
+	}
 	while(len--)
 		*d++ = *s++;
 	return dest;

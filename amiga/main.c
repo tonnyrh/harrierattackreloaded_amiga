@@ -14,7 +14,118 @@
 #include <stddef.h>
 #include <string.h>
 #include "assets/harrier_menu_text.h"
-#define HAR_BUILD_LABEL "SPRINT 15.97.1"
+#define HAR_BUILD_LABEL "SPRINT 15.98.0"
+#ifndef HAR_HARDWARE_PLAYER_ROCKET
+#define HAR_HARDWARE_PLAYER_ROCKET 0
+#endif
+#ifndef HAR_HARDWARE_PROJECTILE_CHAIN
+#define HAR_HARDWARE_PROJECTILE_CHAIN 0
+#endif
+#ifndef HAR_CRASH_DEBRIS_BOBS
+#define HAR_CRASH_DEBRIS_BOBS 0
+#endif
+#if HAR_HARDWARE_PROJECTILE_CHAIN && !HAR_HARDWARE_PLAYER_ROCKET
+#error Projectile chain requires the hardware projectile palette integration
+#endif
+#ifndef HAR_DEBUG_OMIT_PROJECTILE_BOBS
+#define HAR_DEBUG_OMIT_PROJECTILE_BOBS 0
+#endif
+#ifndef HAR_CRATER_COLUMN_BOUND
+#define HAR_CRATER_COLUMN_BOUND 1
+#endif
+#ifndef HAR_CRATER_SUCCESS_NOTIFY
+#define HAR_CRATER_SUCCESS_NOTIFY 1
+#endif
+#ifndef HAR_DESTROYED_TARGET_ROWS
+#define HAR_DESTROYED_TARGET_ROWS 1
+#endif
+#ifndef HAR_COMPACT_WORLD_RING
+#define HAR_COMPACT_WORLD_RING 0
+#endif
+#ifndef HAR_WIDE_WORLD_RING
+#define HAR_WIDE_WORLD_RING 1
+#endif
+#if HAR_COMPACT_WORLD_RING && HAR_WIDE_WORLD_RING
+#error Select only one alternate world ring geometry
+#endif
+#ifndef HAR_LOCAL_BOB_ERASE_CACHE
+#define HAR_LOCAL_BOB_ERASE_CACHE 0
+#endif
+#ifndef HAR_DEBUG_BOB_CACHE_STATS
+#define HAR_DEBUG_BOB_CACHE_STATS 0
+#endif
+#ifndef HAR_BOB_ERASE_CACHE_SLOTS
+#define HAR_BOB_ERASE_CACHE_SLOTS 2
+#endif
+#if HAR_BOB_ERASE_CACHE_SLOTS < 2 || HAR_BOB_ERASE_CACHE_SLOTS > 128 || (HAR_BOB_ERASE_CACHE_SLOTS & (HAR_BOB_ERASE_CACHE_SLOTS - 1))
+#error BOB erase cache slots must be a power of two between 2 and 128
+#endif
+#if HAR_DEBUG_BOB_CACHE_STATS
+/* lookups, hits, empty misses, tag misses, revision misses, mode misses */
+static ULONG bobCacheStats[6];
+#endif
+#ifndef HAR_ROCKET_FULL_SHAPE_CACHE
+#define HAR_ROCKET_FULL_SHAPE_CACHE 0
+#endif
+#ifndef HAR_LOCAL_SEA_CANDIDATES
+#define HAR_LOCAL_SEA_CANDIDATES 1
+#endif
+#ifndef HAR_ENGINE_BATCH4
+#define HAR_ENGINE_BATCH4 1
+#endif
+#if HAR_ENGINE_BATCH4
+#include "assets/engine_noise_tables.h"
+typedef ULONG EngineSampleWord __attribute__((__may_alias__));
+#endif
+#ifndef HAR_LOCAL_AIRCRAFT_CACHE
+#define HAR_LOCAL_AIRCRAFT_CACHE 0
+#endif
+#ifndef HAR_LOCAL_AIRCRAFT_CACHE_VERIFY
+#define HAR_LOCAL_AIRCRAFT_CACHE_VERIFY 0
+#endif
+#ifndef HAR_RENDER_COLUMN_CACHE
+#define HAR_RENDER_COLUMN_CACHE 0
+#endif
+#ifndef HAR_RENDER_COLUMN_CACHE_VERIFY
+#define HAR_RENDER_COLUMN_CACHE_VERIFY 0
+#endif
+#ifndef HAR_OBJECT_CELL_CACHE
+#define HAR_OBJECT_CELL_CACHE 1
+#endif
+#ifndef HAR_OBJECT_CACHE_POWER2_STRIDE
+#define HAR_OBJECT_CACHE_POWER2_STRIDE 0
+#endif
+#ifndef HAR_OBJECT_CACHE_SPLIT_MISS
+#define HAR_OBJECT_CACHE_SPLIT_MISS 0
+#endif
+#ifndef HAR_ALIGNED_OBJECT_CELLS
+#define HAR_ALIGNED_OBJECT_CELLS 0
+#endif
+#ifndef HAR_MIRRORED_TILE_BATCH
+#define HAR_MIRRORED_TILE_BATCH 1
+#endif
+#ifndef HAR_ADAPTIVE_STREAM_BUDGET
+#define HAR_ADAPTIVE_STREAM_BUDGET 1
+#endif
+#define ADAPTIVE_STREAM_EXTRA_ROWS 4
+#ifndef HAR_OBJECT_CELL_CACHE_VERIFY
+#define HAR_OBJECT_CELL_CACHE_VERIFY 0
+#endif
+#if HAR_OBJECT_CELL_CACHE_VERIFY && !HAR_OBJECT_CELL_CACHE
+#error HAR_OBJECT_CELL_CACHE_VERIFY requires HAR_OBJECT_CELL_CACHE
+#endif
+#ifndef HAR_DEBUG_OBJECT_SHADOW
+#define HAR_DEBUG_OBJECT_SHADOW 0
+#endif
+#ifndef HAR_DEBUG_OBJECT_SHADOW_LOCAL
+#define HAR_DEBUG_OBJECT_SHADOW_LOCAL 0
+#endif
+#if HAR_DEBUG_OBJECT_SHADOW_LOCAL && !HAR_DEBUG_OBJECT_SHADOW
+#error HAR_DEBUG_OBJECT_SHADOW_LOCAL requires HAR_DEBUG_OBJECT_SHADOW
+#endif
+#if HAR_OBJECT_CELL_CACHE && HAR_DEBUG_OBJECT_SHADOW
+#error Test the active cache and observation shadow in separate builds
+#endif
 
 #define SCREEN_WIDTH 320
 #define LOADING_SCREEN_WIDTH 320
@@ -61,8 +172,8 @@
  * (GAME_COLOR_SEA) and a byte-scan of every tile in the embedded
  * game_tiles.bpl confirmed the 5th bitplane is entirely zero across all 102
  * tiles - it's genuinely never used for anything the world displays. The
- * world buffer itself stays allocated/written at the full SCREEN_PLANES (5)
- * - see buildGameHudCopper() - only the unused 5th plane's data is never
+ * world buffer retains the full SCREEN_PLANES (5) storage stride, while
+ * world tile copying writes only the four visible planes. The 5th is never
  * fetched/displayed during the world's own scanlines, same as the HUD. */
 #define GAME_WORLD_DISPLAY_PLANES 4
 
@@ -72,6 +183,27 @@
 #define HAR_DEBUG_REGISTER_RESOURCES 1
 #ifndef HAR_DEBUG_PERF_LOG
 #define HAR_DEBUG_PERF_LOG 0
+#endif
+#ifndef HAR_DEBUG_PERF_INJECT_STALL
+#define HAR_DEBUG_PERF_INJECT_STALL 0
+#endif
+#ifndef HAR_DEBUG_PERF_STAGES
+#define HAR_DEBUG_PERF_STAGES 0
+#endif
+#ifndef HAR_DEBUG_PERF_DEFERRED
+#define HAR_DEBUG_PERF_DEFERRED 0
+#endif
+#ifndef HAR_DEBUG_PERF_BEAM_STAGES
+#define HAR_DEBUG_PERF_BEAM_STAGES 0
+#endif
+#ifndef HAR_DEBUG_PERF_HITCH_STAGES
+#define HAR_DEBUG_PERF_HITCH_STAGES 0
+#endif
+#ifndef HAR_DEBUG_PERF_HITCH_MIN_SCROLL
+#define HAR_DEBUG_PERF_HITCH_MIN_SCROLL 0
+#endif
+#ifndef HAR_DEBUG_PERF_CAPTURE_ALL_FRAMES
+#define HAR_DEBUG_PERF_CAPTURE_ALL_FRAMES 0
 #endif
 #define HAR_DEBUG_PERF_OVERLAY 0
 #define HAR_DEBUG_HUD_GUARD 0
@@ -90,6 +222,20 @@
 #ifndef HAR_HEADLESS_AUTOPLAY
 #define HAR_HEADLESS_AUTOPLAY 0
 #endif
+#ifndef HAR_HEADLESS_DAMAGE_EXERCISE
+#define HAR_HEADLESS_DAMAGE_EXERCISE 0
+#endif
+#if HAR_HEADLESS_DAMAGE_EXERCISE && !HAR_HEADLESS_AUTOPLAY
+#error Damage exercise requires the headless driver
+#endif
+#if HAR_HEADLESS_DAMAGE_EXERCISE
+enum {
+	DAMAGE_HITS, DAMAGE_FIRST_FRAME, DAMAGE_ARMOUR_BEFORE, DAMAGE_ARMOUR_AFTER,
+	DAMAGE_FAILURE_FRAME, DAMAGE_CRASH_FRAME, DAMAGE_TERMINAL_FRAME,
+	DAMAGE_SMOKE_DRAWS, DAMAGE_FIELD_COUNT
+};
+static ULONG headlessDamageStats[DAMAGE_FIELD_COUNT];
+#endif
 #ifndef HAR_HEADLESS_HIGHSCORE_TEST
 #define HAR_HEADLESS_HIGHSCORE_TEST 0
 #endif
@@ -101,6 +247,9 @@
 #endif
 #ifndef HAR_HEADLESS_MAX_FRAMES
 #define HAR_HEADLESS_MAX_FRAMES 6500
+#endif
+#ifndef HAR_HEADLESS_LANDING_EXERCISE
+#define HAR_HEADLESS_LANDING_EXERCISE 0
 #endif
 #ifndef HAR_HIGHSCORE_DISK_IO
 #define HAR_HIGHSCORE_DISK_IO 1
@@ -141,7 +290,11 @@
 #define ATTRACT_DEMO_SOLO_SEED 0xD3A0
 #define ATTRACT_DEMO_WINGMAN_SEED 0xD3A1
 #define HAR_USE_PROMOTED_CPC_PLUS_ASSETS 1
+#if HAR_COMPACT_WORLD_RING
+#define RING_WORLD_STREAM_MAX_AHEAD_TILES 60
+#else
 #define RING_WORLD_STREAM_MAX_AHEAD_TILES 64
+#endif
 
 #define SFX_CHANNEL_COUNT 4
 
@@ -157,7 +310,16 @@
 #define CPC_LAND_EXTENSION_PER_DIFFICULTY 256
 #define CPC_LAND_MAX_EXTENSION (CPC_LEVEL_DIFFICULTY_MAX * CPC_LAND_EXTENSION_PER_DIFFICULTY)
 #define GAME_LEVEL_WIDTH_TILES (GAME_LEVEL_BASE_WIDTH_TILES + CPC_LAND_MAX_EXTENSION)
+#if HAR_COMPACT_WORLD_RING
+/* 64 primary columns + 42 mirrored fetch columns, with two margin bytes.
+ * Keep stream-ahead below the period so no visible slot is recycled. */
+#define GAME_WORLD_WIDTH_TILES 106
+#elif HAR_WIDE_WORLD_RING
+/* 128 primary columns + 42 mirrored fetch columns. */
+#define GAME_WORLD_WIDTH_TILES 170
+#else
 #define GAME_WORLD_WIDTH_TILES 128
+#endif
 #define GAME_WORLD_BUFFER_MARGIN_TILES 2
 #define GAME_WORLD_BUFFER_MARGIN_PIXELS (GAME_WORLD_BUFFER_MARGIN_TILES * GAME_TILE_WIDTH)
 #define GAME_WORLD_BUFFER_TILES (GAME_WORLD_WIDTH_TILES + GAME_WORLD_BUFFER_MARGIN_TILES)
@@ -171,6 +333,9 @@
 #define GAME_WORLD_MAX_BYTE_OFFSET (GAME_WORLD_BUFFER_TILES - GAME_FETCH_BYTES)
 #define GAME_WORLD_SCROLL_PAGE_BYTES ((GAME_WORLD_MAX_BYTE_OFFSET - GAME_WORLD_BUFFER_MARGIN_TILES) & ~1)
 #define GAME_WORLD_SCROLL_PAGE_TILES GAME_WORLD_SCROLL_PAGE_BYTES
+#if RING_WORLD_STREAM_MAX_AHEAD_TILES >= GAME_WORLD_SCROLL_PAGE_TILES
+#error Ring streaming must not recycle the current visible page
+#endif
 #define WORLD_RENDER_TOWN_BLOCK_MAX_WIDTH 5
 #define WORLD_RENDER_CARRIER_WIDTH_TILES 12
 /* The promoted CPC+ gunship is two 16px ASIC sprites side by side:
@@ -281,6 +446,7 @@
 #define CPC_LAND_PROCEDURAL_BASE_LENGTH 299
 #define CPC_LAND_PROCEDURAL_MAX_LENGTH (CPC_LAND_PROCEDURAL_BASE_LENGTH + CPC_LAND_MAX_EXTENSION)
 #define CPC_LAND_PROCEDURAL_BASELINE 14
+#define CPC_TOWN_TERRAIN_ROW 14
 #define CPC_LAND_PROCEDURAL_FLOOR 11
 
 #define PLAYER_SPRITE_WIDTH 16
@@ -598,7 +764,11 @@
 #define ENEMY_SCORE_VALUE 750
 #define ENEMY_MISSILE_SPRITE_WIDTH 16
 #define ENEMY_MISSILE_SPRITE_HEIGHT 8
+#if HAR_HARDWARE_PROJECTILE_CHAIN
+#define ENEMY_MISSILE_SPRITE_WORDS (3 * (2 + ENEMY_MISSILE_SPRITE_HEIGHT * 2) + 2)
+#else
 #define ENEMY_MISSILE_SPRITE_WORDS (2 + ENEMY_MISSILE_SPRITE_HEIGHT * 2 + 2)
+#endif
 #define ENEMY_MISSILE_SPEED_X_PIXELS 2
 /* CPC heatseekposition stops changing altitude once the missile is fewer
  * than five character cells ahead of its selected target.  That dead zone is
@@ -913,6 +1083,14 @@ static UWORD* activeMenuTickerBplcon1 = 0;
  * start phase so stale colours can never leak between sessions. */
 static UWORD* activeCopperSkyGradientColors[GAME_SKY_GRADIENT_BAND_COUNT];
 static UWORD* activeCopperCloudTopColor = 0;
+#if HAR_HARDWARE_PLAYER_ROCKET
+static UWORD* hardwareProjectilePaletteOperands[2];
+static UBYTE hardwareProjectilePaletteActive;
+static ULONG hardwareProjectileStats[4]; /* selected, fallback, payload builds, handoffs */
+#if HAR_HARDWARE_PROJECTILE_CHAIN
+static ULONG hardwareProjectileChainCounts[4]; /* frames with 0/1/2/3 uses */
+#endif
+#endif
 static UWORD* activeCopperLandColor = 0;
 static UWORD* activeCopperSeaLowColor = 0;
 static UWORD* activeCopperPanelSeaColor = 0;
@@ -1155,8 +1333,8 @@ typedef struct WeaponState {
  * pixel coordinate (so it scrolls left naturally as game->scrollX grows),
  * y is a screen-space pixel coordinate (the powerup doesn't scroll
  * vertically with the world - only falls under its own slow gravity).
- * fallCounter is the shared presentation phase which interpolates between
- * CPC logical rows in both profiles.
+ * fallCounter interpolates CPC logical rows in Classic; Enhanced uses
+ * independent fractional fall and drift with collision at the visible Y.
  * spawnId tracks position in
  * the deterministic 1..6 type-rotation sequence (1=health, 2=rockets,
  * 3=bombs, 4=rockets, 5=bombs, 6=skip-and-spawn-enemy-plane). */
@@ -1165,8 +1343,12 @@ typedef struct {
 	UBYTE type;
 	LONG worldX;
 	WORD y;             /* interpolated display Y */
-	WORD logicalY;      /* CPC collision row; advances 8px every five ticks */
+	WORD logicalY;      /* CPC row in Classic, visible Y in Enhanced */
 	UBYTE fallCounter;
+	UBYTE fallRate;      /* Enhanced: eighth-pixels per update, 6..9. */
+	UBYTE fallFraction;
+	BYTE driftRate;      /* Enhanced: signed eighth-pixels per update. */
+	BYTE driftFraction;
 	UBYTE spawnId;
 	UWORD lastSpawnCheckColumn;
 } PowerupState;
@@ -1473,7 +1655,65 @@ typedef struct ObjectCell {
 	UBYTE tile;
 	UBYTE flags;
 	UBYTE hp;
-} ObjectCell;
+}
+#if HAR_ALIGNED_OBJECT_CELLS
+__attribute__((aligned(2)))
+#endif
+ObjectCell;
+
+typedef struct RenderColumn {
+	UBYTE tile[GAME_OBJECT_MAP_HEIGHT_TILES];
+} RenderColumn;
+#if HAR_RENDER_COLUMN_CACHE
+#define RENDER_COLUMN_CACHE_COLUMNS 64
+typedef struct RenderColumnCache {
+	RenderColumn column;
+	LONG worldColumn;
+	WORD townLocalColumn;
+	UWORD passableMask;
+	UBYTE radarTopRow, mode, valid;
+} RenderColumnCache;
+static RenderColumnCache renderColumnCache[RENDER_COLUMN_CACHE_COLUMNS];
+#if HAR_RENDER_COLUMN_CACHE_VERIFY
+static ULONG renderColumnCacheStats[3];
+#endif
+static void invalidateRenderColumns(LONG first, LONG last) {
+	for (LONG column = first; column <= last; column++)
+		renderColumnCache[(UWORD)column & (RENDER_COLUMN_CACHE_COLUMNS - 1)].valid = 0;
+}
+#endif
+
+#if HAR_OBJECT_CELL_CACHE
+#define OBJECT_CELL_CACHE_COLUMNS 64
+typedef struct ObjectCacheColumn {
+	ObjectCell cells[GAME_OBJECT_MAP_HEIGHT_TILES];
+	LONG worldColumn;
+	ULONG knownRows;
+#if HAR_OBJECT_CACHE_POWER2_STRIDE
+	/* Trade 20 bytes per column for a shift-based 68000 slot address. */
+	UBYTE padding[128 - GAME_OBJECT_MAP_HEIGHT_TILES * sizeof(ObjectCell) - sizeof(LONG) - sizeof(ULONG)];
+#endif
+} ObjectCacheColumn;
+#if HAR_OBJECT_CACHE_POWER2_STRIDE
+typedef char ObjectCacheStrideMustBe128[(sizeof(ObjectCacheColumn) == 128) ? 1 : -1];
+#endif
+static ObjectCacheColumn objectCellCache[OBJECT_CELL_CACHE_COLUMNS];
+#if HAR_OBJECT_CELL_CACHE_VERIFY
+static ULONG objectCacheStats[3]; /* hits, misses, incorrect hits */
+#endif
+#endif
+
+#if HAR_DEBUG_OBJECT_SHADOW
+typedef struct ObjectShadowColumn {
+	ObjectCell cells[GAME_OBJECT_MAP_HEIGHT_TILES];
+	LONG worldColumn;
+	ULONG revision, knownRows, currentRows;
+} ObjectShadowColumn;
+static ObjectShadowColumn objectShadow[GAME_WORLD_SCROLL_PAGE_TILES];
+/* queries, current hits, new rows, recycled columns, revision changes,
+ * stale-but-equal rows, changed stale rows, unexpected current mismatches. */
+static ULONG objectShadowStats[8];
+#endif
 
 typedef struct LevelSegmentDef {
 	WORD startColumn;
@@ -1589,6 +1829,119 @@ static UWORD ringStreamRow = 0;
 static UBYTE ringStreamRowCredit = 0;
 static UWORD destroyedTargetColumns[GAME_DESTROYED_TARGET_MAX];
 static UBYTE destroyedTargetCount = 0;
+/* Invalidates cosmetic classification caches when world objects change. */
+static ULONG worldObjectRevision = 1;
+#if HAR_LOCAL_BOB_ERASE_CACHE
+static void invalidateBobEraseColumns(LONG first, LONG last);
+#else
+#define invalidateBobEraseColumns(first, last) ((void)0)
+#endif
+#if HAR_LOCAL_SEA_CANDIDATES
+static ULONG seaClassificationRevision = 1;
+static UBYTE rowMayChangeSeaCandidates(WORD row) {
+	UBYTE key = (UBYTE)row; /* Persistent object rows use byte keys. */
+	return key >= ((SEA_SURFACE_Y + 4) >> 3) &&
+		key <= ((SEA_SURFACE_Y + 4 + 3 * 8) >> 3);
+}
+#endif
+#if HAR_LOCAL_AIRCRAFT_CACHE
+static ULONG aircraftColumnRevision[64];
+#if HAR_LOCAL_AIRCRAFT_CACHE_VERIFY
+static ULONG aircraftCacheStats[3]; /* hits, misses, incorrect hits */
+#endif
+static void invalidateAircraftColumns(LONG first, LONG last) {
+	for (LONG column = first; column <= last; column++)
+		aircraftColumnRevision[(UWORD)column & 63] = worldObjectRevision;
+}
+#endif
+static void worldObjectsReset(void) {
+	worldObjectRevision++;
+	invalidateBobEraseColumns(0, 65535L);
+#if HAR_LOCAL_SEA_CANDIDATES
+	seaClassificationRevision++;
+#endif
+#if HAR_LOCAL_AIRCRAFT_CACHE
+	for (UWORD slot = 0; slot < 64; slot++)
+		aircraftColumnRevision[slot] = worldObjectRevision;
+#endif
+#if HAR_RENDER_COLUMN_CACHE
+	for (UWORD slot = 0; slot < RENDER_COLUMN_CACHE_COLUMNS; slot++)
+		renderColumnCache[slot].valid = 0;
+#endif
+#if HAR_OBJECT_CELL_CACHE
+	for (UWORD slot = 0; slot < OBJECT_CELL_CACHE_COLUMNS; slot++)
+		objectCellCache[slot].knownRows = 0;
+#endif
+}
+#if HAR_DEBUG_OBJECT_SHADOW_LOCAL
+/* Test column-local invalidation while every real cache still uses the
+ * global revision. Only carry forward cells already current before this
+ * mutation: a preceding route reset must never revive stale observations.
+ * Stored damage keys use UWORD columns, so invalidate matching aliases too. */
+static void worldObjectColumnsChanged(LONG first, LONG last) {
+	ULONG previousRevision = worldObjectRevision++;
+	invalidateBobEraseColumns(first, last);
+#if HAR_LOCAL_SEA_CANDIDATES
+	seaClassificationRevision++;
+#endif
+#if HAR_LOCAL_AIRCRAFT_CACHE
+	invalidateAircraftColumns(first, last);
+#endif
+#if HAR_RENDER_COLUMN_CACHE
+	invalidateRenderColumns(first, last);
+#endif
+	for (UWORD slot = 0; slot < GAME_WORLD_SCROLL_PAGE_TILES; slot++) {
+		ObjectShadowColumn* column = &objectShadow[slot];
+		if (column->revision != previousRevision)
+			continue;
+		column->revision = worldObjectRevision;
+		if ((UWORD)((UWORD)column->worldColumn - (UWORD)first) <=
+			(UWORD)(last - first))
+			column->currentRows = 0;
+	}
+}
+#elif HAR_OBJECT_CELL_CACHE || HAR_RENDER_COLUMN_CACHE || HAR_LOCAL_AIRCRAFT_CACHE || HAR_LOCAL_SEA_CANDIDATES || HAR_LOCAL_BOB_ERASE_CACHE
+static void worldObjectColumnsChanged(LONG first, LONG last) {
+	worldObjectRevision++;
+	invalidateBobEraseColumns(first, last);
+#if HAR_LOCAL_SEA_CANDIDATES
+	seaClassificationRevision++;
+#endif
+#if HAR_LOCAL_AIRCRAFT_CACHE
+	invalidateAircraftColumns(first, last);
+#endif
+#if HAR_RENDER_COLUMN_CACHE
+	invalidateRenderColumns(first, last);
+#endif
+#if HAR_OBJECT_CELL_CACHE
+	/* UWORD history aliases also map to the same low-six-bit slot.
+	 * Invalidating an unrelated tagged column is harmless on a collision. */
+	for (LONG column = first; column <= last; column++)
+		objectCellCache[(UWORD)column & (OBJECT_CELL_CACHE_COLUMNS - 1)].knownRows = 0;
+#endif
+}
+#else
+#define worldObjectColumnsChanged(first, last) (++worldObjectRevision)
+#endif
+#if HAR_LOCAL_SEA_CANDIDATES
+static void worldObjectCellChanged(LONG column, WORD row) {
+	ULONG previousSeaRevision = seaClassificationRevision;
+	worldObjectColumnsChanged(column, column);
+	if (!rowMayChangeSeaCandidates(row))
+		seaClassificationRevision = previousSeaRevision;
+}
+#else
+#define worldObjectCellChanged(column, row) worldObjectColumnsChanged(column, column)
+#endif
+static LONG powerupBackgroundCacheLeft;
+static UBYTE powerupBackgroundCacheDirty = 1;
+#if HAR_HEADLESS_CLASSIC_CONTRACT_TEST
+static ULONG powerupBackgroundRebuilds;
+#endif
+static void invalidatePowerupBackgroundColumn(LONG column) {
+	if (column >= powerupBackgroundCacheLeft && column <= powerupBackgroundCacheLeft + 2)
+		powerupBackgroundCacheDirty = 1;
+}
 static UWORD runtimeFlakColumns[GAME_RUNTIME_FLAK_MAX];
 static UBYTE runtimeFlakRows[GAME_RUNTIME_FLAK_MAX];
 static UBYTE runtimeFlakTiles[GAME_RUNTIME_FLAK_MAX];
@@ -1607,9 +1960,17 @@ static UWORD shipWreckSmokeColumns[GAME_PERSISTENT_HIT_SMOKE_MAX];
 static UBYTE shipWreckSmokeRows[GAME_PERSISTENT_HIT_SMOKE_MAX];
 static UBYTE shipWreckSmokeTiles[GAME_PERSISTENT_HIT_SMOKE_MAX];
 static UBYTE shipWreckSmokeCount = 0;
+/* Conservative membership filter: collisions only cause an extra list scan. */
+static UBYTE shipWreckSmokeColumnBits[32];
 static UWORD landCraterColumns[GAME_LAND_CRATER_MAX];
 static UBYTE landCraterRows[GAME_LAND_CRATER_MAX];
 static UBYTE landCraterCount = 0;
+#if HAR_HEADLESS_CLASSIC_CONTRACT_TEST && HAR_DESTROYED_TARGET_ROWS
+static ULONG destroyedTargetRowRepairs;
+#endif
+#if HAR_CRATER_COLUMN_BOUND
+static UWORD landCraterLastColumn;
+#endif
 /* Positive-only Wingman passability cache. Keep it outside the query helper
  * so a newly generated session can explicitly invalidate old map answers. */
 static UWORD wingmanSafeCellColumn[WINGMAN_SAFE_CELL_CACHE_SIZE];
@@ -1790,6 +2151,60 @@ static USHORT* hudCopDdfstrtOperandPtr = 0;
 static USHORT* hudCopDdfstopOperandPtr = 0;
 
 #if HAR_DEBUG_PERF_LOG
+/* PAL field clock sampled at the same raster phase by WaitVbl(). */
+static ULONG perfHardwareFrames = 0;
+#if HAR_ADAPTIVE_STREAM_BUDGET
+/* Minimum completed lead, deferred updates, boosted updates, samples. */
+static ULONG adaptiveStreamStats[4] = {65535, 0, 0, 0};
+#endif
+static ULONG perfLastTod = 0;
+static UBYTE perfTodStarted = 0;
+#if HAR_DEBUG_PERF_STAGES
+static ULONG perfStageLast = 0;
+#define PERF_STAGE_COUNT 50
+static ULONG perfStageLines[PERF_STAGE_COUNT];
+static ULONG perfReadFieldClock(void) {
+	volatile struct CIA* cia = (volatile struct CIA*)0xbfe001;
+	ULONG fields = (ULONG)cia->ciatodhi << 16;
+	fields |= (ULONG)cia->ciatodmid << 8;
+	fields |= cia->ciatodlow;
+	return fields;
+}
+#if HAR_DEBUG_PERF_HITCH_STAGES
+/* A TOD delta measured at this loop's start belongs to the preceding
+ * workload. Preserve that workload, not the stages of the current loop. */
+static UWORD perfPreviousStages[PERF_STAGE_COUNT + 2];
+static UWORD perfHitchStages[128][PERF_STAGE_COUNT + 3];
+static UBYTE perfPreviousStagesValid;
+static UWORD perfHitchStageCount;
+#endif
+static ULONG perfReadRasterClock(void) {
+#if HAR_DEBUG_PERF_BEAM_STAGES
+	/* Lightweight relative stage timing for steady PAL play. Every sampled
+	 * section must be shorter than one field; startup/long stalls are not
+	 * measurable here. CIA-A remains the independent full-field pacing clock. */
+	static UWORD previousBeam;
+	static ULONG beamTicks;
+	UWORD beam = (UWORD)((*(volatile ULONG*)0xdff004 >> 8) & 0x1ff);
+	WORD delta = (WORD)beam - (WORD)previousBeam;
+	if (delta < 0) delta += 312;
+	beamTicks += (UWORD)delta;
+	previousBeam = beam;
+	return beamTicks;
+#else
+	volatile struct CIA* clockCia = (volatile struct CIA*)0xbfd000;
+	ULONG ticks = (ULONG)clockCia->ciatodhi << 16;
+	ticks |= (ULONG)clockCia->ciatodmid << 8;
+	ticks |= clockCia->ciatodlow;
+	return ticks;
+#endif
+}
+static void perfStageMark(UBYTE stage) {
+	ULONG now = perfReadRasterClock();
+	perfStageLines[stage] += (now - perfStageLast) & 0x00ffffffUL;
+	perfStageLast = now;
+}
+#endif
 static UWORD perfWorldTileColumns = 0;
 static UWORD perfWorldObjectColumns = 0;
 static UWORD perfWorldPages = 0;
@@ -1807,9 +2222,19 @@ static UWORD perfP2RocketLaunches = 0;
 static UWORD perfP2BombLaunches = 0;
 static UWORD perfWingmanWorldProbes = 0;
 static UWORD perfWingmanWorldHits = 0;
-#define PERF_LOG_BUFFER_BYTES 4096
+/* Keep full-route coverage when profiling with shorter sample intervals.
+ * The original 4 KiB silently filled before the city at 100-frame sampling.
+ * This storage exists only in HAR_DEBUG_PERF_LOG builds. */
+#define PERF_LOG_BUFFER_BYTES (4096 * ((500 + PERF_LOG_INTERVAL_FRAMES - 1) / PERF_LOG_INTERVAL_FRAMES))
+typedef char PerfLogBufferMustFitUword[(PERF_LOG_BUFFER_BYTES <= 65535) ? 1 : -1];
 static char perfLogBuffer[PERF_LOG_BUFFER_BYTES];
 static UWORD perfLogBufferUsed = 0;
+#if HAR_DEBUG_PERF_DEFERRED
+/* Numeric snapshots only while the game runs. Formatting/debug console I/O
+ * must not create the very missed fields this pacing probe measures. */
+static UWORD perfDeferredRows[128][10];
+static UWORD perfDeferredCount = 0;
+#endif
 
 /* Sprint 14.103: dumps the generated land height/tile/transition table to
  * disk, for a "terrain looks too abrupt" report where the tile graphics and
@@ -2002,6 +2427,11 @@ static LevelObjectDef harLevelObjects[HAR_LEVEL_OBJECT_COUNT];
 static UWORD harEnemyShipMissileTriggers[HAR_ENEMY_SHIP_TRIGGER_COUNT];
 static UWORD currentGameLevelWidthTiles = GAME_LEVEL_BASE_WIDTH_TILES;
 static UWORD cpcLandRouteExtension = 0;
+/* Presentation-only session setting. It is assigned before the ring world is
+ * initialized and remains constant until that world is discarded. Keeping it
+ * separate from gameplay state lets the column compositor select Enhanced
+ * art without changing CPC collision/destruction data. */
+static UBYTE currentWorldPresentationMode = GAME_MODE_CLASSIC;
 static UWORD gameScrollMaxPixels(void) {
 	return (UWORD)((currentGameLevelWidthTiles - GAME_MAP_WIDTH) * GAME_TILE_WIDTH);
 }
@@ -2029,6 +2459,9 @@ static UBYTE harLevelObjectColumnHead[GAME_LEVEL_WIDTH_TILES + 16];
 static UBYTE harLevelObjectNext[HAR_LEVEL_OBJECT_COUNT];
 static UBYTE harWideObjectIndex[HAR_LEVEL_OBJECT_COUNT];
 static UBYTE harWideObjectCount;
+static UBYTE harOwnFrigateIndex[HAR_LEVEL_OBJECT_COUNT];
+static UBYTE harOwnFrigateCount;
+static WORD harOwnFrigateMinProbeRow, harOwnFrigateMaxProbeRow;
 static UBYTE harLevelObjectIndexReady = 0;
 
 /* The authored route is the compact coordinate baseline. CPC keeps land state
@@ -2037,6 +2470,8 @@ static UBYTE harLevelObjectIndexReady = 0;
  * by 256 columns per difficulty and move every later segment/object/trigger
  * together; then add the measured 0..5-column whole-building town overflow. */
 static void configureRuntimeLevelRoute(UWORD landExtension, UBYTE townOverflow) {
+	worldObjectsReset();
+	powerupBackgroundCacheDirty = 1;
 	memcpy(harLevelRoute, harLevelRouteSource, sizeof(harLevelRoute));
 	memcpy(harLevelObjects, harLevelObjectsSource, sizeof(harLevelObjects));
 	memcpy(harEnemyShipMissileTriggers, harEnemyShipMissileTriggersSource,
@@ -2105,11 +2540,45 @@ static UBYTE isWideLevelObject(const LevelObjectDef* object) {
 	return 0;
 }
 
+/* These immutable composites differ only where the parked Wingman sits.
+ * Prepare the tile delta during world setup, never by scanning asset bytes
+ * in the live takeoff frame. Editing/repacking assets rebuilds this table. */
+static UBYTE carrierWingmanTileChanged[HAR_CARRIER_TILES_WIDE * HAR_CARRIER_TILES_TALL];
+static UBYTE carrierWingmanDeltaReady;
+static void prepareCarrierWingmanDelta(void) {
+	if (carrierWingmanDeltaReady) return;
+	for (UWORD index = 0; index < sizeof(carrierWingmanTileChanged); index++) {
+		UBYTE changed = harCarrierTileSkip[index] != harCarrierWithoutWingmanTileSkip[index];
+		if (!changed && !harCarrierTileSkip[index]) {
+			ULONG offset = (ULONG)index * HAR_CARRIER_TILE_BYTES;
+			for (UWORD byte = 0; byte < HAR_CARRIER_TILE_BYTES; byte++) {
+				if (harCarrierTileData[offset + byte] != harCarrierWithoutWingmanTileData[offset + byte]) {
+					changed = 1;
+					break;
+				}
+			}
+		}
+		carrierWingmanTileChanged[index] = changed;
+	}
+	carrierWingmanDeltaReady = 1;
+}
+
 static void buildHarLevelObjectIndex(void) {
+	prepareCarrierWingmanDelta();
 	memset(harLevelObjectColumnHead, HAR_LEVEL_OBJECT_COLUMN_INDEX_NONE, sizeof(harLevelObjectColumnHead));
 	harWideObjectCount = 0;
+	harOwnFrigateCount = 0;
+	harOwnFrigateMinProbeRow = GAME_OBJECT_MAP_HEIGHT_TILES;
+	harOwnFrigateMaxProbeRow = -1;
 	for (UBYTE index = 0; index < HAR_LEVEL_OBJECT_COUNT; index++) {
 		const LevelObjectDef* object = &harLevelObjects[index];
+		if (object->id == HAR_OBJ_OWN_FRIGATE && object->rowMode == HAR_ROW_ABSOLUTE) {
+			harOwnFrigateIndex[harOwnFrigateCount++] = index;
+			WORD first = harLevelObjects[index].row - 1;
+			WORD last = harLevelObjects[index].row + 1;
+			if (first < harOwnFrigateMinProbeRow) harOwnFrigateMinProbeRow = first;
+			if (last > harOwnFrigateMaxProbeRow) harOwnFrigateMaxProbeRow = last;
+		}
 		if (object->column >= 0 && object->column < (WORD)sizeof(harLevelObjectColumnHead)) {
 			/* Prepend - reverses relative order among entries that share the
 			 * exact same column, which only matters if two of them also
@@ -2151,6 +2620,11 @@ static void resetPowerup(GameState* game);
 static const LevelSegmentDef* levelSegmentForWorldColumn(LONG worldColumn);
 static UBYTE stageForWorldColumn(LONG worldColumn, const LevelSegmentDef* segment);
 static void dirtyRedrawWorldColumn(UBYTE** worldBuffers, LONG worldColumn);
+static void bobCompositorErase(UBYTE* bitmap, LONG worldColumnLeft, WORD tileRow, UBYTE columnCount);
+#if HAR_HARDWARE_PLAYER_ROCKET
+static UBYTE referenceHardwareProjectileEligibilityMatches(void);
+#endif
+static const RenderColumn* bobEraseColumn(LONG worldColumn);
 static LONG scrollPointerPixelX(UWORD scrollX);
 static void serviceRingWorldStream(UBYTE* bitmap, const GameState* game);
 static UBYTE useFixedTakeoffWorldWindow(const GameState* game);
@@ -2158,13 +2632,21 @@ static void startPlayerCrash(GameState* game, WORD x, WORD y);
 static void startPlayerCrashWithSfx(GameState* game, WORD x, WORD y, UBYTE sfxId);
 static void modRestoreChannelAfterSfx(UBYTE channel);
 
+#include "assets/enhanced/town_graphics.h"
+
 #ifdef __INTELLISENSE__
+EMBED enhancedTownTiles[ENHANCED_TOWN_TILE_COUNT * GAME_TILE_BYTES] = { 0 };
 EMBED loadingPalette[] = { 0, 0 };
 EMBED cpcFont8x8[] = { 0 };
 EMBED gameTiles[] = { 0 };
 EMBED gameSceneMap[] = { 0 };
 EMBED gamePalette[] = { 0, 0 };
+EMBED enhancedTankTiles[80] = { 0 };
+EMBED enhancedGroundTargetTiles[120] = { 0 };
 #else
+EMBED enhancedTownTiles[] = {
+	#embed "assets/enhanced/town_tiles.bpl"
+};
 EMBED loadingPalette[] = {
 	#embed "assets/loading_screen.pal"
 };
@@ -2180,7 +2662,40 @@ EMBED gameSceneMap[] = {
 EMBED gamePalette[] = {
 	#embed "assets/game_palette.pal"
 };
+EMBED enhancedTankTiles[] = {
+	#embed "assets/enhanced/tank_16x8_masked.bpl"
+};
+EMBED enhancedGroundTargetTiles[] = {
+	#embed "assets/enhanced/ground_targets_8x8_masked.bpl"
+};
 #endif
+
+typedef char EnhancedTownTilesSizeCheck[
+	(sizeof(enhancedTownTiles) == ENHANCED_TOWN_TILE_COUNT * GAME_TILE_BYTES &&
+	 GAME_TILE_COUNT + ENHANCED_TOWN_TILE_COUNT <= 256) ? 1 : -1];
+typedef char EnhancedTankTilesMustBe80Bytes[
+	(sizeof(enhancedTankTiles) == 80) ? 1 : -1];
+typedef char EnhancedGroundTargetTilesMustBe120Bytes[
+	(sizeof(enhancedGroundTargetTiles) == 120) ? 1 : -1];
+
+/* Optional hardware-projectile palette: reindex attached aircraft without
+ * changing their RGB values. Enabled by HAR_HARDWARE_PLAYER_ROCKET. */
+static const UBYTE projectileAttachedPenMap[16] = {
+	0, 1, 2, 3, 14, 5, 6, 7, 8, 12, 4, 11, 6, 13, 14, 15
+};
+static UWORD projectileSpritePaletteWord(const UWORD* palette, UBYTE index,
+	UBYTE projectilesActive) {
+	switch (index) {
+		case 20: return palette[26];
+		case 28: return palette[25];
+		case 25: return palette[projectilesActive ? GAME_COLOR_BLACK : 25];
+		case 26: return palette[projectilesActive ? GAME_COLOR_YELLOW : 26];
+		case 29: return WINGMAN_SPRITE_DARK_RGB;
+		case 30: return WINGMAN_SPRITE_MID_RGB;
+		case 31: return WINGMAN_SPRITE_LIGHT_RGB;
+		default: return palette[index];
+	}
+}
 
 #ifdef __INTELLISENSE__
 EMBED_CHIP sfxFireSample[] = { 0, 0 };
@@ -2477,6 +2992,18 @@ static void WaitVbl(void) {
 	 * observed PAL VBL preserves the exact timing without requiring any CPU
 	 * exception or supervisor stack at runtime. */
 	frameCounter++;
+#if HAR_DEBUG_PERF_LOG
+	/* CIA-A TOD counts VSync independently of CPU progress. Reading high
+	 * latches the 24-bit value; reading low releases it. Never write TOD or
+	 * change the OS alarm/timer configuration for this measurement. */
+	ULONG tod = (ULONG)ciaa->ciatodhi << 16;
+	tod |= (ULONG)ciaa->ciatodmid << 8;
+	tod |= ciaa->ciatodlow;
+	if (perfTodStarted)
+		perfHardwareFrames += (tod - perfLastTod) & 0x00ffffffUL;
+	perfLastTod = tod;
+	perfTodStarted = 1;
+#endif
 }
 
 static __attribute__((always_inline)) inline void WaitBlt(void) {
@@ -3655,22 +4182,163 @@ static void perfLogOpen(void) {
 		static const char header[] =
 			"frame,seconds,loops,minFps,maxFps,avgFps,hitches,maxVblDelta,scroll,speed,origin,job,stage,tileX,tileCols,objCols,pages,fuel,armour,rockets,bombs,p1Rkt,p1Bmb,p2Rkt,p2Bmb,wingWorldProbes,wingWorldHits,hudCalls,hudArmChg,hudFuelChg,hudScoreChg,hudSpdChg,hudRktChg,hudBmbChg,hudGuardHits,hudGuard2Hits,hudRegHits,hudCollisionFires,livBplcon0,expBplcon0,livDdfstrt,expDdfstrt,livDdfstop,expDdfstop,livBpl5pt,expBpl5pt\n";
 		perfLogAppend(header, sizeof(header) - 1);
+		/* Optional stage totals use separate comment records in the same log,
+		 * in CIA-B scanlines: audio/input, logic, erase, stream, effects, shots. */
 	}
-	perfLastLoopFrame = frameCounter;
+	perfLastLoopFrame = (UWORD)perfHardwareFrames;
 	perfRuntimeFlakSpawns = 0;
 	perfLogResetInterval();
 }
 
 static void perfLogFlushToDisk(void) {
+#if HAR_DEBUG_PERF_DEFERRED
+	static const char header[] = "frame,seconds,loops,minFps,maxFps,avgFps,hitches,maxVblDelta,scroll,speed\n";
+	perfLogBufferUsed = 0;
+	perfLogAppend(header, sizeof(header) - 1);
+	for (UWORD row = 0; row < perfDeferredCount; row++) {
+		char line[80];
+		char* out = line;
+		for (UBYTE column = 0; column < 10; column++) {
+			out = appendUnsignedLong(out, perfDeferredRows[row][column]);
+			*out++ = column == 9 ? '\n' : ',';
+		}
+		perfLogAppend(line, (UWORD)(out - line));
+	}
+#endif
 	BPTR file = Open((CONST_STRPTR)"DH1:perf_log.csv", MODE_NEWFILE);
 	if (!file)
 		return;
 	Write(file, (APTR)perfLogBuffer, perfLogBufferUsed);
+#if HAR_ADAPTIVE_STREAM_BUDGET
+	{
+		char line[80];
+		char* out = line;
+		static const char label[] = "#adaptive_stream";
+		for (UBYTE i = 0; i < sizeof(label) - 1; i++) *out++ = label[i];
+		for (UBYTE i = 0; i < 4; i++) {
+			*out++ = ',';
+			out = appendUnsignedLong(out, adaptiveStreamStats[i]);
+		}
+		*out++ = '\n';
+		Write(file, (APTR)line, (LONG)(out - line));
+	}
+#endif
+#if HAR_DEBUG_BOB_CACHE_STATS
+	{
+		char line[96];
+		char* out = line;
+		static const char label[] = "#bob_cache";
+		for (UBYTE i = 0; i < sizeof(label) - 1; i++) *out++ = label[i];
+		for (UBYTE i = 0; i < 6; i++) {
+			*out++ = ',';
+			out = appendUnsignedLong(out, bobCacheStats[i]);
+		}
+		*out++ = '\n';
+		Write(file, (APTR)line, (LONG)(out - line));
+	}
+#endif
+#if HAR_DEBUG_PERF_STAGES && HAR_DEBUG_PERF_HITCH_STAGES
+	/* Formatting and disk I/O happen after the display has been released. */
+	for (UWORD row = 0; row < perfHitchStageCount; row++) {
+		char line[(PERF_STAGE_COUNT + 3) * 6 + 2];
+		char* out = line;
+		*out++ = '!';
+		for (UBYTE column = 0; column < PERF_STAGE_COUNT + 3; column++) {
+			out = appendUnsignedLong(out, perfHitchStages[row][column]);
+			*out++ = column == PERF_STAGE_COUNT + 2 ? '\n' : ',';
+		}
+		Write(file, (APTR)line, (LONG)(out - line));
+	}
+#endif
+#if HAR_DEBUG_OBJECT_SHADOW
+	{
+		char line[128];
+		char* out = line;
+		static const char label[] = "#object_shadow";
+		for (UBYTE i = 0; i < sizeof(label) - 1; i++) *out++ = label[i];
+		for (UBYTE i = 0; i < 8; i++) {
+			*out++ = ',';
+			out = appendUnsignedLong(out, objectShadowStats[i]);
+		}
+		*out++ = '\n';
+		Write(file, (APTR)line, (LONG)(out - line));
+	}
+#endif
+#if HAR_OBJECT_CELL_CACHE && HAR_OBJECT_CELL_CACHE_VERIFY
+	{
+		char line[64];
+		char* out = line;
+		static const char label[] = "#object_cache";
+		for (UBYTE i = 0; i < sizeof(label) - 1; i++) *out++ = label[i];
+		for (UBYTE i = 0; i < 3; i++) {
+			*out++ = ',';
+			out = appendUnsignedLong(out, objectCacheStats[i]);
+		}
+		*out++ = '\n';
+		Write(file, (APTR)line, (LONG)(out - line));
+	}
+#endif
+#if HAR_HARDWARE_PROJECTILE_CHAIN
+	{
+		char line[80];
+		char* out = line;
+		static const char label[] = "#projectile_chain";
+		for (UBYTE i = 0; i < sizeof(label) - 1; i++) *out++ = label[i];
+		for (UBYTE i = 0; i < 4; i++) {
+			*out++ = ',';
+			out = appendUnsignedLong(out, hardwareProjectileChainCounts[i]);
+		}
+		*out++ = '\n';
+		Write(file, (APTR)line, (LONG)(out - line));
+	}
+#endif
+#if HAR_RENDER_COLUMN_CACHE && HAR_RENDER_COLUMN_CACHE_VERIFY
+	{
+		char line[64];
+		char* out = line;
+		static const char label[] = "#render_cache";
+		for (UBYTE i = 0; i < sizeof(label) - 1; i++) *out++ = label[i];
+		for (UBYTE i = 0; i < 3; i++) {
+			*out++ = ',';
+			out = appendUnsignedLong(out, renderColumnCacheStats[i]);
+		}
+		*out++ = '\n';
+		Write(file, (APTR)line, (LONG)(out - line));
+	}
+#endif
+#if HAR_LOCAL_AIRCRAFT_CACHE && HAR_LOCAL_AIRCRAFT_CACHE_VERIFY
+	{
+		char line[64];
+		char* out = line;
+		static const char label[] = "#aircraft_cache";
+		for (UBYTE i = 0; i < sizeof(label) - 1; i++) *out++ = label[i];
+		for (UBYTE i = 0; i < 3; i++) {
+			*out++ = ',';
+			out = appendUnsignedLong(out, aircraftCacheStats[i]);
+		}
+		*out++ = '\n';
+		Write(file, (APTR)line, (LONG)(out - line));
+	}
+#endif
+#if HAR_HEADLESS_DAMAGE_EXERCISE
+	{
+		char line[128];
+		char* out = line;
+		static const char label[] = "#damage_exercise";
+		for (UBYTE i = 0; i < sizeof(label) - 1; i++) *out++ = label[i];
+		for (UBYTE i = 0; i < DAMAGE_FIELD_COUNT; i++) {
+			*out++ = ',';
+			out = appendUnsignedLong(out, headlessDamageStats[i]);
+		}
+		*out++ = '\n';
+		Write(file, (APTR)line, (LONG)(out - line));
+	}
+#endif
 	Close(file);
 }
 
 static void perfLogResetInterval(void) {
-	perfIntervalStartFrame = frameCounter;
+	perfIntervalStartFrame = (UWORD)perfHardwareFrames;
 	perfLoopFrames = 0;
 	perfMinFps = 999;
 	perfMaxFps = 0;
@@ -3679,6 +4347,9 @@ static void perfLogResetInterval(void) {
 	perfWorldTileColumns = 0;
 	perfWorldObjectColumns = 0;
 	perfWorldPages = 0;
+#if HAR_DEBUG_PERF_STAGES
+	memset(perfStageLines, 0, sizeof(perfStageLines));
+#endif
 	perfP1RocketLaunches = 0;
 	perfP1BombLaunches = 0;
 	perfP2RocketLaunches = 0;
@@ -3823,10 +4494,30 @@ static void perfLogFrame(const GameState* game, UBYTE activeWorldBuffer) {
 #if HAR_DEBUG_HUD_GUARD
 	perfHudGuardCheck();
 #endif
-	UWORD now = frameCounter;
+	UWORD now = (UWORD)perfHardwareFrames;
 	UWORD delta = (UWORD)(now - perfLastLoopFrame);
 	UWORD elapsed = (UWORD)(now - perfIntervalStartFrame);
 	UWORD instantFps = perfFpsForVblDelta(delta);
+
+#if HAR_DEBUG_PERF_STAGES && HAR_DEBUG_PERF_HITCH_STAGES
+	if ((HAR_DEBUG_PERF_CAPTURE_ALL_FRAMES || delta > 1) &&
+		perfPreviousStagesValid && perfHitchStageCount < 128 &&
+		perfPreviousStages[1] >= HAR_DEBUG_PERF_HITCH_MIN_SCROLL) {
+		UWORD* row = perfHitchStages[perfHitchStageCount++];
+		row[0] = perfPreviousStages[0];
+		row[1] = perfPreviousStages[1];
+		row[2] = delta;
+		for (UBYTE stage = 0; stage < PERF_STAGE_COUNT; stage++)
+			row[stage + 3] = perfPreviousStages[stage + 2];
+	}
+	perfPreviousStages[0] = frameCounter;
+	perfPreviousStages[1] = game->scrollX;
+	for (UBYTE stage = 0; stage < PERF_STAGE_COUNT; stage++) {
+		perfPreviousStages[stage + 2] = (UWORD)perfStageLines[stage];
+		perfStageLines[stage] = 0;
+	}
+	perfPreviousStagesValid = 1;
+#endif
 
 	perfLastLoopFrame = now;
 	perfLoopFrames++;
@@ -3842,6 +4533,23 @@ static void perfLogFrame(const GameState* game, UBYTE activeWorldBuffer) {
 	if (elapsed < PERF_LOG_INTERVAL_FRAMES)
 		return;
 
+#if HAR_DEBUG_PERF_DEFERRED
+	if (perfDeferredCount < 128) {
+		UWORD* row = perfDeferredRows[perfDeferredCount++];
+		row[0] = now;
+		row[1] = now / 50;
+		row[2] = perfLoopFrames;
+		row[3] = perfMinFps == 999 ? 0 : perfMinFps;
+		row[4] = perfMaxFps;
+		row[5] = elapsed ? (UWORD)(((ULONG)perfLoopFrames * 50) / elapsed) : 0;
+		row[6] = perfHitches;
+		row[7] = perfMaxVblDelta;
+		row[8] = game->scrollX;
+		row[9] = game->speedLevel;
+	}
+	perfLogResetInterval();
+	return;
+#endif
 	char line[128];
 	char* out = line;
 	UWORD avgFps = elapsed ? (UWORD)(((ULONG)perfLoopFrames * 50) / elapsed) : 0;
@@ -4022,6 +4730,20 @@ static void perfLogFrame(const GameState* game, UBYTE activeWorldBuffer) {
 		*c++ = '\n';
 		perfLogAppend(csv, (UWORD)(c - csv));
 	}
+#if HAR_DEBUG_PERF_STAGES
+	{
+		char stages[PERF_STAGE_COUNT * 11 + 16];
+		char* c = stages;
+		*c++ = '#';
+		c = appendUnsignedLong(c, frameCounter);
+		for (UBYTE stage = 0; stage < PERF_STAGE_COUNT; stage++) {
+			*c++ = ',';
+			c = appendUnsignedLong(c, perfStageLines[stage]);
+		}
+		*c++ = '\n';
+		perfLogAppend(stages, (UWORD)(c - stages));
+	}
+#endif
 	hudDrawCalls = 0;
 	hudArmourChanges = 0;
 	hudFuelChanges = 0;
@@ -4037,7 +4759,12 @@ static void perfLogFrame(const GameState* game, UBYTE activeWorldBuffer) {
 }
 #endif
 
+static UBYTE preparedEngineValid;
+static UBYTE preparedEngineSpeed;
+static UWORD preparedEngineStart, preparedEngineEnd;
+
 static void fillEngineBuffer(UBYTE speed) {
+	preparedEngineValid = 0;
 	if (!engineBuffer)
 		return;
 
@@ -4045,23 +4772,81 @@ static void fillEngineBuffer(UBYTE speed) {
 		engineBuffer[i] = nextEngineNoiseByte(speed);
 }
 
+static void prepareEngineBuffer(UBYTE speed) {
+	if (!engineBuffer || engineActive) return;
+	UWORD start = engineLfsr;
+	fillEngineBuffer(speed);
+	preparedEngineStart = start;
+	preparedEngineEnd = engineLfsr;
+	preparedEngineSpeed = speed;
+	engineLfsr = start;
+	preparedEngineValid = 1;
+}
+
+static UBYTE consumePreparedEngineBuffer(UBYTE speed) {
+	UBYTE ready = preparedEngineValid && preparedEngineSpeed == speed &&
+		preparedEngineStart == engineLfsr;
+	preparedEngineValid = 0;
+	if (ready) engineLfsr = preparedEngineEnd;
+	return ready;
+}
+
 static void mutateEngineBuffer(UBYTE speed) {
+	preparedEngineValid = 0;
+	/* The six low LFSR bits determine feedback. Keep the generator state
+	 * and output pointer local for the entire audio update on the 68000. */
+	static const UWORD feedback[64] = {
+		0, 0x8000, 0, 0x8000, 0x8000, 0, 0x8000, 0,
+		0x8000, 0, 0x8000, 0, 0, 0x8000, 0, 0x8000,
+		0, 0x8000, 0, 0x8000, 0x8000, 0, 0x8000, 0,
+		0x8000, 0, 0x8000, 0, 0, 0x8000, 0, 0x8000,
+		0x8000, 0, 0x8000, 0, 0, 0x8000, 0, 0x8000,
+		0, 0x8000, 0, 0x8000, 0x8000, 0, 0x8000, 0,
+		0x8000, 0, 0x8000, 0, 0, 0x8000, 0, 0x8000,
+		0, 0x8000, 0, 0x8000, 0x8000, 0, 0x8000, 0
+	};
 	if (!engineBuffer)
 		return;
 
-	for (UWORD i = 0; i < ENGINE_MUTATE_BYTES; i++) {
-		engineBuffer[engineWriteOffset] = nextEngineNoiseByte(speed);
-		engineWriteOffset++;
-		if (engineWriteOffset >= ENGINE_BUFFER_BYTES)
-			engineWriteOffset = 0;
+	UWORD state = engineLfsr;
+	UBYTE* dest = engineBuffer + engineWriteOffset;
+	UBYTE* end = engineBuffer + ENGINE_BUFFER_BYTES;
+	WORD bias = (BYTE)(speed * 2) - 24;
+	UWORD remaining = ENGINE_MUTATE_BYTES;
+#if HAR_ENGINE_BATCH4
+	ULONG biasVector = (ULONG)(48 - ((UWORD)speed << 2)) * 0x01010101UL;
+#endif
+	while (remaining) {
+#if HAR_ENGINE_BATCH4
+		if (speed <= GAME_SCROLL_SPEED_MAX_PIXELS && remaining >= 4 &&
+			!((ULONG)dest & 1) && end - dest >= 4) {
+			ULONG samples = engineWhite4[(state >> 1) & 255] + engineRumble4[state >> 9];
+			/* Guard bits prevent carries/borrows between the four byte lanes.
+			 * Each unsigned sum is <=92; subtracting 32..48 stays independent. */
+			*(EngineSampleWord*)dest = ((samples | 0x80808080UL) - biasVector) ^ 0x80808080UL;
+			state = (UWORD)((state >> 4) | engineFeedback4[state & 511]);
+			dest += 4;
+			remaining -= 4;
+			if (dest == end) dest = engineBuffer;
+			continue;
+		}
+#endif
+		state = (UWORD)((state >> 1) | feedback[state & 63]);
+		*dest++ = (UBYTE)(((state & 31) + ((state >> 8) & 15) + bias) * 2);
+		if (dest == end)
+			dest = engineBuffer;
+		remaining--;
 	}
+	engineLfsr = state;
+	engineWriteOffset = (UWORD)(dest - engineBuffer);
 }
 
 static void startEngineSound(UBYTE speed) {
 	if (!engineBuffer)
 		return;
 
-	fillEngineBuffer(speed);
+	if (!consumePreparedEngineBuffer(speed))
+		fillEngineBuffer(speed);
 	engineWriteOffset = 0;
 	stopSfxChannel(ENGINE_CHANNEL);
 	custom->aud[ENGINE_CHANNEL].ac_ptr = (volatile UWORD*)engineBuffer;
@@ -4959,8 +5744,19 @@ static void buildGameHudCopper(USHORT* copper, const UBYTE* world, const UBYTE* 
 		enemySprite, enemyAttachSprite, enemyMissileSprite, crashPart1Sprite,
 		wingmanSprite, unusedSprite7);
 
-	for (int color = 0; color < 32; color++)
+	for (int color = 0; color < 32; color++) {
+#if HAR_HARDWARE_PLAYER_ROCKET
+		if (color == 25 || color == 26)
+			hardwareProjectilePaletteOperands[color - 25] = copPtr + 1;
+		copPtr = copSetColor(copPtr, color,
+			projectileSpritePaletteWord(palette, (UBYTE)color, HAR_CRASH_DEBRIS_BOBS));
+#else
 		copPtr = copSetColor(copPtr, color, palette[color]);
+#endif
+	}
+#if HAR_HARDWARE_PLAYER_ROCKET
+	hardwareProjectilePaletteActive = HAR_CRASH_DEBRIS_BOBS;
+#endif
 	/* Pickup colours are gameplay identities, not mission atmosphere.  The
 	 * Field Guide uses the same fixed registers; reassert them in the game
 	 * Copper as well so later campaign palettes cannot turn live parachute
@@ -7092,7 +7888,39 @@ static void drawHighScoreNameEditor(UBYTE* hud, const GameState* game) {
 	drawText(hud, 136, 52, entryText, HUD_COLOR_VALUE);
 }
 
+/* The caller has cleared rows 30..65. Draw only the visible borders,
+ * preserving the exact nested-rectangle result without repainting its
+ * entire interior three times on the live 68000 display. */
+static void drawHudStatusPanel(UBYTE* hud, UBYTE outerColor) {
+	fillRect(hud, 42, 31, 236, 2, outerColor);
+	fillRect(hud, 42, 65, 236, 1, outerColor);
+	fillRect(hud, 44, 33, 232, 2, HUD_COLOR_VALUE);
+	fillRect(hud, 44, 63, 232, 2, HUD_COLOR_VALUE);
+	/* Each pair of side borders shares one byte. The cleared background
+	 * makes their complete byte values known, including the surrounding bits. */
+	for (UBYTE plane = 0; plane < SCREEN_PLANES; plane++) {
+		UBYTE outer = (outerColor & (1 << plane)) ? 0xff : 0;
+		UBYTE inner = (HUD_COLOR_VALUE & (1 << plane)) ? 0xff : 0;
+		UBYTE background = (HUD_COLOR_BACKGROUND & (1 << plane)) ? 0xff : 0;
+		UBYTE capLeft = (background & 0xc0) | (outer & 0x30) | (inner & 0x0f);
+		UBYTE capRight = (background & 0x03) | (outer & 0x0c) | (inner & 0xf0);
+		UBYTE sideLeft = (background & 0xc3) | (outer & 0x30) | (inner & 0x0c);
+		UBYTE sideRight = (background & 0xc3) | (outer & 0x0c) | (inner & 0x30);
+		UBYTE* row = hud + 33 * SCREEN_PLANES * SCREEN_ROW_BYTES + plane * SCREEN_ROW_BYTES + 5;
+		for (UBYTE y = 0; y < 32; y++) {
+			UBYTE cap = y < 2 || y >= 30;
+			row[0] = cap ? capLeft : sideLeft;
+			row[29] = cap ? capRight : sideRight;
+			row += SCREEN_PLANES * SCREEN_ROW_BYTES;
+		}
+	}
+}
+
 static void drawHudValues(UBYTE* hud, const GameState* game, ULONG highScore, UBYTE hudBufferIndex) {
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+	ULONG hudFieldStart = perfReadFieldClock();
+	ULONG hudRasterStart = perfReadRasterClock();
+#endif
 	HudRenderState* state = &hudRenderState[hudBufferIndex];
 	UBYTE fullBombs;
 	UBYTE fullRockets;
@@ -7229,9 +8057,7 @@ static void drawHudValues(UBYTE* hud, const GameState* game, ULONG highScore, UB
 			/* High-contrast CPC-style status panel instead of loose text
 			 * floating over the normal SPEED/FUEL area. Outer border capped
 			 * at 35 tall for the same row-66 reason as the clear above. */
-			fillRect(hud, 42, 31, 236, 35, GAME_COLOR_RED);
-			fillRect(hud, 44, 33, 232, 32, HUD_COLOR_VALUE);
-			fillRect(hud, 46, 35, 228, 28, HUD_COLOR_BACKGROUND);
+			drawHudStatusPanel(hud, GAME_COLOR_RED);
 			drawTextCentered(hud, 38, "GAME OVER", GAME_COLOR_RED);
 			drawTextCentered(hud, 52, "FIRE RETRY  ESC MENU",
 				HUD_COLOR_SAFE);
@@ -7239,14 +8065,10 @@ static void drawHudValues(UBYTE* hud, const GameState* game, ULONG highScore, UB
 			/* Match the GAME OVER panel's stable footprint so both status
 			 * transitions restore the same HUD rectangle. Green/yellow marks a
 			 * successful carrier recovery without borrowing the fatal red box. */
-			fillRect(hud, 42, 31, 236, 35, HUD_COLOR_SAFE);
-			fillRect(hud, 44, 33, 232, 32, HUD_COLOR_VALUE);
-			fillRect(hud, 46, 35, 228, 28, HUD_COLOR_BACKGROUND);
+			drawHudStatusPanel(hud, HUD_COLOR_SAFE);
 			drawTextCentered(hud, 45, "LANDED", HUD_COLOR_SAFE);
 		} else if (overlayMode == 3) {
-			fillRect(hud, 42, 31, 236, 35, HUD_COLOR_SAFE);
-			fillRect(hud, 44, 33, 232, 32, HUD_COLOR_VALUE);
-			fillRect(hud, 46, 35, 228, 28, HUD_COLOR_BACKGROUND);
+			drawHudStatusPanel(hud, HUD_COLOR_SAFE);
 			drawTextCentered(hud, 38, "HIGH SCORE", HUD_COLOR_SAFE);
 			drawHighScoreNameEditor(hud, game);
 		} else {
@@ -7284,6 +8106,10 @@ static void drawHudValues(UBYTE* hud, const GameState* game, ULONG highScore, UB
 	state->skillLevel = game->skillLevel;
 	state->missionNumber = game->missionNumber;
 	state->overlayMode = overlayMode;
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+	perfStageLines[20] += (perfReadFieldClock() - hudFieldStart) & 0x00ffffffUL;
+	perfStageLines[28] += (perfReadRasterClock() - hudRasterStart) & 0x00ffffffUL;
+#endif
 }
 
 static void drawHudBuffer(UBYTE* hud, const GameState* game, ULONG highScore, UBYTE hudBufferIndex) {
@@ -7932,11 +8758,21 @@ static UBYTE adjustSelectedMenuOption(UBYTE* bitmap, short selected, short direc
 	return 1;
 }
 
-static void drawGameTileWithStride(UBYTE* bitmap, short rowBytes, short tileX, short tileY, UBYTE tileId) {
-	if (tileId >= GAME_TILE_COUNT)
-		tileId = 0;
+/* Extended tile ids exist only in Enhanced render columns. Gameplay still
+ * queries the original town maps. Use this for every render/restore path. */
+static const UBYTE* worldRenderTileData(UBYTE tileId) {
+	/* Almost every streamed cell is an original tile. Avoid reading the
+	 * presentation mode on this common path (also used by BOB restoration). */
+	if (tileId < GAME_TILE_COUNT)
+		return gameTiles + tileId * GAME_TILE_BYTES;
+	if (currentWorldPresentationMode == GAME_MODE_ENHANCED &&
+		tileId < GAME_TILE_COUNT + ENHANCED_TOWN_TILE_COUNT)
+		return enhancedTownTiles + (tileId - GAME_TILE_COUNT) * GAME_TILE_BYTES;
+	return gameTiles;
+}
 
-	const UBYTE* tile = gameTiles + tileId * GAME_TILE_BYTES;
+static void drawGameTileWithStride(UBYTE* bitmap, short rowBytes, short tileX, short tileY, UBYTE tileId) {
+	const UBYTE* tile = worldRenderTileData(tileId);
 	short screenXByte = tileX;
 	short screenY = tileY * GAME_TILE_HEIGHT;
 	short maxHeight = rowBytes == GAME_WORLD_ROW_BYTES ? GAME_WORLD_HEIGHT : SCREEN_HEIGHT;
@@ -7956,7 +8792,22 @@ static void drawGameTile(UBYTE* bitmap, short tileX, short tileY, UBYTE tileId) 
 }
 
 static void drawGameScrollTile(UBYTE* bitmap, short tileX, short tileY, UBYTE tileId) {
-	drawGameTileWithStride(bitmap, GAME_WORLD_ROW_BYTES, tileX, tileY, tileId);
+	const UBYTE* src = worldRenderTileData(tileId);
+	short screenY = tileY * GAME_TILE_HEIGHT;
+	short rows = GAME_WORLD_HEIGHT - screenY;
+	if (rows > GAME_TILE_HEIGHT)
+		rows = GAME_TILE_HEIGHT;
+	UBYTE* dest = bitmap + screenY * SCREEN_PLANES * GAME_WORLD_ROW_BYTES + tileX;
+	/* Fixed world stride: avoid a variable-stride inner loop per plane. */
+	while (rows-- > 0) {
+		dest[0 * GAME_WORLD_ROW_BYTES] = src[0];
+		dest[1 * GAME_WORLD_ROW_BYTES] = src[1];
+		dest[2 * GAME_WORLD_ROW_BYTES] = src[2];
+		dest[3 * GAME_WORLD_ROW_BYTES] = src[3];
+		/* The world's Copper list fetches only these four colour planes. */
+		dest += SCREEN_PLANES * GAME_WORLD_ROW_BYTES;
+		src += GAME_TILE_PLANES;
+	}
 }
 
 /* Sprint 14.94 Part 6: like drawGameScrollTile(), but for pre-masked tiles
@@ -8089,6 +8940,24 @@ typedef struct RocketShotFootprint {
 static RocketShotFootprint rocketShotFootprints[GAME_WORLD_BUFFER_COUNT];
 static RocketShotFootprint wingmanRocketFootprints[GAME_WORLD_BUFFER_COUNT];
 static RocketShotFootprint enemyMissileFootprints[GAME_WORLD_BUFFER_COUNT];
+#if HAR_HARDWARE_PLAYER_ROCKET
+static const WeaponState* hardwareProjectileWeapon;
+static UBYTE hardwareProjectileVisible;
+static WORD hardwareProjectileY;
+static UWORD* hardwareProjectilePayloadOwner;
+static UBYTE hardwareProjectilePayloadTile;
+#if HAR_HARDWARE_PROJECTILE_CHAIN
+static const WeaponState* hardwareProjectileChain[3];
+static UBYTE hardwareProjectileChainCount;
+static UWORD hardwareProjectileChainKeys[3];
+static UBYTE hardwareProjectileChainValid[3];
+static UBYTE hardwareProjectileChainContains(const WeaponState* weapon) {
+	for (UBYTE i = 0; i < hardwareProjectileChainCount; i++)
+		if (hardwareProjectileChain[i] == weapon) return 1;
+	return 0;
+}
+#endif
+#endif
 
 typedef struct SeaWaveFootprint {
 	UBYTE valid;
@@ -8169,10 +9038,9 @@ typedef struct AircraftFailureSmokeParticle {
 	WORD y;
 } AircraftFailureSmokeParticle;
 
-/* The footprint is a conservative tile rectangle around every particle drawn
- * into one ring buffer. Erase rebuilds that rectangle from authoritative world
- * data rather than restoring cached bytes that may have gone stale after a
- * streamed column, flak spawn or weapon impact. */
+/* Keep bounds for stream invalidation, but erase only particle-covered cells.
+ * Rebuild from world data so streaming and damage cannot stale saved pixels.
+ * Each 2/3-pixel particle spans at most two columns and two tile rows. */
 typedef struct AircraftFailureSmokeFootprint {
 	UBYTE valid;
 	LONG firstWorldColumn;
@@ -8180,6 +9048,9 @@ typedef struct AircraftFailureSmokeFootprint {
 	WORD firstTileRow;
 	UBYTE rowCount;
 	ULONG renderSignature;
+	UBYTE dirtyCount;
+	LONG dirtyColumn[AIRCRAFT_FAILURE_SMOKE_MAX * 2];
+	ULONG dirtyRows[AIRCRAFT_FAILURE_SMOKE_MAX * 2];
 } AircraftFailureSmokeFootprint;
 
 static AircraftFailureSmokeParticle
@@ -8242,19 +9113,10 @@ static void buildBombImpactBobTileIfNeeded(UBYTE kind) {
 		UBYTE tileId = (kind == BOMB_IMPACT_BOB_KIND_FALLING_A) ? 40 : 41;
 		for (UBYTE row = 0; row < GAME_TILE_HEIGHT; row++) {
 			UBYTE* dest = bombImpactBobTile + row * (GAME_WORLD_DISPLAY_PLANES + 1);
-			UBYTE mask = 0;
-			for (UBYTE col = 0; col < GAME_TILE_WIDTH; col++) {
-				UBYTE color = gameTilePixelColor(tileId, (short)col, (short)row);
-				if (color == GAME_COLOR_SKY)
-					continue;
-				UBYTE bit = (UBYTE)(0x80 >> col);
-				mask |= bit;
-				for (UBYTE plane = 0; plane < GAME_WORLD_DISPLAY_PLANES; plane++) {
-					if (color & (1 << plane))
-						dest[plane] |= bit;
-				}
-			}
-			dest[GAME_WORLD_DISPLAY_PLANES] = mask;
+			const UBYTE* src = gameTiles + tileId * GAME_TILE_BYTES + row * GAME_TILE_PLANES;
+			for (UBYTE plane = 0; plane < GAME_WORLD_DISPLAY_PLANES; plane++)
+				dest[plane] = src[plane];
+			dest[GAME_WORLD_DISPLAY_PLANES] = src[0] | src[1] | src[2] | src[3] | src[4];
 		}
 	} else if (kind == BOMB_IMPACT_BOB_KIND_IMPACT_SMALL ||
 		kind == BOMB_IMPACT_BOB_KIND_IMPACT_LARGE) {
@@ -8283,12 +9145,10 @@ static void buildBombImpactBobTileIfNeeded(UBYTE kind) {
 		UBYTE tileId = (kind == BOMB_IMPACT_BOB_KIND_WATER_SMOKE_1) ? 51 : 52;
 		for (UBYTE row = 0; row < GAME_TILE_HEIGHT; row++) {
 			UBYTE* dest = bombImpactBobTile + row * (GAME_WORLD_DISPLAY_PLANES + 1);
-			UBYTE mask = 0;
-			for (UBYTE col = 0; col < GAME_TILE_WIDTH; col++) {
-				UBYTE color = gameTilePixelColor(tileId, (short)col, (short)row);
-				if (color != GAME_COLOR_SKY)
-					mask |= (UBYTE)(0x80 >> col);
-			}
+			/* Any nonzero source pen is opaque. OR the planes directly instead
+			 * of decoding all eight pixels when the splash changes frame. */
+			const UBYTE* src = gameTiles + tileId * GAME_TILE_BYTES + row * GAME_TILE_PLANES;
+			UBYTE mask = src[0] | src[1] | src[2] | src[3] | src[4];
 			for (UBYTE plane = 0; plane < GAME_WORLD_DISPLAY_PLANES; plane++) {
 				if (GAME_COLOR_WHITE & (1 << plane))
 					dest[plane] = mask;
@@ -8395,6 +9255,29 @@ static void setPlayerSpritePosition(UWORD* sprite, WORD x, WORD y) {
 
 #define HW_SPRITE_ATTACH_BIT 0x0080
 
+typedef struct AttachedSpriteResident {
+	UWORD* primary;
+	UWORD* attached;
+	const UBYTE* left;
+	const UBYTE* right;
+	UWORD height;
+	UBYTE valid;
+} AttachedSpriteResident;
+static AttachedSpriteResident attachedSpriteResidents[4];
+#if HAR_HEADLESS_CLASSIC_CONTRACT_TEST
+static UWORD attachedSpriteResidentSkips;
+#endif
+
+/* Every payload writer invalidates any pair which owns this buffer.
+ * Hiding/moving changes only control words and deliberately keeps residency. */
+static void invalidateAttachedSpriteResident(UWORD* sprite) {
+	for (UBYTE index = 0; index < 4; index++) {
+		AttachedSpriteResident* resident = &attachedSpriteResidents[index];
+		if (resident->primary == sprite || resident->attached == sprite)
+			resident->valid = 0;
+	}
+}
+
 /* Builds an attached 4-bitplane, 15-colour sprite pair from raw CPC+ pen
  * values (0-15) instead of reducing to a 2-bitplane, 3-colour sprite. The
  * low 2 bits go to the normal sprite channel (planes 0-1), the high 2 bits
@@ -8406,6 +9289,8 @@ static void buildAttachedSpriteFromCpcPlusHalvesMapped(UWORD* sprite,
 	UWORD* attachSprite, UWORD height, WORD x, WORD y,
 	const UBYTE* leftPixels, const UBYTE* rightPixels,
 	const UBYTE* penMap) {
+	invalidateAttachedSpriteResident(sprite);
+	invalidateAttachedSpriteResident(attachSprite);
 	setHardwareSpritePosition(sprite, height, x, y);
 	setHardwareSpritePosition(attachSprite, height, x, y);
 	attachSprite[1] |= HW_SPRITE_ATTACH_BIT;
@@ -8421,6 +9306,9 @@ static void buildAttachedSpriteFromCpcPlusHalvesMapped(UWORD* sprite,
 			UBYTE pen = source[row * 16 + sourceX];
 			if (penMap)
 				pen = penMap[pen & 0x0f];
+#if HAR_HARDWARE_PLAYER_ROCKET
+			pen = projectileAttachedPenMap[pen & 15];
+#endif
 			UWORD bit = 0x8000 >> col;
 			if (pen & 1)
 				plane0 |= bit;
@@ -8445,11 +9333,65 @@ static void buildAttachedSpriteFromCpcPlusHalvesMapped(UWORD* sprite,
 static void buildAttachedSpriteFromCpcPlusHalves(UWORD* sprite,
 	UWORD* attachSprite, UWORD height, WORD x, WORD y,
 	const UBYTE* leftPixels, const UBYTE* rightPixels) {
-	buildAttachedSpriteFromCpcPlusHalvesMapped(sprite, attachSprite, height,
-		x, y, leftPixels, rightPixels, 0);
+	static struct {
+		const UBYTE* left;
+		const UBYTE* right;
+		UWORD height;
+		UWORD primary[PLAYER_SPRITE_WORDS];
+		UWORD attached[PLAYER_SPRITE_WORDS];
+	} artwork[4];
+	for (UBYTE index = 0; index < 4; index++) {
+		const AttachedSpriteResident* resident = &attachedSpriteResidents[index];
+		if (resident->valid && resident->primary == sprite && resident->attached == attachSprite &&
+			resident->left == leftPixels && resident->right == rightPixels && resident->height == height) {
+			setHardwareSpritePosition(sprite, height, x, y);
+			setHardwareSpritePosition(attachSprite, height, x, y);
+			attachSprite[1] |= HW_SPRITE_ATTACH_BIT;
+#if HAR_HEADLESS_CLASSIC_CONTRACT_TEST
+			attachedSpriteResidentSkips++;
+#endif
+			return;
+		}
+	}
+	if (height > PLAYER_SPRITE_HEIGHT) {
+		buildAttachedSpriteFromCpcPlusHalvesMapped(sprite, attachSprite, height,
+			x, y, leftPixels, rightPixels, 0);
+		return;
+	}
+	UBYTE slot;
+	for (slot = 0; slot < 4; slot++) {
+		if (artwork[slot].left == leftPixels && artwork[slot].right == rightPixels &&
+			artwork[slot].height == height)
+			break;
+	}
+	if (slot == 4) {
+		for (slot = 0; slot < 3 && artwork[slot].left; slot++) { }
+		buildAttachedSpriteFromCpcPlusHalvesMapped(artwork[slot].primary,
+			artwork[slot].attached, height, 0, 0, leftPixels, rightPixels, 0);
+		artwork[slot].left = leftPixels;
+		artwork[slot].right = rightPixels;
+		artwork[slot].height = height;
+	}
+	invalidateAttachedSpriteResident(sprite);
+	invalidateAttachedSpriteResident(attachSprite);
+	memcpy(sprite + 2, artwork[slot].primary + 2, (height * 2 + 2) * sizeof(UWORD));
+	memcpy(attachSprite + 2, artwork[slot].attached + 2, (height * 2 + 2) * sizeof(UWORD));
+	UBYTE residentSlot = 0;
+	while (residentSlot < 3 && attachedSpriteResidents[residentSlot].valid) residentSlot++;
+	AttachedSpriteResident* resident = &attachedSpriteResidents[residentSlot];
+	resident->primary = sprite;
+	resident->attached = attachSprite;
+	resident->left = leftPixels;
+	resident->right = rightPixels;
+	resident->height = height;
+	resident->valid = 1;
+	setHardwareSpritePosition(sprite, height, x, y);
+	setHardwareSpritePosition(attachSprite, height, x, y);
+	attachSprite[1] |= HW_SPRITE_ATTACH_BIT;
 }
 
 static void buildSpriteFromCpcPlusHalves(UWORD* sprite, UWORD height, WORD x, WORD y, const UBYTE* leftPixels, const UBYTE* rightPixels, UBYTE (*mapPen)(UBYTE)) {
+	invalidateAttachedSpriteResident(sprite);
 	setHardwareSpritePosition(sprite, height, x, y);
 	for (short row = 0; row < height; row++) {
 		UWORD plane0 = 0;
@@ -8473,6 +9415,7 @@ static void buildSpriteFromCpcPlusHalves(UWORD* sprite, UWORD height, WORD x, WO
 }
 
 static void buildSpriteFromGameTile(UWORD* sprite, UWORD height, WORD x, WORD y, UBYTE tileId, UBYTE xOffset, UBYTE (*mapColor)(UBYTE)) {
+	invalidateAttachedSpriteResident(sprite);
 	setHardwareSpritePosition(sprite, height, x, y);
 	for (short row = 0; row < height; row++) {
 		UWORD plane0 = 0;
@@ -8523,6 +9466,13 @@ static void updatePlayerSprite(UWORD* sprite, UWORD* attachSprite, const GameSta
 		return;
 	}
 
+#if HAR_CRASH_DEBRIS_BOBS
+	if (game->crashTimer) {
+		hideHardwareSprite(sprite);
+		hideHardwareSprite(attachSprite);
+		return;
+	}
+#endif
 	if (game->crashTimer && game->crashPart[0].active) {
 		hideHardwareSprite(attachSprite);
 		buildPlayerCrashPartSprite(sprite, game->crashPart[0].x, game->crashPart[0].y, 0);
@@ -8543,6 +9493,7 @@ static void updatePlayerSprite(UWORD* sprite, UWORD* attachSprite, const GameSta
 }
 
 static void buildEjectSprite(UWORD* sprite, const GameState* game) {
+	invalidateAttachedSpriteResident(sprite);
 	if (game->ejectState == 1) {
 		buildSpriteFromGameTile(sprite, HAR_CPC_PARACHUTE_HEIGHT,
 			game->ejectX, game->ejectY, 47, 4,
@@ -8572,6 +9523,7 @@ static void buildEjectSprite(UWORD* sprite, const GameState* game) {
 }
 
 static void buildSpriteFromRows(UWORD* sprite, UWORD height, WORD x, WORD y, const UWORD* plane0Rows, const UWORD* plane1Rows) {
+	invalidateAttachedSpriteResident(sprite);
 	setHardwareSpritePosition(sprite, height, x, y);
 	for (UWORD row = 0; row < height; row++) {
 		sprite[2 + row * 2] = plane0Rows[row];
@@ -9360,10 +10312,17 @@ static UBYTE seaTileForColumn(LONG worldColumn, UWORD tileY) {
 }
 
 static const LevelSegmentDef* levelSegmentForWorldColumn(LONG worldColumn) {
+	static const LevelSegmentDef* recent;
+	/* Route segments are disjoint. Most camera, actor and wave queries stay
+	 * in one segment; validate live bounds so route rebuilds remain safe. */
+	if (recent && worldColumn >= recent->startColumn && worldColumn <= recent->endColumn)
+		return recent;
 	for (UWORD index = 0; index < sizeof(harLevelRoute) / sizeof(harLevelRoute[0]); index++) {
 		const LevelSegmentDef* segment = &harLevelRoute[index];
-		if (worldColumn >= segment->startColumn && worldColumn <= segment->endColumn)
+		if (worldColumn >= segment->startColumn && worldColumn <= segment->endColumn) {
+			recent = segment;
 			return segment;
+		}
 	}
 	return 0;
 }
@@ -9832,6 +10791,8 @@ static void landLogBuild(void) {
 }
 #endif
 static void resetCpcRandomSequence(UWORD worldSeed) {
+	worldObjectsReset();
+	powerupBackgroundCacheDirty = 1;
 	/* The complete procedural world is generated from one explicit mission
 	 * seed. This preserves CPC's single sequential random source while making
 	 * the result independent of renderer query order and reproducible later. */
@@ -10381,6 +11342,7 @@ static UWORD townHitSmokeByColumn[CPC_TOWN_PROCEDURAL_CAPACITY];
 static UBYTE townBlockTableReady = 0;
 
 static void resetCpcTownBlockTable(void) {
+	worldObjectsReset();
 	townBlockTableReady = 0;
 	memset(townHitSmokeByColumn, 0, sizeof(townHitSmokeByColumn));
 	memset(townRadarTopRowByColumn, TOWN_RADAR_TOP_UNKNOWN,
@@ -10478,7 +11440,7 @@ static UBYTE terrainYForWorldColumn(LONG worldColumn, const LevelSegmentDef* seg
 		case HAR_TERRAIN_MOUNTAINS:
 			return (UBYTE)(12 + ((worldColumn + (worldColumn >> 1)) & 3));
 		case HAR_TERRAIN_TOWN:
-			return 14;
+			return CPC_TOWN_TERRAIN_ROW;
 		case HAR_TERRAIN_COAST_FALL:
 			/* Sprint 15.46: setcloudcolourtosea's C=3 is object ID, while
 			 * B=2 is the vertical draw count. This is one column containing
@@ -10603,6 +11565,8 @@ static WORD terrainSurfacePixelYForWorldColumn(LONG worldColumn) {
 }
 
 static void resetDestroyedTargets(void) {
+	worldObjectsReset();
+	powerupBackgroundCacheDirty = 1;
 	destroyedTargetCount = 0;
 }
 
@@ -10660,6 +11624,9 @@ static UBYTE isTargetDestroyedAtColumn(LONG worldColumn) {
 
 static void markTargetDestroyedAtColumn(LONG worldColumn) {
 	worldColumn = groundTargetAnchorColumn(worldColumn);
+	worldObjectColumnsChanged(worldColumn, worldColumn + 1);
+	invalidatePowerupBackgroundColumn(worldColumn);
+	invalidatePowerupBackgroundColumn(worldColumn + 1);
 	if (worldColumn < 0 || isTargetDestroyedAtColumn(worldColumn))
 		return;
 	if (destroyedTargetCount >= GAME_DESTROYED_TARGET_MAX)
@@ -10668,8 +11635,11 @@ static void markTargetDestroyedAtColumn(LONG worldColumn) {
 }
 
 static void resetDestroyedShipColumns(void) {
+	worldObjectsReset();
+	powerupBackgroundCacheDirty = 1;
 	destroyedShipCellCount = 0;
 	shipWreckSmokeCount = 0;
+	memset(shipWreckSmokeColumnBits, 0, sizeof(shipWreckSmokeColumnBits));
 	memset(townHitSmokeByColumn, 0, sizeof(townHitSmokeByColumn));
 	memset(townRadarTopRowByColumn, TOWN_RADAR_TOP_UNKNOWN,
 		sizeof(townRadarTopRowByColumn));
@@ -10704,6 +11674,8 @@ static UBYTE isShipCellDestroyed(LONG worldColumn, WORD tileY) {
 }
 
 static UBYTE markShipCellDestroyed(LONG worldColumn, WORD tileY) {
+	worldObjectCellChanged(worldColumn, tileY);
+	invalidatePowerupBackgroundColumn(worldColumn);
 	if (worldColumn < 0 || tileY < 0 || isShipCellDestroyed(worldColumn, tileY))
 		return 0;
 	if (destroyedShipCellCount >= GAME_DESTROYED_SHIP_CELL_MAX)
@@ -10714,8 +11686,15 @@ static UBYTE markShipCellDestroyed(LONG worldColumn, WORD tileY) {
 	return 1;
 }
 
+static UBYTE shipWreckSmokeColumnMayContain(UWORD worldColumn) {
+	UBYTE key = (UBYTE)worldColumn;
+	return shipWreckSmokeColumnBits[key >> 3] & (1 << (key & 7));
+}
+
 static UBYTE shipWreckSmokeTileAtColumnRow(LONG worldColumn, WORD tileY) {
-	if (worldColumn < 0 || tileY < 0)
+	if (worldColumn < 0 || tileY < 0 || !shipWreckSmokeCount)
+		return 0;
+	if (!shipWreckSmokeColumnMayContain((UWORD)worldColumn))
 		return 0;
 	for (UBYTE index = 0; index < shipWreckSmokeCount; index++) {
 		if (shipWreckSmokeColumns[index] == (UWORD)worldColumn && shipWreckSmokeRows[index] == (UBYTE)tileY)
@@ -10726,6 +11705,9 @@ static UBYTE shipWreckSmokeTileAtColumnRow(LONG worldColumn, WORD tileY) {
 
 static BYTE townHitSmokeSlotForColumnRow(LONG worldColumn, WORD tileY,
 	UWORD* localColumn) {
+	if (tileY < CPC_TOWN_TERRAIN_ROW - 4 ||
+		tileY >= CPC_TOWN_TERRAIN_ROW - 4 + CPC_TOWN_SMOKE_ROWS)
+		return -1;
 	const LevelSegmentDef* segment = levelSegmentForWorldColumn(worldColumn);
 	if (!segment || segment->terrainKind != HAR_TERRAIN_TOWN)
 		return -1;
@@ -10762,6 +11744,8 @@ static UBYTE townHitSmokeTileAtColumnRow(LONG worldColumn, WORD tileY) {
 
 static UBYTE markTownHitSmokeAtColumnRow(LONG worldColumn, WORD tileY,
 	UBYTE kind) {
+	worldObjectCellChanged(worldColumn, tileY);
+	invalidatePowerupBackgroundColumn(worldColumn);
 	UWORD localColumn;
 	BYTE slot = townHitSmokeSlotForColumnRow(worldColumn, tileY,
 		&localColumn);
@@ -10795,6 +11779,8 @@ static UBYTE persistentHitSmokeTileAtColumnRow(LONG worldColumn,
 }
 
 static UBYTE markShipWreckSmokeAtColumnRow(LONG worldColumn, WORD tileY, UBYTE tile) {
+	worldObjectCellChanged(worldColumn, tileY);
+	invalidatePowerupBackgroundColumn(worldColumn);
 	if (worldColumn < 0 || tileY < 0 || tileY >= GAME_OBJECT_MAP_HEIGHT_TILES)
 		return 0;
 	if (shipWreckSmokeTileAtColumnRow(worldColumn, tileY))
@@ -10804,6 +11790,8 @@ static UBYTE markShipWreckSmokeAtColumnRow(LONG worldColumn, WORD tileY, UBYTE t
 	shipWreckSmokeColumns[shipWreckSmokeCount] = (UWORD)worldColumn;
 	shipWreckSmokeRows[shipWreckSmokeCount] = (UBYTE)tileY;
 	shipWreckSmokeTiles[shipWreckSmokeCount] = tile;
+	UBYTE key = (UBYTE)worldColumn;
+	shipWreckSmokeColumnBits[key >> 3] |= 1 << (key & 7);
 	shipWreckSmokeCount++;
 	return 1;
 }
@@ -10817,9 +11805,28 @@ static UBYTE markShipWreckSmokeAtColumnRow(LONG worldColumn, WORD tileY, UBYTE t
  * against the CPC source directly. */
 static void addCpcHitSmokeAtColumnRow(LONG worldColumn, WORD tileY) {
 	ObjectCell aboveCell;
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+	ULONG smokeStart = perfReadRasterClock();
+#endif
 	markShipWreckSmokeAtColumnRow(worldColumn, tileY, GAME_SHIP_WRECK_SMOKE_TILE_B);
-	if (tileY > 0 && objectCellForWorldColumnTile(worldColumn, tileY - 1, &aboveCell) && aboveCell.id == HAR_OBJ_SKY)
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+	ULONG smokeNow = perfReadRasterClock();
+	perfStageLines[47] += (smokeNow - smokeStart) & 0x00ffffffUL;
+	smokeStart = smokeNow;
+#endif
+	UBYTE drawAbove = tileY > 0 &&
+		objectCellForWorldColumnTile(worldColumn, tileY - 1, &aboveCell) &&
+		aboveCell.id == HAR_OBJ_SKY;
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+	smokeNow = perfReadRasterClock();
+	perfStageLines[48] += (smokeNow - smokeStart) & 0x00ffffffUL;
+	smokeStart = smokeNow;
+#endif
+	if (drawAbove)
 		markShipWreckSmokeAtColumnRow(worldColumn, tileY - 1, GAME_SHIP_WRECK_SMOKE_TILE_A);
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+	perfStageLines[49] += (perfReadRasterClock() - smokeStart) & 0x00ffffffUL;
+#endif
 }
 
 /* CPC's bombhitenemyship (checkenemyhit) has no whole-ship health counter -
@@ -10843,12 +11850,21 @@ static void dirtyRedrawEnemyShipGroup(UBYTE** worldBuffers, LONG worldColumn) {
 }
 
 static void resetLandCraters(void) {
+	worldObjectsReset();
+	powerupBackgroundCacheDirty = 1;
 	landCraterCount = 0;
+#if HAR_CRATER_COLUMN_BOUND
+	landCraterLastColumn = 0;
+#endif
 }
 
 static UBYTE isLandCraterAtColumnRow(LONG worldColumn, WORD tileY) {
 	if (worldColumn < 0 || tileY < 0)
 		return 0;
+#if HAR_CRATER_COLUMN_BOUND
+	/* Match the history's UWORD column identity, including wrapped queries. */
+	if ((UWORD)worldColumn > landCraterLastColumn) return 0;
+#endif
 	for (UBYTE index = 0; index < landCraterCount; index++) {
 		if (landCraterColumns[index] == (UWORD)worldColumn && landCraterRows[index] == (UBYTE)tileY)
 			return 1;
@@ -10856,20 +11872,50 @@ static UBYTE isLandCraterAtColumnRow(LONG worldColumn, WORD tileY) {
 	return 0;
 }
 
+static UWORD landCraterMaskForColumn(LONG worldColumn) {
+	UWORD mask = 0;
+	if (worldColumn < 0) return 0;
+#if HAR_CRATER_COLUMN_BOUND
+	if ((UWORD)worldColumn > landCraterLastColumn) return 0;
+#endif
+	for (UBYTE index = 0; index < landCraterCount; index++) {
+		if (landCraterColumns[index] == (UWORD)worldColumn &&
+			landCraterRows[index] < GAME_SEA_TOP_TILE_Y)
+			mask |= (UWORD)(1U << landCraterRows[index]);
+	}
+	return mask;
+}
+
 static UBYTE markLandCraterAtColumnRow(LONG worldColumn, WORD tileY) {
+#if !HAR_CRATER_SUCCESS_NOTIFY
+	worldObjectCellChanged(worldColumn, tileY);
+	invalidatePowerupBackgroundColumn(worldColumn);
+#endif
 	if (worldColumn < 0 || tileY < 0 || tileY >= GAME_SEA_TOP_TILE_Y)
 		return 0;
 	if (isLandCraterAtColumnRow(worldColumn, tileY))
 		return 0;
 	if (landCraterCount >= GAME_LAND_CRATER_MAX)
 		return 0;
+#if HAR_CRATER_SUCCESS_NOTIFY
+	worldObjectCellChanged(worldColumn, tileY);
+	invalidatePowerupBackgroundColumn(worldColumn);
+#endif
 	landCraterColumns[landCraterCount] = (UWORD)worldColumn;
 	landCraterRows[landCraterCount] = (UBYTE)tileY;
 	landCraterCount++;
+#if HAR_CRATER_COLUMN_BOUND
+	if ((UWORD)worldColumn > landCraterLastColumn)
+		landCraterLastColumn = (UWORD)worldColumn;
+#endif
 	return 1;
 }
 
+#if HAR_DEBUG_OBJECT_SHADOW || HAR_OBJECT_CELL_CACHE
+static UBYTE resolveObjectCellForWorldColumnTile(LONG worldColumn, WORD tileY, ObjectCell* outCell) {
+#else
 static UBYTE objectCellForWorldColumnTile(LONG worldColumn, WORD tileY, ObjectCell* outCell) {
+#endif
 	if (worldColumn < 0 || tileY < 0 || tileY >= GAME_OBJECT_MAP_HEIGHT_TILES)
 		return 0;
 	const LevelSegmentDef* segment = levelSegmentForWorldColumn(worldColumn);
@@ -10986,6 +12032,92 @@ static UBYTE objectCellForWorldColumnTile(LONG worldColumn, WORD tileY, ObjectCe
 	return 1;
 }
 
+#if HAR_OBJECT_CELL_CACHE
+#if HAR_OBJECT_CACHE_SPLIT_MISS
+static __attribute__((noinline)) UBYTE fillObjectCacheCell(ObjectCacheColumn* column,
+	LONG worldColumn, WORD tileY, ULONG bit, ObjectCell* outCell) {
+	UBYTE valid = resolveObjectCellForWorldColumnTile(worldColumn, tileY, outCell);
+	if (valid) {
+		column->cells[tileY] = *outCell;
+		column->knownRows |= bit;
+	}
+	return valid;
+}
+static inline __attribute__((always_inline)) UBYTE objectCellForWorldColumnTile(LONG worldColumn, WORD tileY, ObjectCell* outCell) {
+#else
+static UBYTE objectCellForWorldColumnTile(LONG worldColumn, WORD tileY, ObjectCell* outCell) {
+#endif
+	if (worldColumn < 0 || tileY < 0 || tileY >= GAME_OBJECT_MAP_HEIGHT_TILES)
+		return 0;
+	ObjectCacheColumn* column = &objectCellCache[(UWORD)worldColumn & (OBJECT_CELL_CACHE_COLUMNS - 1)];
+	ULONG bit = 1UL << tileY;
+	if (column->worldColumn != worldColumn) {
+		column->worldColumn = worldColumn;
+		column->knownRows = 0;
+	}
+	if (column->knownRows & bit) {
+		*outCell = column->cells[tileY];
+#if HAR_OBJECT_CELL_CACHE_VERIFY
+		ObjectCell expected;
+		objectCacheStats[0]++;
+		if (!resolveObjectCellForWorldColumnTile(worldColumn, tileY, &expected) ||
+			expected.id != outCell->id || expected.tile != outCell->tile ||
+			expected.flags != outCell->flags || expected.hp != outCell->hp)
+			objectCacheStats[2]++;
+#endif
+		return 1;
+	}
+#if HAR_OBJECT_CELL_CACHE_VERIFY
+	objectCacheStats[1]++;
+#endif
+#if HAR_OBJECT_CACHE_SPLIT_MISS
+	return fillObjectCacheCell(column, worldColumn, tileY, bit, outCell);
+#else
+	UBYTE valid = resolveObjectCellForWorldColumnTile(worldColumn, tileY, outCell);
+	if (valid) {
+		column->cells[tileY] = *outCell;
+		column->knownRows |= bit;
+	}
+	return valid;
+#endif
+}
+#elif HAR_DEBUG_OBJECT_SHADOW
+static UBYTE objectCellForWorldColumnTile(LONG worldColumn, WORD tileY, ObjectCell* outCell) {
+	UBYTE valid = resolveObjectCellForWorldColumnTile(worldColumn, tileY, outCell);
+	/* Observation only: always return the uncached authoritative result.
+	 * Absolute tags distinguish reused physical ring columns. Keep old rows
+	 * across revisions so the probe measures unnecessary global invalidation. */
+	if (valid) {
+		ObjectShadowColumn* column = &objectShadow[(ULONG)worldColumn % GAME_WORLD_SCROLL_PAGE_TILES];
+		ULONG bit = 1UL << tileY;
+		objectShadowStats[0]++;
+		if (column->worldColumn != worldColumn) {
+			if (column->knownRows) objectShadowStats[3]++;
+			column->worldColumn = worldColumn;
+			column->knownRows = column->currentRows = 0;
+		}
+		if (column->revision != worldObjectRevision) {
+			if (column->knownRows) objectShadowStats[4]++;
+			column->revision = worldObjectRevision;
+			column->currentRows = 0;
+		}
+		ObjectCell* previous = &column->cells[tileY];
+		UBYTE same = previous->id == outCell->id && previous->tile == outCell->tile &&
+			previous->flags == outCell->flags && previous->hp == outCell->hp;
+		if (column->currentRows & bit) {
+			objectShadowStats[1]++;
+			if (!same) objectShadowStats[7]++;
+		} else if (column->knownRows & bit) {
+			objectShadowStats[same ? 5 : 6]++;
+		} else objectShadowStats[2]++;
+		*previous = *outCell;
+		column->knownRows |= bit;
+		column->currentRows |= bit;
+	}
+	return valid;
+}
+#endif
+
 static UBYTE objectCellForWorldPoint(const GameState* game, WORD screenX, WORD screenY, ObjectCell* outCell, LONG* outWorldColumn, WORD* outTileY) {
 	if (screenY < 0 || screenY >= HUD_TOP)
 		return 0;
@@ -10998,6 +12130,15 @@ static UBYTE objectCellForWorldPoint(const GameState* game, WORD screenX, WORD s
 	if (outTileY)
 		*outTileY = tileY;
 	return objectCellForWorldColumnTile(worldColumn, tileY, outCell);
+}
+
+static UBYTE columnMayContainEnemyShip(LONG worldColumn) {
+	for (UBYTE index = harLevelObjectFirstIndexForColumn(worldColumn);
+		index != HAR_LEVEL_OBJECT_COLUMN_INDEX_NONE; index = harLevelObjectNext[index]) {
+		if (harLevelObjects[index].id == HAR_OBJ_ENEMY_SHIP)
+			return 1;
+	}
+	return 0;
 }
 
 static UBYTE enemyShipCellNearWorldPoint(const GameState* game, WORD screenX, WORD screenY, WORD minColumnOffset, WORD maxColumnOffset, WORD minRowOffset, WORD maxRowOffset, ObjectCell* outCell, LONG* outWorldColumn, WORD* outTileY) {
@@ -11013,6 +12154,11 @@ static UBYTE enemyShipCellNearWorldPoint(const GameState* game, WORD screenX, WO
 			ObjectCell cell;
 			LONG worldColumn = centerColumn + columnOffset;
 			WORD tileY = centerTileY + rowOffset;
+			/* Only authored exact-column objects can resolve to ENEMY_SHIP.
+			 * Retain the full resolver for those columns so terrain, smoke and
+			 * destroyed-cell precedence stay unchanged. */
+			if (!columnMayContainEnemyShip(worldColumn))
+				continue;
 			if (!objectCellForWorldColumnTile(worldColumn, tileY, &cell))
 				continue;
 			if (cell.id != HAR_OBJ_ENEMY_SHIP)
@@ -11038,8 +12184,14 @@ static UBYTE ownFrigateCellNearWorldPoint(const GameState* game, WORD screenX, W
 	LONG centerColumn = worldPixelX >> 3;
 	WORD centerTileY = screenY >> 3;
 
-	for (UWORD index = 0; index < sizeof(harLevelObjects) / sizeof(harLevelObjects[0]); index++) {
-		const LevelObjectDef* object = &harLevelObjects[index];
+	if (!harLevelObjectIndexReady)
+		buildHarLevelObjectIndex();
+	/* Most airborne probes cannot touch any deck. Bounds come from the
+	 * same indexed objects and preserve the existing one-row tolerance. */
+	if (centerTileY < harOwnFrigateMinProbeRow || centerTileY > harOwnFrigateMaxProbeRow)
+		return 0;
+	for (UBYTE index = 0; index < harOwnFrigateCount; index++) {
+		const LevelObjectDef* object = &harLevelObjects[harOwnFrigateIndex[index]];
 		WORD row;
 
 		if (object->id != HAR_OBJ_OWN_FRIGATE)
@@ -11156,6 +12308,12 @@ static UBYTE playerHitsNativeCarrierObstruction(const GameState* game,
 	 * gameplay decision to CPC's 2x1 character footprint. */
 	LONG playerWorldColumn = ((LONG)game->scrollX + game->playerX) >> 3;
 	WORD playerTileY = game->playerY >> 3;
+	WORD carrierTopRow = CARRIER_COMPOSITE_PIXEL_Y >> 3;
+	if (playerTileY != carrierTopRow && playerTileY != carrierTopRow + 1 &&
+		!(carrierParkedWingmanVisible &&
+		  game->playerY + PLAYER_SPRITE_HEIGHT - 1 >= CARRIER_PARKED_HARRIER_TOP &&
+		  game->playerY + 1 < CARRIER_PARKED_HARRIER_BOTTOM))
+		return 0;
 
 	if (!harLevelObjectIndexReady)
 		buildHarLevelObjectIndex();
@@ -11297,10 +12455,6 @@ static UBYTE replenishPlayerFromFrigate(GameState* game) {
  * per column, with no cache) became the only scroller. See
  * AMIGA_PORT_PLAN.md Sprint 14.85 for the removal record. */
 
-typedef struct RenderColumn {
-	UBYTE tile[GAME_OBJECT_MAP_HEIGHT_TILES];
-} RenderColumn;
-
 /* Sprint 14.94 Part 1+2: objectCellForWorldColumnTile() resolves one row at a
  * time and gets called once per row by every caller below - up to
  * GAME_OBJECT_MAP_HEIGHT_TILES(25) times for the very same column, each call
@@ -11320,7 +12474,69 @@ typedef struct RenderColumn {
  * match wins, in this order" per-row early-return behaviour, just computed
  * with one forward pass over harLevelObjects instead of a fresh 95-entry
  * scan per row. */
+static void applyWorldColumnSmoke(LONG worldColumn, RenderColumn* column, UBYTE* claimed) {
+	/* Resolve the town's packed smoke bits once, then visit each wreck once.
+	 * Town smoke has priority over wreck smoke, as in the single-cell query. */
+	const LevelSegmentDef* segment = levelSegmentForWorldColumn(worldColumn);
+	if (segment && segment->terrainKind == HAR_TERRAIN_TOWN) {
+		LONG local = worldColumn - segment->startColumn;
+		if (local >= 0 && local < CPC_TOWN_PROCEDURAL_CAPACITY) {
+			UWORD bits = townHitSmokeByColumn[local];
+			if (bits) {
+				WORD firstRow = (WORD)terrainYForWorldColumn(worldColumn, segment, HAR_TERRAIN_TOWN) - 4;
+				for (UBYTE slot = 0; slot < CPC_TOWN_SMOKE_ROWS; slot++, bits >>= 2) {
+					WORD row = firstRow + slot;
+					UBYTE kind = bits & 3;
+					if (row >= 0 && row < GAME_OBJECT_MAP_HEIGHT_TILES && claimed[row] < 2 &&
+						(kind == CPC_TOWN_SMOKE_A || kind == CPC_TOWN_SMOKE_B)) {
+						column->tile[row] = kind == CPC_TOWN_SMOKE_A ? GAME_SHIP_WRECK_SMOKE_TILE_A : GAME_SHIP_WRECK_SMOKE_TILE_B;
+						claimed[row] = 2;
+					}
+				}
+			}
+		}
+	}
+	if (worldColumn < 0 || !shipWreckSmokeCount ||
+		!shipWreckSmokeColumnMayContain((UWORD)worldColumn)) return;
+	for (UBYTE index = 0; index < shipWreckSmokeCount; index++) {
+		if (shipWreckSmokeColumns[index] != (UWORD)worldColumn) continue;
+		UBYTE row = shipWreckSmokeRows[index];
+		if (row < GAME_OBJECT_MAP_HEIGHT_TILES && claimed[row] < 2 && shipWreckSmokeTiles[index]) {
+			column->tile[row] = shipWreckSmokeTiles[index];
+			claimed[row] = 2;
+		}
+	}
+}
+
+static void applyWorldColumnClouds(LONG worldColumn, RenderColumn* column,
+	const UBYTE* claimed) {
+	if (!cpcRandomSequenceReady)
+		resetCpcRandomSequence(cpcActiveWorldSeed);
+	if (worldColumn < 0 || worldColumn >= currentGameLevelWidthTiles)
+		return;
+	UBYTE top = cpcCloudTopRowByColumn[worldColumn];
+	if (top == CPC_CLOUD_NONE || top >= GAME_SEA_TOP_TILE_Y)
+		return;
+	UBYTE encoded = cpcCloudBlockColumnByColumn[worldColumn];
+	UBYTE blockColumn = encoded & 0x7f;
+	const UBYTE* tiles;
+	if (encoded & 0x80) {
+		if (blockColumn >= CPC_CLOUD_LARGE_WIDTH) return;
+		tiles = cpcCloudLarge[blockColumn];
+	} else {
+		if (blockColumn >= CPC_CLOUD_SMALL_WIDTH) return;
+		tiles = cpcCloudSmall[blockColumn];
+	}
+	for (UBYTE row = 0; row < 3 && top + row < GAME_SEA_TOP_TILE_Y; row++) {
+		if (!claimed[top + row]) column->tile[top + row] = tiles[row];
+	}
+}
+
+#if HAR_RENDER_COLUMN_CACHE
+static void resolveWorldTileColumn(LONG worldColumn, RenderColumn* outColumn, RenderColumnCache* metadata) {
+#else
 static void buildWorldTileColumn(LONG worldColumn, RenderColumn* outColumn) {
+#endif
 	const LevelSegmentDef* segment = levelSegmentForWorldColumn(worldColumn);
 	UBYTE stage = stageForWorldColumn(worldColumn, segment);
 	UBYTE terrainKind = segment ? segment->terrainKind : terrainKindForStage(stage);
@@ -11333,15 +12549,12 @@ static void buildWorldTileColumn(LONG worldColumn, RenderColumn* outColumn) {
 	UBYTE claimed[GAME_OBJECT_MAP_HEIGHT_TILES];
 	memset(claimed, 0, sizeof(claimed));
 
-	/* Priority 1: sky/sea baseline, then land - both already O(1) or
-	 * small-bounded per row (seaTileForColumn, isLandCraterAtColumnRow), not
-	 * the hotspot this change targets, but computed with the column's
-	 * segment/terrainY resolved only once instead of once per row. */
-	for (UWORD tileY = 0; tileY < GAME_OBJECT_MAP_HEIGHT_TILES; tileY++) {
-		UBYTE cloudTile = tileY < GAME_SEA_TOP_TILE_Y ?
-			cpcCloudTileAtColumnRow(worldColumn, (WORD)tileY) : 0;
+	/* Resolve the sparse crater list once, not once per solid terrain row.
+	 * Valid craters occupy rows 0..14; shifting also leaves lower rows clear. */
+	UWORD craterRows = terrainY == 255 ? 0 : landCraterMaskForColumn(worldColumn);
+	for (UWORD tileY = 0; tileY < GAME_OBJECT_MAP_HEIGHT_TILES; tileY++, craterRows >>= 1) {
 		outColumn->tile[tileY] = tileY < GAME_SEA_TOP_TILE_Y ?
-			cloudTile : seaTileForColumn(worldColumn, tileY);
+			0 : seaTileForColumn(worldColumn, tileY);
 		if (terrainKind == HAR_TERRAIN_COAST_FALL) {
 			LONG localColumn = segment ? worldColumn - segment->startColumn : worldColumn;
 			if (localColumn == 0 && (tileY == 14 || tileY == 15)) {
@@ -11351,10 +12564,14 @@ static void buildWorldTileColumn(LONG worldColumn, RenderColumn* outColumn) {
 			}
 		}
 		if (terrainY != 255 && tileY >= terrainY && (terrainKind != HAR_TERRAIN_COAST_FALL || tileY < GAME_SEA_TOP_TILE_Y)) {
-			outColumn->tile[tileY] = isLandCraterAtColumnRow(worldColumn, tileY) ? GAME_LAND_CRATER_TILE : (tileY == terrainY ? landSurfaceTileForColumn(worldColumn, terrainKind) : 1);
+			outColumn->tile[tileY] = (craterRows & 1) ? GAME_LAND_CRATER_TILE : (tileY == terrainY ? landSurfaceTileForColumn(worldColumn, terrainKind) : 1);
 			claimed[tileY] = 1; /* base terrain: town may overwrite */
 		}
 	}
+
+	/* Clouds occupy at most three rows. Resolve the column once, preserving
+	 * the original land/coast precedence established by the baseline pass. */
+	applyWorldColumnClouds(worldColumn, outColumn, claimed);
 
 	/* Priority 2: persistent hit smoke. A town block's bottom visible tile
 	 * can share terrainY with the solid land base. The old `if (claimed)`
@@ -11363,13 +12580,7 @@ static void buildWorldTileColumn(LONG worldColumn, RenderColumn* outColumn) {
 	 * CPC drawsmokesprite replaces the struck object-map cell, including a
 	 * building cell at ground level, so smoke may replace base terrain
 	 * (claim 0/1) and then protects the row with claim 2. */
-	for (UWORD tileY = 0; tileY < GAME_OBJECT_MAP_HEIGHT_TILES; tileY++) {
-		UBYTE smokeTile = persistentHitSmokeTileAtColumnRow(worldColumn, tileY);
-		if (smokeTile && claimed[tileY] < 2) {
-			outColumn->tile[tileY] = smokeTile;
-			claimed[tileY] = 2; /* protected from town overwrite */
-		}
-	}
+	applyWorldColumnSmoke(worldColumn, outColumn, claimed);
 
 	/* Priority 3: harLevelObjects - the actual hot path this change targets.
 	 * Sprint 14.94 Part 3: walks only the (usually 0 or 1, rarely more)
@@ -11437,7 +12648,8 @@ static void buildWorldTileColumn(LONG worldColumn, RenderColumn* outColumn) {
 					 * explicit level object (claim 2). */
 					if (outY < 0 || outY >= GAME_OBJECT_MAP_HEIGHT_TILES || claimed[outY] >= 2)
 						continue;
-					outColumn->tile[outY] = tileId;
+					outColumn->tile[outY] = currentWorldPresentationMode == GAME_MODE_ENHANCED && row < 3 ?
+						(UBYTE)(GAME_TILE_COUNT + enhancedTownTileOffsets[blockId] + blockLocalColumn * 3 + row) : tileId;
 					claimed[outY] = 1;
 					if (townRadarTopRow == TOWN_RADAR_TOP_EMPTY ||
 						outY < townRadarTopRow)
@@ -11452,6 +12664,11 @@ static void buildWorldTileColumn(LONG worldColumn, RenderColumn* outColumn) {
 	 * gameplay frame. A damaged column invalidates this entry explicitly. */
 	if (townRadarLocalColumn >= 0)
 		townRadarTopRowByColumn[townRadarLocalColumn] = townRadarTopRow;
+#if HAR_RENDER_COLUMN_CACHE
+	metadata->townLocalColumn = (WORD)townRadarLocalColumn;
+	metadata->radarTopRow = townRadarTopRow;
+	metadata->passableMask = 0;
+#endif
 
 	/* Priority 5: procedural land target (CPC_RANDOM_LAND terrain). */
 	if (terrainKind == HAR_TERRAIN_CPC_RANDOM_LAND && terrainY != 255 && !isTargetDestroyedAtColumn(worldColumn)) {
@@ -11461,7 +12678,15 @@ static void buildWorldTileColumn(LONG worldColumn, RenderColumn* outColumn) {
 			WORD targetRow = (WORD)(terrainY - 1);
 			if (target != CPC_LAND_TARGET_NONE && targetRow >= 0 && targetRow < GAME_OBJECT_MAP_HEIGHT_TILES && !claimed[targetRow]) {
 				static const UBYTE targetTiles[] = { 42, 43, 44, 45, 46 };
-				outColumn->tile[targetRow] = targetTiles[target - 1];
+				/* Enhanced ground targets are presented by the masked overlays
+				 * below. Keep the CPC world cell claimed for enemy navigation, but
+				 * leave the visual base as sky so no old 8x8 silhouette can show
+				 * through transparent pixels. Collision and damage still query
+				 * objectCellForWorldColumnTile(), which retains targetTiles[]. */
+				UBYTE enhancedTarget = currentWorldPresentationMode ==
+					GAME_MODE_ENHANCED;
+				outColumn->tile[targetRow] = enhancedTarget ? 0 :
+					targetTiles[target - 1];
 				claimed[targetRow] = 1;
 			}
 		}
@@ -11471,13 +12696,13 @@ static void buildWorldTileColumn(LONG worldColumn, RenderColumn* outColumn) {
 	 * screen's right edge by trySpawnFlak(), applies uniformly to land and
 	 * town since eligibility was already decided at spawn time. Replaces the
 	 * old precomputed per-column lookahead tables for both terrain kinds. */
-	for (UWORD tileY = 0; tileY < GAME_OBJECT_MAP_HEIGHT_TILES; tileY++) {
-		if (claimed[tileY])
-			continue;
-		UBYTE runtimeFlakTile = runtimeFlakTileAtColumnRow(worldColumn, tileY);
-		if (runtimeFlakTile) {
-			outColumn->tile[tileY] = runtimeFlakTile;
-			claimed[tileY] = 1;
+	if (worldColumn >= 0) {
+		UBYTE slot = (UWORD)worldColumn & (GAME_RUNTIME_FLAK_LOOKUP_SIZE - 1);
+		UBYTE row = runtimeFlakLookupRows[slot];
+		if (runtimeFlakLookupColumns[slot] == (UWORD)worldColumn &&
+			row < GAME_OBJECT_MAP_HEIGHT_TILES && !claimed[row] && runtimeFlakLookupTiles[slot]) {
+			outColumn->tile[row] = runtimeFlakLookupTiles[slot];
+			claimed[row] = 1;
 		}
 	}
 
@@ -11514,10 +12739,52 @@ static void buildWorldTileColumn(LONG worldColumn, RenderColumn* outColumn) {
 				passableMask |= (UWORD)(1U << tileY);
 		}
 		enemyPlanePassableMaskByColumn[worldColumn] = passableMask;
+#if HAR_RENDER_COLUMN_CACHE
+		metadata->passableMask = passableMask;
+#endif
 		enemyPlanePassableColumnValid[(UWORD)worldColumn >> 3] |=
 			(UBYTE)(1U << ((UWORD)worldColumn & 7));
 	}
 }
+
+#if HAR_RENDER_COLUMN_CACHE
+static void buildWorldTileColumn(LONG worldColumn, RenderColumn* outColumn) {
+	RenderColumnCache* cached = &renderColumnCache[(UWORD)worldColumn & (RENDER_COLUMN_CACHE_COLUMNS - 1)];
+	if (!cached->valid || cached->worldColumn != worldColumn ||
+		cached->mode != currentWorldPresentationMode) {
+		resolveWorldTileColumn(worldColumn, &cached->column, cached);
+		cached->worldColumn = worldColumn;
+		cached->mode = currentWorldPresentationMode;
+		cached->valid = 1;
+#if HAR_RENDER_COLUMN_CACHE_VERIFY
+		renderColumnCacheStats[1]++;
+#endif
+	} else {
+#if HAR_RENDER_COLUMN_CACHE_VERIFY
+		RenderColumnCache expected;
+		UBYTE same = 1;
+		resolveWorldTileColumn(worldColumn, &expected.column, &expected);
+		for (UBYTE row = 0; row < GAME_OBJECT_MAP_HEIGHT_TILES; row++)
+			if (cached->column.tile[row] != expected.column.tile[row]) same = 0;
+		if (cached->townLocalColumn != expected.townLocalColumn ||
+			cached->radarTopRow != expected.radarTopRow ||
+			cached->passableMask != expected.passableMask) same = 0;
+		renderColumnCacheStats[0]++;
+		if (!same) renderColumnCacheStats[2]++;
+#endif
+		/* The builder also publishes navigation/radar summaries. Preserve
+		 * those side effects when serving visual tiles from the retained map. */
+		if (cached->townLocalColumn >= 0)
+			townRadarTopRowByColumn[cached->townLocalColumn] = cached->radarTopRow;
+		if (worldColumn >= 0 && worldColumn < currentGameLevelWidthTiles) {
+			enemyPlanePassableMaskByColumn[worldColumn] = cached->passableMask;
+			enemyPlanePassableColumnValid[(UWORD)worldColumn >> 3] |=
+				(UBYTE)(1U << ((UWORD)worldColumn & 7));
+		}
+	}
+	*outColumn = cached->column;
+}
+#endif
 
 static void drawWorldColumnRowsFromCache(UBYTE* bitmap, UWORD tileX, const RenderColumn* column, UWORD rowStart, UWORD rowCount) {
 	UWORD rowEnd = (UWORD)(rowStart + rowCount);
@@ -11551,6 +12818,97 @@ static WORD levelObjectRowForColumnObject(const LevelObjectDef* object) {
 		return (WORD)terrainY + object->row;
 	}
 	return object->row;
+}
+
+#define ENHANCED_TANK_TILES_WIDE 2
+#define ENHANCED_TANK_TILES_TALL 1
+
+/* Draw one requested 8x8 cell of an Enhanced ground target. Radar, launcher
+ * and gun are 8x8; CPC's paired tank is 16x8. The procedural CPC target
+ * remains authoritative for existence, anchoring, collision and damage.
+ * CPU masking is cheaper than Blitter setup for these one-byte-wide cells,
+ * and both small sources remain in Fast/rodata rather than Chip RAM. */
+static void drawEnhancedGroundTargetColumnRowAt(UBYTE* bitmap,
+	UWORD physicalTileX, LONG worldColumn, WORD requestedTileRow) {
+	if (currentWorldPresentationMode != GAME_MODE_ENHANCED || worldColumn < 0)
+		return;
+	const LevelSegmentDef* segment = levelSegmentForWorldColumn(worldColumn);
+	if (!segment || segment->terrainKind != HAR_TERRAIN_CPC_RANDOM_LAND)
+		return;
+	LONG localColumn = worldColumn - segment->startColumn;
+	if (localColumn < 0 || localColumn >= cpcLandProceduralLength)
+		return;
+	UBYTE target = cpcLandProceduralTarget((UWORD)localColumn);
+	if (target == CPC_LAND_TARGET_NONE)
+		return;
+
+	LONG anchorColumn = target == CPC_LAND_TARGET_TANK_REAR ?
+		worldColumn - 1 : worldColumn;
+	UBYTE pairedTank = target == CPC_LAND_TARGET_TANK_FRONT ||
+		target == CPC_LAND_TARGET_TANK_REAR;
+	if ((pairedTank && !groundTargetIsTwoColumnTank(anchorColumn)) ||
+		isTargetDestroyedAtColumn(anchorColumn))
+		return;
+	const LevelSegmentDef* anchorSegment =
+		levelSegmentForWorldColumn(anchorColumn);
+	if (!anchorSegment)
+		return;
+	UBYTE terrainY = terrainYForWorldColumn(anchorColumn, anchorSegment,
+		HAR_TERRAIN_CPC_RANDOM_LAND);
+	if (terrainY == 255)
+		return;
+	WORD topRow = (WORD)terrainY - ENHANCED_TANK_TILES_TALL;
+	if (requestedTileRow < topRow ||
+		requestedTileRow >= topRow + ENHANCED_TANK_TILES_TALL)
+		return;
+
+	UBYTE compositeColumn = (UBYTE)(worldColumn - anchorColumn);
+	UBYTE compositeRow = (UBYTE)(requestedTileRow - topRow);
+	const UBYTE* tileData;
+	ULONG tileIndex;
+	if (pairedTank) {
+		tileData = enhancedTankTiles;
+		tileIndex = (ULONG)compositeRow * ENHANCED_TANK_TILES_WIDE +
+			compositeColumn;
+	} else {
+		/* Target ids 1..3 map directly to radar, launcher and gun; each
+		 * owns one cell in the generated bank. */
+		tileData = enhancedGroundTargetTiles;
+		tileIndex = (ULONG)(target - CPC_LAND_TARGET_RADAR);
+	}
+	drawGameScrollTileMasked(bitmap, (short)physicalTileX,
+		(short)requestedTileRow,
+		tileData + tileIndex * BOB_TILE_BYTES);
+}
+
+static void drawEnhancedGroundTargetColumnAt(UBYTE* bitmap,
+	UWORD physicalTileX, LONG worldColumn) {
+	if (currentWorldPresentationMode != GAME_MODE_ENHANCED || worldColumn < 0)
+		return;
+	/* Only the original target row is drawn; other columns return before
+	 * touching the bitmap. Keeping the row helper shared also makes transient
+	 * BOB background restoration reapply exactly the same presentation. */
+	const LevelSegmentDef* segment = levelSegmentForWorldColumn(worldColumn);
+	if (!segment || segment->terrainKind != HAR_TERRAIN_CPC_RANDOM_LAND)
+		return;
+	LONG localColumn = worldColumn - segment->startColumn;
+	if (localColumn < 0 || localColumn >= cpcLandProceduralLength)
+		return;
+	UBYTE target = cpcLandProceduralTarget((UWORD)localColumn);
+	if (target == CPC_LAND_TARGET_NONE)
+		return;
+	LONG anchorColumn = target == CPC_LAND_TARGET_TANK_REAR ?
+		worldColumn - 1 : worldColumn;
+	const LevelSegmentDef* anchorSegment =
+		levelSegmentForWorldColumn(anchorColumn);
+	if (!anchorSegment)
+		return;
+	UBYTE terrainY = terrainYForWorldColumn(anchorColumn, anchorSegment,
+		HAR_TERRAIN_CPC_RANDOM_LAND);
+	if (terrainY == 255)
+		return;
+	drawEnhancedGroundTargetColumnRowAt(bitmap, physicalTileX, worldColumn,
+		(WORD)terrainY - 1);
 }
 
 /* Sprint 14.94 Part 3: every branch in this loop only ever matches one of
@@ -11593,6 +12951,7 @@ static void drawDirectColumnRangeObjects(UBYTE* bitmap, UWORD physicalTileX, LON
 			continue;
 		}
 	}
+	drawEnhancedGroundTargetColumnAt(bitmap, physicalTileX, worldColumn);
 }
 
 /* Reapply only one row of a promoted wide object after a transient BOB has
@@ -11633,6 +12992,7 @@ static void drawDirectColumnRangeObjectRow(UBYTE* bitmap,
 				baseTileRow, (UBYTE)(tileRow - baseTileRow));
 		}
 	}
+	drawEnhancedGroundTargetColumnRowAt(bitmap, physicalTileX, worldColumn, tileRow);
 }
 
 /* Sprint 14.95 Part 5: direct O(1) lookup against the procedural town-block
@@ -11644,6 +13004,9 @@ static void drawDirectColumnRangeObjectRow(UBYTE* bitmap,
  * destroyed section can't be "hit" again. */
 static UBYTE townBlockCellAtWorldColumnRow(LONG centerColumn,
 	WORD centerTileY, ObjectCell* outCell) {
+	if (centerTileY < CPC_TOWN_TERRAIN_ROW - 3 ||
+		centerTileY >= CPC_TOWN_TERRAIN_ROW - 3 + HAR_CPC_TOWN_BLOCK_HEIGHT)
+		return 0;
 	const LevelSegmentDef* segment = levelSegmentForWorldColumn(centerColumn);
 	if (!segment || segment->terrainKind != HAR_TERRAIN_TOWN)
 		return 0;
@@ -11678,6 +13041,83 @@ static UBYTE townBlockCellAtWorldColumnRow(LONG centerColumn,
 	}
 	return 1;
 }
+
+/* Aircraft overlap the same small set of cells across consecutive pixels.
+ * Cache the authoritative facade/base resolver, invalidated by world edits. */
+static UBYTE aircraftObjectCell(LONG worldColumn, WORD tileY, ObjectCell* outCell) {
+	static struct {
+		LONG column;
+		ULONG revision;
+		WORD row;
+		ObjectCell cell;
+		UBYTE valid;
+	} cells[64];
+	UWORD slot = (UWORD)(((UWORD)worldColumn & 15) * 4 + ((UWORD)tileY & 3));
+	ULONG revision = worldObjectRevision;
+#if HAR_LOCAL_AIRCRAFT_CACHE
+	revision = aircraftColumnRevision[(UWORD)worldColumn & 63];
+	/* Zero denotes untouched columns before the first world reset. Static
+	 * cache entries also start at zero, so reserve revision one for these. */
+	if (!revision) revision = 1;
+#endif
+	if (cells[slot].revision != revision ||
+		cells[slot].column != worldColumn || cells[slot].row != tileY) {
+		cells[slot].valid = townBlockCellAtWorldColumnRow(worldColumn, tileY,
+			&cells[slot].cell) || objectCellForWorldColumnTile(worldColumn,
+			tileY, &cells[slot].cell);
+		cells[slot].column = worldColumn;
+		cells[slot].row = tileY;
+		cells[slot].revision = revision;
+#if HAR_LOCAL_AIRCRAFT_CACHE && HAR_LOCAL_AIRCRAFT_CACHE_VERIFY
+		aircraftCacheStats[1]++;
+	} else {
+		ObjectCell expected;
+		UBYTE valid = townBlockCellAtWorldColumnRow(worldColumn, tileY, &expected) ||
+#if HAR_OBJECT_CELL_CACHE || HAR_DEBUG_OBJECT_SHADOW
+			resolveObjectCellForWorldColumnTile(worldColumn, tileY, &expected);
+#else
+			objectCellForWorldColumnTile(worldColumn, tileY, &expected);
+#endif
+		aircraftCacheStats[0]++;
+		if (valid != cells[slot].valid || (valid &&
+			(expected.id != cells[slot].cell.id || expected.tile != cells[slot].cell.tile ||
+			 expected.flags != cells[slot].cell.flags || expected.hp != cells[slot].cell.hp)))
+			aircraftCacheStats[2]++;
+#endif
+	}
+	if (cells[slot].valid)
+		*outCell = cells[slot].cell;
+	return cells[slot].valid;
+}
+
+#if HAR_MIRRORED_TILE_BATCH
+static void drawMirroredWorldColumnRows(UBYTE* bitmap, UWORD tileX,
+	const RenderColumn* column, UWORD rowStart, UWORD rowCount) {
+	UWORD rowEnd = rowStart + rowCount;
+	if (rowEnd > (GAME_WORLD_HEIGHT + GAME_TILE_HEIGHT - 1) / GAME_TILE_HEIGHT)
+		rowEnd = (GAME_WORLD_HEIGHT + GAME_TILE_HEIGHT - 1) / GAME_TILE_HEIGHT;
+	for (UWORD tileY = rowStart; tileY < rowEnd; tileY++) {
+		const UBYTE* src = worldRenderTileData(column->tile[tileY]);
+		UWORD y = tileY * GAME_TILE_HEIGHT;
+		UWORD lines = GAME_WORLD_HEIGHT - y;
+		if (lines > GAME_TILE_HEIGHT) lines = GAME_TILE_HEIGHT;
+		UBYTE* dest = bitmap + (ULONG)y * SCREEN_PLANES * GAME_WORLD_ROW_BYTES + tileX;
+		while (lines--) {
+			UBYTE p0 = src[0], p1 = src[1], p2 = src[2], p3 = src[3];
+			dest[0 * GAME_WORLD_ROW_BYTES] = p0;
+			dest[1 * GAME_WORLD_ROW_BYTES] = p1;
+			dest[2 * GAME_WORLD_ROW_BYTES] = p2;
+			dest[3 * GAME_WORLD_ROW_BYTES] = p3;
+			dest[GAME_WORLD_SCROLL_PAGE_BYTES + 0 * GAME_WORLD_ROW_BYTES] = p0;
+			dest[GAME_WORLD_SCROLL_PAGE_BYTES + 1 * GAME_WORLD_ROW_BYTES] = p1;
+			dest[GAME_WORLD_SCROLL_PAGE_BYTES + 2 * GAME_WORLD_ROW_BYTES] = p2;
+			dest[GAME_WORLD_SCROLL_PAGE_BYTES + 3 * GAME_WORLD_ROW_BYTES] = p3;
+			src += GAME_TILE_PLANES;
+			dest += SCREEN_PLANES * GAME_WORLD_ROW_BYTES;
+		}
+	}
+}
+#endif
 
 static UBYTE townBlockCellNearWorldPoint(const GameState* game, WORD screenX, WORD screenY, ObjectCell* outCell, LONG* outWorldColumn, WORD* outTileY) {
 	if (screenY < 0 || screenY >= HUD_TOP)
@@ -11718,6 +13158,14 @@ static void renderRingWorldColumn(UBYTE* bitmap, LONG worldColumn) {
 	UWORD tileX = ringWorldTileXForColumn(worldColumn);
 	RenderColumn column;
 	buildWorldTileColumn(worldColumn, &column);
+#if HAR_MIRRORED_TILE_BATCH
+	if (tileX < GAME_WORLD_BUFFER_MARGIN_TILES + GAME_FETCH_BYTES) {
+		drawMirroredWorldColumnRows(bitmap, tileX, &column, 0, GAME_OBJECT_MAP_HEIGHT_TILES);
+		drawDirectColumnRangeObjects(bitmap, tileX, worldColumn);
+		drawDirectColumnRangeObjects(bitmap, tileX + GAME_WORLD_SCROLL_PAGE_BYTES, worldColumn);
+		return;
+	}
+#endif
 	drawWorldColumnRowsFromCache(bitmap, tileX, &column, 0, GAME_OBJECT_MAP_HEIGHT_TILES);
 	drawDirectColumnRangeObjects(bitmap, tileX, worldColumn);
 	if (tileX < GAME_WORLD_BUFFER_MARGIN_TILES + GAME_FETCH_BYTES) {
@@ -11802,8 +13250,8 @@ static UBYTE ringStreamPixelsForGameState(const GameState* game) {
 	return scrollPixelsForSpeedLevel(game->speedLevel);
 }
 
-/* Conservative pre-stream test used by retained BOBs. It simulates only the
- * columns the fixed row budget can touch this frame. False positives merely
+/* Conservative pre-stream test used by retained BOBs. It bounds the columns
+ * the maximum allowed row budget can touch this frame. False positives merely
  * cause one harmless redraw; false negatives would leave a BOB partially
  * overwritten by a recycled ring column. */
 static UBYTE ringStreamMayTouchColumnRange(const GameState* game,
@@ -11813,6 +13261,12 @@ static UBYTE ringStreamMayTouchColumnRange(const GameState* game,
 	UBYTE scrollPixels = ringStreamPixelsForGameState(game);
 	UWORD rows = (UWORD)((ringStreamRowCredit +
 		scrollPixels * GAME_OBJECT_MAP_HEIGHT_TILES) / GAME_TILE_WIDTH);
+#if HAR_ADAPTIVE_STREAM_BUDGET
+	/* The raster advances between this preflight and the actual writer.
+	 * Predict the largest possible budget, not an earlier beam decision. */
+	if (rows && !game->missionComplete)
+		rows = (UWORD)(rows + ADAPTIVE_STREAM_EXTRA_ROWS);
+#endif
 	if (game->missionComplete &&
 		rows > LANDING_RESTART_STREAM_ROWS_PER_FRAME)
 		rows = LANDING_RESTART_STREAM_ROWS_PER_FRAME;
@@ -11853,13 +13307,45 @@ static void serviceRingWorldStream(UBYTE* bitmap, const GameState* game) {
 	if (game->missionComplete &&
 		rowBudget > LANDING_RESTART_STREAM_ROWS_PER_FRAME)
 		rowBudget = LANDING_RESTART_STREAM_ROWS_PER_FRAME;
+#if HAR_ADAPTIVE_STREAM_BUDGET
+	if (rowBudget && !game->missionComplete) {
+		LONG lead = (LONG)ringWorldLastStreamedColumn - leftColumn;
+		UWORD beam = (UWORD)((*(volatile ULONG*)0xdff004 >> 8) & 0x1ff);
+#if HAR_DEBUG_PERF_LOG
+		ULONG measuredLead = lead < 0 ? 0 : (ULONG)lead;
+		if (measuredLead < adaptiveStreamStats[0]) adaptiveStreamStats[0] = measuredLead;
+		adaptiveStreamStats[3]++;
+#endif
+		/* Keep at least six completed columns beyond the fetch span before
+		 * lending this update's stream time to the foreground workload.
+		 * Quiet updates replenish the reserve; the existing maximum lead
+		 * remains the hard ring-reuse limit. Fractional row credit is unchanged. */
+		if (beam > 170 && lead >= GAME_FETCH_BYTES + 6) {
+			rowBudget = 0;
+#if HAR_DEBUG_PERF_LOG
+			adaptiveStreamStats[1]++;
+#endif
+		} else if (beam < 120 && lead < GAME_FETCH_BYTES + 12) {
+			rowBudget = (UWORD)(rowBudget + ADAPTIVE_STREAM_EXTRA_ROWS);
+#if HAR_DEBUG_PERF_LOG
+			adaptiveStreamStats[2]++;
+#endif
+		}
+	}
+#endif
 	while (rowBudget > 0) {
 		if (ringStreamColumn < 0) {
 			if (!(ringWorldLastStreamedColumn < maxAheadColumn))
 				break;
 			ringStreamColumn = (LONG)ringWorldLastStreamedColumn + 1;
 			ringStreamRow = 0;
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+			ULONG columnBuildStart = perfReadRasterClock();
+#endif
 			buildWorldTileColumn(ringStreamColumn, &ringStreamTileColumn);
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+			perfStageLines[23] += (perfReadRasterClock() - columnBuildStart) & 0x00ffffffUL;
+#endif
 			/* A procedural town/object column can cross a VBlank on a stock
 			 * 68000. Service the replayer immediately instead of waiting for
 			 * the next complete gameplay loop and dropping that music tick. */
@@ -11875,9 +13361,22 @@ static void serviceRingWorldStream(UBYTE* bitmap, const GameState* game) {
 		if (ringStreamRow + rowsThisStep > GAME_OBJECT_MAP_HEIGHT_TILES)
 			rowsThisStep = (UWORD)(GAME_OBJECT_MAP_HEIGHT_TILES - ringStreamRow);
 
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+		ULONG columnDrawStart = perfReadRasterClock();
+#endif
+#if HAR_MIRRORED_TILE_BATCH
+		if (hasDuplicate)
+			drawMirroredWorldColumnRows(bitmap, tileX, &ringStreamTileColumn, ringStreamRow, rowsThisStep);
+		else
+			drawWorldColumnRowsFromCache(bitmap, tileX, &ringStreamTileColumn, ringStreamRow, rowsThisStep);
+#else
 		drawWorldColumnRowsFromCache(bitmap, tileX, &ringStreamTileColumn, ringStreamRow, rowsThisStep);
 		if (hasDuplicate)
 			drawWorldColumnRowsFromCache(bitmap, duplicateTileX, &ringStreamTileColumn, ringStreamRow, rowsThisStep);
+#endif
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+		perfStageLines[24] += (perfReadRasterClock() - columnDrawStart) & 0x00ffffffUL;
+#endif
 		if (ringStreamTouchedFirstColumn < 0 ||
 			ringStreamColumn < ringStreamTouchedFirstColumn)
 			ringStreamTouchedFirstColumn = ringStreamColumn;
@@ -11888,9 +13387,15 @@ static void serviceRingWorldStream(UBYTE* bitmap, const GameState* game) {
 		rowBudget = (UWORD)(rowBudget - rowsThisStep);
 
 		if (ringStreamRow >= GAME_OBJECT_MAP_HEIGHT_TILES) {
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+			ULONG columnOverlayStart = perfReadRasterClock();
+#endif
 			drawDirectColumnRangeObjects(bitmap, tileX, ringStreamColumn);
 			if (hasDuplicate)
 				drawDirectColumnRangeObjects(bitmap, duplicateTileX, ringStreamColumn);
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+			perfStageLines[25] += (perfReadRasterClock() - columnOverlayStart) & 0x00ffffffUL;
+#endif
 			if (modPlaying)
 				serviceModMusicToCurrentVbl();
 			ringWorldLastStreamedColumn = (UWORD)ringStreamColumn;
@@ -11908,12 +13413,77 @@ static void dirtyRedrawWorldColumn(UBYTE** worldBuffers, LONG worldColumn) {
 	renderRingWorldColumn(worldBuffers[0], worldColumn);
 }
 
-/* Repaint the complete logical target. Single-column radar/launcher/gun
- * still cost one column; only CPC's paired tank repaints its neighbour. */
+/* Procedural targets occupy one row, with hit smoke at that row and above.
+ * Retain full-column fallback for authored targets with other geometry. */
 static void dirtyRedrawGroundTarget(UBYTE** worldBuffers, LONG worldColumn) {
 	LONG anchorColumn = groundTargetAnchorColumn(worldColumn);
+	UBYTE columns = groundTargetIsTwoColumnTank(anchorColumn) ? 2 : 1;
+	const LevelSegmentDef* segment = levelSegmentForWorldColumn(anchorColumn);
+	LONG localColumn = segment ? anchorColumn - segment->startColumn : -1;
+	if (segment && segment->terrainKind == HAR_TERRAIN_CPC_RANDOM_LAND &&
+		localColumn >= 0 && localColumn < cpcLandProceduralLength &&
+		cpcLandProceduralTarget((UWORD)localColumn) != CPC_LAND_TARGET_NONE) {
+		WORD row = landSurfaceYForWorldColumn(anchorColumn) - 1;
+		UBYTE compact = row > 0 && row < GAME_OBJECT_MAP_HEIGHT_TILES;
+		for (UBYTE col = 0; compact && col < columns; col++) {
+			for (UBYTE index = harLevelObjectFirstIndexForColumn(anchorColumn + col);
+				index != HAR_LEVEL_OBJECT_COLUMN_INDEX_NONE; index = harLevelObjectNext[index]) {
+				const LevelObjectDef* object = &harLevelObjects[index];
+				if (object->id == HAR_OBJ_GROUND_TARGET) {
+					WORD authoredRow = levelObjectRowForColumnObject(object);
+					if (authoredRow < row - 1 || authoredRow > row) compact = 0;
+				}
+			}
+		}
+		if (compact) {
+#if HAR_DESTROYED_TARGET_ROWS
+			/* The destroyed procedural overlay contributes no pixels. Reject
+			 * every horizontally overlapping carrier/gunship conservatively,
+			 * even when its rows would not overlap this particular repair. */
+			UBYTE plainRows = isTargetDestroyedAtColumn(anchorColumn);
+			for (UBYTE index = 0; plainRows && index < harWideObjectCount; index++) {
+				const LevelObjectDef* object = &harLevelObjects[harWideObjectIndex[index]];
+				UWORD width = 0;
+				if (object->id == HAR_OBJ_OWN_FRIGATE &&
+					(object->flags & HAR_OBJECT_FLAG_NATIVE_CARRIER))
+					width = WORLD_RENDER_CARRIER_WIDTH_TILES;
+				else if (object->id == HAR_OBJ_GUNSHIP &&
+					(object->flags & HAR_OBJECT_FLAG_CPC_GUNSHIP))
+					width = WORLD_RENDER_GUNSHIP_WIDTH_TILES;
+				if (width && anchorColumn < object->column + width &&
+					anchorColumn + columns > object->column) plainRows = 0;
+			}
+			if (plainRows) {
+#if HAR_HEADLESS_CLASSIC_CONTRACT_TEST
+				destroyedTargetRowRepairs++;
+#endif
+				for (UBYTE col = 0; col < columns; col++) {
+					LONG world = anchorColumn + col;
+					const RenderColumn* base = bobEraseColumn(world);
+					UWORD tileX = ringWorldTileXForColumn(world);
+					UBYTE mirrored = tileX < GAME_WORLD_BUFFER_MARGIN_TILES + GAME_FETCH_BYTES;
+#if HAR_MIRRORED_TILE_BATCH
+					if (mirrored)
+						drawMirroredWorldColumnRows(worldBuffers[0], tileX, base, row - 1, 2);
+					else
+#endif
+					{
+						drawWorldColumnRowsFromCache(worldBuffers[0], tileX, base, row - 1, 2);
+						if (mirrored)
+							drawWorldColumnRowsFromCache(worldBuffers[0],
+								tileX + GAME_WORLD_SCROLL_PAGE_BYTES, base, row - 1, 2);
+					}
+				}
+				return;
+			}
+#endif
+			bobCompositorErase(worldBuffers[0], anchorColumn, row - 1, columns);
+			bobCompositorErase(worldBuffers[0], anchorColumn, row, columns);
+			return;
+		}
+	}
 	dirtyRedrawWorldColumn(worldBuffers, anchorColumn);
-	if (groundTargetIsTwoColumnTank(anchorColumn))
+	if (columns == 2)
 		dirtyRedrawWorldColumn(worldBuffers, anchorColumn + 1);
 }
 
@@ -11927,10 +13497,26 @@ static void dirtyRedrawNativeCarrierAt(UBYTE** worldBuffers, LONG carrierColumn)
 			!(object->flags & HAR_OBJECT_FLAG_NATIVE_CARRIER) ||
 			object->column != carrierColumn)
 			continue;
-		for (LONG column = object->column;
-			column < object->column + WORLD_RENDER_CARRIER_WIDTH_TILES;
-			column++)
-			dirtyRedrawWorldColumn(worldBuffers, column);
+		/* Only the parked-aircraft variant changed. Avoid repainting the
+		 * sea/sky and every carrier tile during the live takeoff frame. */
+		for (UWORD col = 0; col < HAR_CARRIER_TILES_WIDE; col++) {
+			RenderColumn base;
+			UBYTE baseReady = 0;
+			LONG worldColumn = object->column + col;
+			for (UBYTE row = 0; row < HAR_CARRIER_TILES_TALL; row++) {
+				UWORD index = row * HAR_CARRIER_TILES_WIDE + col;
+				if (!carrierWingmanTileChanged[index]) continue;
+				if (!baseReady) { buildWorldTileColumn(worldColumn, &base); baseReady = 1; }
+				WORD tileRow = CARRIER_COMPOSITE_PIXEL_Y / GAME_TILE_HEIGHT + row;
+				UWORD tileX = ringWorldTileXForColumn(worldColumn);
+				for (UBYTE placement = 0; placement < 2; placement++) {
+					drawGameScrollTile(worldBuffers[0], tileX, tileRow, base.tile[tileRow]);
+					drawDirectColumnRangeObjectRow(worldBuffers[0], tileX, worldColumn, tileRow);
+					if (placement || tileX >= GAME_WORLD_BUFFER_MARGIN_TILES + GAME_FETCH_BYTES) break;
+					tileX += GAME_WORLD_SCROLL_PAGE_BYTES;
+				}
+			}
+		}
 		return;
 	}
 }
@@ -11958,10 +13544,10 @@ static void dirtyRedrawWorldTile(UBYTE** worldBuffers, LONG worldColumn, WORD ti
  * the Blitter costs more than the handful of bytes touched by the 68000.
  * Saved backgrounds are kept per world buffer and erased before streaming,
  * exactly like the projectile BOBs later in the frame. */
-static void eraseSeaWaves(UBYTE* bitmap, UBYTE bufferIndex) {
+static void eraseSeaWaveRange(UBYTE* bitmap, UBYTE bufferIndex, UBYTE first, UBYTE end) {
 	if (bufferIndex >= GAME_WORLD_BUFFER_COUNT)
 		return;
-	for (UBYTE index = 0; index < SEA_WAVE_MAX; index++) {
+	for (UBYTE index = first; index < end; index++) {
 		SeaWaveFootprint* footprint = &seaWaveFootprints[bufferIndex][index];
 		if (!footprint->valid)
 			continue;
@@ -11980,6 +13566,14 @@ static void eraseSeaWaves(UBYTE* bitmap, UBYTE bufferIndex) {
 		}
 		footprint->valid = 0;
 	}
+}
+
+static void eraseSeaWavesFrom(UBYTE* bitmap, UBYTE bufferIndex, UBYTE first) {
+	eraseSeaWaveRange(bitmap, bufferIndex, first, SEA_WAVE_MAX);
+}
+
+static void eraseSeaWaves(UBYTE* bitmap, UBYTE bufferIndex) {
+	eraseSeaWavesFrom(bitmap, bufferIndex, 0);
 }
 
 static void drawSeaWavePlacement(UBYTE* bitmap, SeaWaveFootprint* footprint,
@@ -12024,28 +13618,98 @@ static UWORD ambienceHashForColumn(LONG worldColumn) {
 	return value;
 }
 
+/* Waves query the same sea cells repeatedly as the camera advances only
+ * a few pixels. Keep the authoritative answer until a world mutation. */
+static UBYTE seaWaveCellIsSea(LONG worldColumn, WORD tileY) {
+	static struct {
+		LONG column;
+		ULONG revision;
+		WORD row;
+		UBYTE sea;
+	} cells[64];
+	UBYTE slot = (UWORD)worldColumn & 63;
+	if (cells[slot].revision != worldObjectRevision ||
+		cells[slot].column != worldColumn || cells[slot].row != tileY) {
+		ObjectCell cell;
+		cells[slot].sea = objectCellForWorldColumnTile(worldColumn, tileY, &cell) &&
+			cell.id == HAR_OBJ_SEA;
+		cells[slot].column = worldColumn;
+		cells[slot].row = tileY;
+		cells[slot].revision = worldObjectRevision;
+	}
+	return cells[slot].sea;
+}
+
 enum {
 	SEA_WAVE_UPDATE_NONE = 0,
 	SEA_WAVE_UPDATE_PHASE = 1,
 	SEA_WAVE_UPDATE_FULL = 2
 };
 
+typedef struct {
+	LONG column;
+	UWORD hash;
+	WORD y;
+} SeaWaveCandidate;
+
+/* Retain every eligible cell, including those beyond the drawing limit:
+ * they must enter the visible list when an earlier wave leaves the window. */
+static SeaWaveCandidate seaWaveCandidates[GAME_FETCH_BYTES + 6];
+static UBYTE seaWaveCandidateCount;
+static UBYTE seaWaveCandidatesValid;
+static LONG seaWaveCandidateFirst, seaWaveCandidateLast;
+static ULONG seaWaveCandidateRevision;
+static ULONG seaWaveDrawRevision;
+
+static void ensureSeaWaveCandidates(const GameState* game) {
+	LONG first = ((LONG)game->scrollX >> 3) - 2;
+	LONG last = first + GAME_FETCH_BYTES + 5;
+	LONG appendFrom = first;
+	ULONG revision = worldObjectRevision;
+#if HAR_LOCAL_SEA_CANDIDATES
+	revision = seaClassificationRevision;
+#endif
+	if (seaWaveCandidatesValid && seaWaveCandidateRevision == revision &&
+		first >= seaWaveCandidateFirst && first <= seaWaveCandidateLast + 1) {
+		if (first == seaWaveCandidateFirst)
+			return;
+		UBYTE retained = 0;
+		for (UBYTE i = 0; i < seaWaveCandidateCount; i++)
+			if (seaWaveCandidates[i].column >= first)
+				seaWaveCandidates[retained++] = seaWaveCandidates[i];
+		seaWaveCandidateCount = retained;
+		appendFrom = seaWaveCandidateLast + 1;
+	} else {
+		seaWaveCandidateCount = 0;
+	}
+	for (LONG column = appendFrom; column <= last; column++) {
+		UWORD hash = ambienceHashForColumn(column);
+		if (hash & 3)
+			continue;
+		WORD y = (WORD)(SEA_SURFACE_Y + 4 + (((hash >> 4) & 3) * 8));
+		if (!seaWaveCellIsSea(column, y >> 3))
+			continue;
+		SeaWaveCandidate* candidate = &seaWaveCandidates[seaWaveCandidateCount++];
+		candidate->column = column;
+		candidate->hash = hash;
+		candidate->y = y;
+	}
+	seaWaveCandidateFirst = first;
+	seaWaveCandidateLast = last;
+	seaWaveCandidateRevision = revision;
+	seaWaveCandidatesValid = 1;
+}
+
 static UBYTE seaWavesUpdateKind(const GameState* game) {
 	UBYTE count = 0;
 	UBYTE phaseChanged = 0;
-	LONG firstColumn = ((LONG)game->scrollX >> 3) - 2;
-	LONG lastColumn = firstColumn + GAME_FETCH_BYTES + 5;
+	ensureSeaWaveCandidates(game);
 	UBYTE basePhase = (UBYTE)((frameCounter / SEA_WAVE_PHASE_FRAMES) & 3);
-	for (LONG worldColumn = firstColumn;
-		worldColumn <= lastColumn && count < SEA_WAVE_MAX; worldColumn++) {
-		UWORD hash = ambienceHashForColumn(worldColumn);
-		if ((hash & 3) != 0)
-			continue;
-		WORD y = (WORD)(SEA_SURFACE_Y + 4 + (((hash >> 4) & 3) * 8));
-		ObjectCell cell;
-		if (!objectCellForWorldColumnTile(worldColumn, y >> 3, &cell) ||
-			cell.id != HAR_OBJ_SEA)
-			continue;
+	for (; count < seaWaveCandidateCount && count < SEA_WAVE_MAX;) {
+		const SeaWaveCandidate* candidate = &seaWaveCandidates[count];
+		LONG worldColumn = candidate->column;
+		UWORD hash = candidate->hash;
+		WORD y = candidate->y;
 		SeaWaveFootprint* footprint = &seaWaveFootprints[0][count++];
 		UBYTE phase = (UBYTE)((basePhase + ((hash >> 2) & 3)) & 3);
 		if (!footprint->valid || footprint->worldColumn != worldColumn ||
@@ -12082,6 +13746,8 @@ static void updateSeaWavePhasesInPlace(UBYTE* bitmap, UBYTE bufferIndex) {
 			continue;
 		UWORD hash = ambienceHashForColumn(footprint->worldColumn);
 		UBYTE phase = (UBYTE)((basePhase + ((hash >> 2) & 3)) & 3);
+		if (footprint->phase == phase)
+			continue;
 		for (UBYTE placement = 0; placement < footprint->placementCount;
 			placement++) {
 			UBYTE bitOffset = (UBYTE)((footprint->worldColumn *
@@ -12093,8 +13759,7 @@ static void updateSeaWavePhasesInPlace(UBYTE* bitmap, UBYTE bufferIndex) {
 				UBYTE* dest = bitmap + (footprint->y + row) * SCREEN_PLANES *
 					GAME_WORLD_ROW_BYTES + footprint->byteX[placement];
 				for (UBYTE plane = 0; plane < GAME_WORLD_DISPLAY_PLANES; plane++)
-					for (UBYTE byte = 0;
-						byte < footprint->byteCount[placement]; byte++) {
+					for (UBYTE byte = 0; byte < footprint->byteCount[placement]; byte++) {
 						UBYTE base = footprint->background[placement][row][plane][byte];
 						dest[plane * GAME_WORLD_ROW_BYTES + byte] =
 							(UBYTE)((base & ~masks[byte]) |
@@ -12106,27 +13771,98 @@ static void updateSeaWavePhasesInPlace(UBYTE* bitmap, UBYTE bufferIndex) {
 	}
 }
 
-static void drawSeaWaves(UBYTE* bitmap, UBYTE bufferIndex,
-	const GameState* game) {
+/* Match an unchanged range after any outgoing waves. Only its metadata
+ * moves; its pixels and saved backgrounds stay in the physical ring.
+ * Sharing bytes with an erased boundary forces a conservative redraw. */
+static UBYTE seaWaveUnchangedRange(const GameState* game, UBYTE* first) {
+	*first = 0;
+	if (seaWaveDrawRevision != worldObjectRevision)
+		return 0;
+	ensureSeaWaveCandidates(game);
+	if (!seaWaveCandidateCount) return 0;
+	while (*first < SEA_WAVE_MAX && seaWaveFootprints[0][*first].valid &&
+		seaWaveFootprints[0][*first].worldColumn < seaWaveCandidates[0].column)
+		(*first)++;
+	if (*first == SEA_WAVE_MAX) return 0;
+	if (*first) {
+		const SeaWaveFootprint* before = &seaWaveFootprints[0][*first - 1];
+		const SeaWaveFootprint* start = &seaWaveFootprints[0][*first];
+		if (before->y == start->y && start->worldColumn <= before->worldColumn + 1)
+			return 0;
+	}
+	UBYTE keep = 0;
+	for (; keep < seaWaveCandidateCount && *first + keep < SEA_WAVE_MAX; keep++) {
+		const SeaWaveCandidate* candidate = &seaWaveCandidates[keep];
+		const SeaWaveFootprint* old = &seaWaveFootprints[0][*first + keep];
+		if (!old->valid || old->worldColumn != candidate->column || old->y != candidate->y ||
+			ringStreamMayTouchColumnRange(game, candidate->column, candidate->column + 1))
+			break;
+	}
+	while (keep) {
+		const SeaWaveFootprint* last = &seaWaveFootprints[0][*first + keep - 1];
+		UBYTE touchesOld = 0;
+		if (*first + keep < SEA_WAVE_MAX) {
+			const SeaWaveFootprint* oldNext = &seaWaveFootprints[0][*first + keep];
+			touchesOld = oldNext->valid && oldNext->y == last->y &&
+				oldNext->worldColumn <= last->worldColumn + 1;
+		}
+		UBYTE touchesNew = keep < seaWaveCandidateCount &&
+			seaWaveCandidates[keep].y == last->y &&
+			seaWaveCandidates[keep].column <= last->worldColumn + 1;
+		if (!touchesOld && !touchesNew) break;
+		keep--;
+	}
+	return keep;
+}
+
+#if HAR_HEADLESS_CLASSIC_CONTRACT_TEST
+static UWORD seaWaveShiftRetentions;
+#endif
+static UBYTE retainSeaWavesForRedraw(UBYTE* bitmap, UBYTE bufferIndex, const GameState* game) {
+	UBYTE first;
+	UBYTE keep = seaWaveUnchangedRange(game, &first);
+	if (!keep) {
+		eraseSeaWaves(bitmap, bufferIndex);
+		return 0;
+	}
+	eraseSeaWaveRange(bitmap, bufferIndex, 0, first);
+	eraseSeaWavesFrom(bitmap, bufferIndex, first + keep);
+	if (first) {
+		for (UBYTE i = 0; i < keep; i++)
+			seaWaveFootprints[bufferIndex][i] = seaWaveFootprints[bufferIndex][first + i];
+		for (UBYTE i = keep; i < SEA_WAVE_MAX; i++)
+			seaWaveFootprints[bufferIndex][i].valid = 0;
+#if HAR_HEADLESS_CLASSIC_CONTRACT_TEST
+		seaWaveShiftRetentions++;
+#endif
+	}
+	return keep;
+}
+
+static void drawSeaWavesFrom(UBYTE* bitmap, UBYTE bufferIndex,
+	const GameState* game, UBYTE first) {
 	if (bufferIndex >= GAME_WORLD_BUFFER_COUNT)
 		return;
-	UBYTE count = 0;
-	LONG firstColumn = ((LONG)game->scrollX >> 3) - 2;
-	LONG lastColumn = firstColumn + GAME_FETCH_BYTES + 5;
+	if (first && seaWaveDrawRevision != worldObjectRevision) {
+		eraseSeaWaves(bitmap, bufferIndex);
+		first = 0;
+	}
+	/* A phase change does not invalidate saved backgrounds for retained
+	 * placements. Update them after streaming, before adding new waves. */
+	if (first)
+		updateSeaWavePhasesInPlace(bitmap, bufferIndex);
+	UBYTE count = first;
+	ensureSeaWaveCandidates(game);
+	seaWaveDrawRevision = worldObjectRevision;
 	UBYTE phase = (UBYTE)((frameCounter / SEA_WAVE_PHASE_FRAMES) & 3);
 	const LONG pagePixels =
 		(LONG)GAME_WORLD_SCROLL_PAGE_BYTES * GAME_TILE_WIDTH;
 
-	for (LONG worldColumn = firstColumn;
-		worldColumn <= lastColumn && count < SEA_WAVE_MAX; worldColumn++) {
-		UWORD hash = ambienceHashForColumn(worldColumn);
-		if ((hash & 3) != 0)
-			continue;
-		WORD y = (WORD)(SEA_SURFACE_Y + 4 + (((hash >> 4) & 3) * 8));
-		ObjectCell cell;
-		if (!objectCellForWorldColumnTile(worldColumn, y >> 3, &cell) ||
-			cell.id != HAR_OBJ_SEA)
-			continue;
+	for (; count < seaWaveCandidateCount && count < SEA_WAVE_MAX;) {
+		const SeaWaveCandidate* candidate = &seaWaveCandidates[count];
+		LONG worldColumn = candidate->column;
+		UWORD hash = candidate->hash;
+		WORD y = candidate->y;
 
 		LONG worldPixelX = worldColumn * GAME_TILE_WIDTH +
 			((hash >> 8) & 3);
@@ -12196,6 +13932,8 @@ static void resetCarrierGullActors(void) {
 }
 
 static void resetCarrierAmbienceVisuals(void) {
+	worldObjectsReset();
+	powerupBackgroundCacheDirty = 1;
 	memset(seaWaveFootprints, 0, sizeof(seaWaveFootprints));
 	memset(carrierGullFootprints, 0, sizeof(carrierGullFootprints));
 	resetCarrierGullActors();
@@ -12613,25 +14351,81 @@ static UBYTE seaAmbienceTargetForGame(const GameState* game,
  * would silently undo a real gameplay change (e.g. paint over a crater or a
  * newly-cleared flak tile). Re-deriving the erased cells from
  * buildWorldTileColumn() sidesteps that entirely - there is no snapshot to
- * go stale. Only the single occupied tileRow is rebuilt (not the full
- * renderRingWorldColumn() column-plus-overlay pass) since callers may need
- * to erase every frame (continuous movement), and a full 25-row-plus-
- * overlay rebuild at that rate would be far too expensive. Promoted carrier
+ * go stale. A cache miss resolves all 25 tile IDs, but only the occupied
+ * tileRow is repainted (not the full renderRingWorldColumn() bitmap and
+ * overlay pass). Cache hits reuse the resolved IDs. Promoted carrier
  * and gunship art is reapplied for this exact row after the base tile, since
  * those masked layers are not part of buildWorldTileColumn(). */
+typedef struct BobEraseColumnCache {
+	RenderColumn column;
+	LONG worldColumn;
+	ULONG revision;
+	UBYTE mode;
+	UBYTE valid;
+} BobEraseColumnCache;
+
+static BobEraseColumnCache bobEraseColumns[HAR_BOB_ERASE_CACHE_SLOTS];
+#if HAR_LOCAL_BOB_ERASE_CACHE
+static void invalidateBobEraseColumns(LONG first, LONG last) {
+	for (UBYTE slot = 0; slot < HAR_BOB_ERASE_CACHE_SLOTS; slot++) {
+		BobEraseColumnCache* cached = &bobEraseColumns[slot];
+		/* Persistent histories use UWORD column keys, including aliases. */
+		if (cached->valid && (UWORD)((UWORD)cached->worldColumn - (UWORD)first) <=
+			(UWORD)(last - first))
+			cached->valid = 0;
+	}
+}
+#endif
+#if HAR_HEADLESS_CLASSIC_CONTRACT_TEST
+static ULONG bobEraseColumnBuilds;
+#endif
+
+static const RenderColumn* bobEraseColumn(LONG worldColumn) {
+	BobEraseColumnCache* cached = &bobEraseColumns[(UWORD)worldColumn & (HAR_BOB_ERASE_CACHE_SLOTS - 1)];
+#if HAR_DEBUG_BOB_CACHE_STATS
+	bobCacheStats[0]++;
+	/* Classify misses exclusively, in lookup order. A tag miss may also
+	 * carry an old revision, but enlarging storage addresses the tag first. */
+	if (!cached->valid) bobCacheStats[2]++;
+	else if (cached->worldColumn != worldColumn) bobCacheStats[3]++;
+#if !HAR_LOCAL_BOB_ERASE_CACHE
+	else if (cached->revision != worldObjectRevision) bobCacheStats[4]++;
+#endif
+	else if (cached->mode != currentWorldPresentationMode) bobCacheStats[5]++;
+	else bobCacheStats[1]++;
+#endif
+	/* Cache world-derived tiles, never framebuffer bytes. World mutations
+	 * invalidate either globally or through the affected column range.
+	 * Direct masked objects are still redrawn from current state below. */
+	if (!cached->valid || cached->worldColumn != worldColumn ||
+#if !HAR_LOCAL_BOB_ERASE_CACHE
+		cached->revision != worldObjectRevision ||
+#endif
+		cached->mode != currentWorldPresentationMode) {
+		buildWorldTileColumn(worldColumn, &cached->column);
+#if HAR_HEADLESS_CLASSIC_CONTRACT_TEST
+		bobEraseColumnBuilds++;
+#endif
+		cached->worldColumn = worldColumn;
+		cached->revision = worldObjectRevision;
+		cached->mode = currentWorldPresentationMode;
+		cached->valid = 1;
+	}
+	return &cached->column;
+}
+
 static void bobCompositorErase(UBYTE* bitmap, LONG worldColumnLeft, WORD tileRow, UBYTE columnCount) {
 	for (UBYTE column = 0; column < columnCount; column++) {
-		RenderColumn rebuilt;
 		LONG worldColumn = worldColumnLeft + column;
-		buildWorldTileColumn(worldColumn, &rebuilt);
+		const RenderColumn* rebuilt = bobEraseColumn(worldColumn);
 		UWORD tileX = ringWorldTileXForColumn(worldColumn);
-		drawGameScrollTile(bitmap, (short)tileX, (short)tileRow, rebuilt.tile[tileRow]);
+		drawGameScrollTile(bitmap, (short)tileX, (short)tileRow, rebuilt->tile[tileRow]);
 		drawDirectColumnRangeObjectRow(bitmap, tileX, worldColumn, tileRow);
 		if (tileX < GAME_WORLD_BUFFER_MARGIN_TILES + GAME_FETCH_BYTES) {
 			UWORD duplicateTileX =
 				(UWORD)(tileX + GAME_WORLD_SCROLL_PAGE_BYTES);
 			drawGameScrollTile(bitmap, (short)(tileX + GAME_WORLD_SCROLL_PAGE_BYTES),
-				(short)tileRow, rebuilt.tile[tileRow]);
+				(short)tileRow, rebuilt->tile[tileRow]);
 			drawDirectColumnRangeObjectRow(bitmap, duplicateTileX,
 				worldColumn, tileRow);
 		}
@@ -12647,6 +14441,30 @@ static void bobCompositorDrawMasked(UBYTE* bitmap, LONG worldColumn, WORD tileRo
 	}
 }
 
+/* Puffs drift slowly over the same columns. Cache world-derived tile IDs,
+ * not framebuffer pixels; always follow the global mutation revision. This
+ * is independent of the experimental local invalidation used by other BOBs. */
+static BobEraseColumnCache failureSmokeEraseColumns[16];
+#if HAR_HEADLESS_CLASSIC_CONTRACT_TEST
+static ULONG failureSmokeEraseBuilds;
+#endif
+static const RenderColumn* failureSmokeEraseColumn(LONG worldColumn) {
+	BobEraseColumnCache* cached = &failureSmokeEraseColumns[(UWORD)worldColumn & 15];
+	if (!cached->valid || cached->worldColumn != worldColumn ||
+		cached->revision != worldObjectRevision ||
+		cached->mode != currentWorldPresentationMode) {
+		buildWorldTileColumn(worldColumn, &cached->column);
+		cached->worldColumn = worldColumn;
+		cached->revision = worldObjectRevision;
+		cached->mode = currentWorldPresentationMode;
+		cached->valid = 1;
+#if HAR_HEADLESS_CLASSIC_CONTRACT_TEST
+		failureSmokeEraseBuilds++;
+#endif
+	}
+	return &cached->column;
+}
+
 static void eraseAircraftFailureSmokeFootprint(UBYTE* bitmap,
 	UBYTE bufferIndex) {
 	if (bufferIndex >= GAME_WORLD_BUFFER_COUNT)
@@ -12659,17 +14477,16 @@ static void eraseAircraftFailureSmokeFootprint(UBYTE* bitmap,
 	/* Resolve a whole column once, then restore each touched row. Calling the
 	 * generic one-row eraser repeatedly would rebuild the same procedural
 	 * column up to three times per frame on a 68000. */
-	for (UBYTE column = 0; column < footprint->columnCount; column++) {
-		LONG worldColumn = footprint->firstWorldColumn + column;
-		RenderColumn rebuilt;
-		buildWorldTileColumn(worldColumn, &rebuilt);
+	for (UBYTE column = 0; column < footprint->dirtyCount; column++) {
+		LONG worldColumn = footprint->dirtyColumn[column];
+		const RenderColumn* rebuilt = failureSmokeEraseColumn(worldColumn);
 		UWORD tileX = ringWorldTileXForColumn(worldColumn);
-		for (UBYTE row = 0; row < footprint->rowCount; row++) {
-			WORD tileRow = (WORD)(footprint->firstTileRow + row);
-			if (tileRow < 0 || tileRow >= GAME_OBJECT_MAP_HEIGHT_TILES)
+		ULONG rows = footprint->dirtyRows[column];
+		for (WORD tileRow = 0; rows; tileRow++, rows >>= 1) {
+			if (!(rows & 1))
 				continue;
 			drawGameScrollTile(bitmap, (short)tileX, (short)tileRow,
-				rebuilt.tile[tileRow]);
+				rebuilt->tile[tileRow]);
 			drawDirectColumnRangeObjectRow(bitmap, tileX, worldColumn,
 				tileRow);
 			if (tileX < GAME_WORLD_BUFFER_MARGIN_TILES + GAME_FETCH_BYTES) {
@@ -12677,7 +14494,7 @@ static void eraseAircraftFailureSmokeFootprint(UBYTE* bitmap,
 					(UWORD)(tileX + GAME_WORLD_SCROLL_PAGE_BYTES);
 				drawGameScrollTile(bitmap,
 					(short)duplicateTileX,
-					(short)tileRow, rebuilt.tile[tileRow]);
+					(short)tileRow, rebuilt->tile[tileRow]);
 				drawDirectColumnRangeObjectRow(bitmap, duplicateTileX,
 					worldColumn, tileRow);
 			}
@@ -12686,6 +14503,7 @@ static void eraseAircraftFailureSmokeFootprint(UBYTE* bitmap,
 	footprint->valid = 0;
 }
 
+#if HAR_HEADLESS_CLASSIC_CONTRACT_TEST
 static void plotAircraftFailureSmokePixelAt(UBYTE* bitmap,
 	UWORD bufferPixelX, WORD y, UBYTE color) {
 	if (y < 0 || y >= GAME_WORLD_HEIGHT ||
@@ -12717,6 +14535,42 @@ static void plotAircraftFailureSmokePixel(UBYTE* bitmap, LONG worldX,
 		(GAME_WORLD_BUFFER_MARGIN_TILES + GAME_FETCH_BYTES) * GAME_TILE_WIDTH)
 		plotAircraftFailureSmokePixelAt(bitmap,
 			(UWORD)(primaryPixelX + pagePixels), y, color);
+}
+
+#endif
+
+/* A puff row occupies at most two bytes. Resolve ring placement once, then
+ * combine its pixels before touching the four display planes. */
+static void writeFailureSmokeByte(UBYTE* bitmap, UWORD tileX, WORD y,
+	UBYTE mask, UBYTE color) {
+	if (!mask || y < 0 || y >= GAME_WORLD_HEIGHT) return;
+	UBYTE* dest = bitmap + y * SCREEN_PLANES * GAME_WORLD_ROW_BYTES + tileX;
+	for (UBYTE plane = 0; plane < GAME_WORLD_DISPLAY_PLANES; plane++) {
+		if (color & (1 << plane)) dest[plane * GAME_WORLD_ROW_BYTES] |= mask;
+		else dest[plane * GAME_WORLD_ROW_BYTES] &= (UBYTE)~mask;
+	}
+	if (tileX < GAME_WORLD_BUFFER_MARGIN_TILES + GAME_FETCH_BYTES) {
+		dest += GAME_WORLD_SCROLL_PAGE_BYTES;
+		for (UBYTE plane = 0; plane < GAME_WORLD_DISPLAY_PLANES; plane++) {
+			if (color & (1 << plane)) dest[plane * GAME_WORLD_ROW_BYTES] |= mask;
+			else dest[plane * GAME_WORLD_ROW_BYTES] &= (UBYTE)~mask;
+		}
+	}
+}
+
+static void drawFailureSmokeRows(UBYTE* bitmap, LONG worldX, WORD top,
+	UBYTE size, UBYTE dither, UBYTE phase, UBYTE color) {
+	UWORD first = ringWorldTileXForColumn(worldX >> 3);
+	UWORD second = ringWorldTileXForColumn((worldX >> 3) + 1);
+	UBYTE shift = (UBYTE)(worldX & 7);
+	for (UBYTE y = 0; y < size; y++) {
+		UWORD mask = 0;
+		for (UBYTE x = 0; x < size; x++)
+			if (!dither || ((x + y + phase) & 3))
+				mask |= (UWORD)(0x8000U >> (shift + x));
+		writeFailureSmokeByte(bitmap, first, (WORD)(top + y), (UBYTE)(mask >> 8), color);
+		writeFailureSmokeByte(bitmap, second, (WORD)(top + y), (UBYTE)mask, color);
+	}
 }
 
 static UBYTE aircraftFailureSmokeSize(UBYTE age) {
@@ -12771,6 +14625,9 @@ static UBYTE aircraftFailureSmokeNeedsRedraw(const GameState* game) {
 static void drawAircraftFailureSmoke(UBYTE* bitmap, UBYTE bufferIndex) {
 	if (bufferIndex >= GAME_WORLD_BUFFER_COUNT)
 		return;
+	AircraftFailureSmokeFootprint* footprint =
+		&aircraftFailureSmokeFootprints[bufferIndex];
+	footprint->dirtyCount = 0;
 	LONG firstColumn = 0x7fffffff;
 	LONG lastColumn = -1;
 	WORD firstRow = 32767;
@@ -12788,6 +14645,23 @@ static void drawAircraftFailureSmoke(UBYTE* bitmap, UBYTE bufferIndex) {
 		LONG rightColumn = (particle->worldX + size - 1) >> 3;
 		WORD topRow = particle->y >> 3;
 		WORD bottomRow = (particle->y + size - 1) >> 3;
+		ULONG rows = 0;
+		for (WORD row = topRow; row <= bottomRow; row++) {
+			if (row >= 0 && row < GAME_OBJECT_MAP_HEIGHT_TILES)
+				rows |= 1UL << row;
+		}
+		for (LONG column = leftColumn; column <= rightColumn; column++) {
+			UBYTE slot = 0;
+			while (slot < footprint->dirtyCount &&
+				footprint->dirtyColumn[slot] != column)
+				slot++;
+			if (slot == footprint->dirtyCount) {
+				footprint->dirtyColumn[slot] = column;
+				footprint->dirtyRows[slot] = 0;
+				footprint->dirtyCount++;
+			}
+			footprint->dirtyRows[slot] |= rows;
+		}
 		if (!any || leftColumn < firstColumn)
 			firstColumn = leftColumn;
 		if (!any || rightColumn > lastColumn)
@@ -12803,22 +14677,11 @@ static void drawAircraftFailureSmoke(UBYTE* bitmap, UBYTE bufferIndex) {
 			(particle->age < 12 ? GAME_COLOR_DARK_GREY :
 			(particle->age < 21 ? GAME_COLOR_MID_GREY :
 			GAME_COLOR_LIGHT_GREY)));
-		for (UBYTE y = 0; y < size; y++) {
-			for (UBYTE x = 0; x < size; x++) {
-				/* Two alternating deterministic dither masks keep expanding smoke
-				 * irregular without consuming the CPC gameplay RNG sequence. */
-				if (particle->age >= 12 &&
-					(((x + y + aircraftFailureSmokeVisualPhase(
-						particle->age) + index) & 3) == 0))
-					continue;
-				plotAircraftFailureSmokePixel(bitmap,
-					particle->worldX + x, (WORD)(particle->y + y), color);
-			}
-		}
+		drawFailureSmokeRows(bitmap, particle->worldX, particle->y, size,
+			particle->age >= 12,
+			(UBYTE)(aircraftFailureSmokeVisualPhase(particle->age) + index), color);
 	}
 
-	AircraftFailureSmokeFootprint* footprint =
-		&aircraftFailureSmokeFootprints[bufferIndex];
 	if (!any) {
 		footprint->valid = 0;
 		return;
@@ -12829,6 +14692,9 @@ static void drawAircraftFailureSmoke(UBYTE* bitmap, UBYTE bufferIndex) {
 	footprint->firstTileRow = firstRow;
 	footprint->rowCount = (UBYTE)(lastRow - firstRow + 1);
 	footprint->renderSignature = aircraftFailureSmokeSignature();
+#if HAR_HEADLESS_DAMAGE_EXERCISE
+	headlessDamageStats[DAMAGE_SMOKE_DRAWS]++;
+#endif
 }
 
 /* Sprint 15.6: bomb + impact rendering, as a single Bob "slot" - bombShot
@@ -12914,16 +14780,18 @@ static void eraseBombPixelBobFootprint(UBYTE* bitmap, UBYTE bufferIndex,
 		return;
 
 	for (UBYTE placement = 0; placement < footprint->placementCount; placement++) {
-		UBYTE byteCount = footprint->byteCount[placement];
+		UBYTE twoBytes = footprint->byteCount[placement] == 2;
+		UBYTE* dest = bitmap + footprint->y * SCREEN_PLANES * GAME_WORLD_ROW_BYTES +
+			footprint->byteX[placement];
+		const UBYTE* saved = (const UBYTE*)&footprint->background[placement];
 		for (UBYTE row = 0; row < BOMB_SHOT_PIXEL_BOB_HEIGHT; row++) {
-			UBYTE* dest = bitmap +
-				(footprint->y + row) * SCREEN_PLANES * GAME_WORLD_ROW_BYTES +
-				footprint->byteX[placement];
 			for (UBYTE plane = 0; plane < GAME_WORLD_DISPLAY_PLANES; plane++) {
-				for (UBYTE byte = 0; byte < byteCount; byte++)
-					dest[plane * GAME_WORLD_ROW_BYTES + byte] =
-						footprint->background[placement][row][plane][byte];
+				dest[0] = saved[0];
+				if (twoBytes) dest[1] = saved[1];
+				dest += GAME_WORLD_ROW_BYTES;
+				saved += BOMB_SHOT_PIXEL_BOB_MAX_BYTES_PER_ROW;
 			}
+			dest += (SCREEN_PLANES - GAME_WORLD_DISPLAY_PLANES) * GAME_WORLD_ROW_BYTES;
 		}
 	}
 	footprint->valid = 0;
@@ -12935,6 +14803,8 @@ static void resetBombShotPixelBobFootprints(void) {
 	memset(wingmanBombFootprints, 0, sizeof(wingmanBombFootprints));
 }
 
+typedef UWORD PixelBobWord __attribute__((__may_alias__));
+
 static void eraseRocketPixelBobFootprint(UBYTE* bitmap, UBYTE bufferIndex,
 	RocketShotFootprint* footprints) {
 	if (bufferIndex >= GAME_WORLD_BUFFER_COUNT)
@@ -12943,15 +14813,29 @@ static void eraseRocketPixelBobFootprint(UBYTE* bitmap, UBYTE bufferIndex,
 	if (!footprint->valid)
 		return;
 	for (UBYTE placement = 0; placement < footprint->placementCount; placement++) {
+		UBYTE* dest = bitmap + footprint->y * SCREEN_PLANES * GAME_WORLD_ROW_BYTES +
+			footprint->byteX[placement];
+		const UBYTE* saved = (const UBYTE*)&footprint->background[placement];
+		UBYTE twoBytes = footprint->byteCount[placement] == 2;
+		if (twoBytes && !(((ULONG)dest | (ULONG)saved) & 1)) {
+			for (UBYTE row = 0; row < ROCKET_PIXEL_BOB_HEIGHT; row++) {
+				for (UBYTE plane = 0; plane < GAME_WORLD_DISPLAY_PLANES; plane++) {
+					*(PixelBobWord*)dest = *(const PixelBobWord*)saved;
+					saved += ROCKET_PIXEL_BOB_MAX_BYTES_PER_ROW;
+					dest += GAME_WORLD_ROW_BYTES;
+				}
+				dest += (SCREEN_PLANES - GAME_WORLD_DISPLAY_PLANES) * GAME_WORLD_ROW_BYTES;
+			}
+			continue;
+		}
 		for (UBYTE row = 0; row < ROCKET_PIXEL_BOB_HEIGHT; row++) {
-			UBYTE* dest = bitmap +
-				(footprint->y + row) * SCREEN_PLANES * GAME_WORLD_ROW_BYTES +
-				footprint->byteX[placement];
-			for (UBYTE plane = 0; plane < GAME_WORLD_DISPLAY_PLANES; plane++)
-				for (UBYTE byte = 0;
-					byte < footprint->byteCount[placement]; byte++)
-					dest[plane * GAME_WORLD_ROW_BYTES + byte] =
-						footprint->background[placement][row][plane][byte];
+			for (UBYTE plane = 0; plane < GAME_WORLD_DISPLAY_PLANES; plane++) {
+				dest[0] = saved[0];
+				if (twoBytes) dest[1] = saved[1];
+				saved += ROCKET_PIXEL_BOB_MAX_BYTES_PER_ROW;
+				dest += GAME_WORLD_ROW_BYTES;
+			}
+			dest += (SCREEN_PLANES - GAME_WORLD_DISPLAY_PLANES) * GAME_WORLD_ROW_BYTES;
 		}
 	}
 	footprint->valid = 0;
@@ -12969,11 +14853,52 @@ static UWORD currentRasterY(void) {
 	return (UWORD)((*(volatile ULONG*)0xDFF004 >> 8) & 0x01ff);
 }
 
-static void waitUntilRocketRowsPassed(UBYTE bufferIndex,
-	const GameState* game) {
+/* Bomb backgrounds must be restored before streaming and world overlays.
+ * Keep that ordering, but let display DMA finish both the old and new rows
+ * first. Otherwise the long erase/stream/redraw interval exposes an empty
+ * background for a field, especially while a bomb descends past the beam.
+ * Line 311 belongs to the preceding field (WaitVbl returns there). */
+static void waitUntilBombRowsPassed(UBYTE bufferIndex, const GameState* game) {
 	if (bufferIndex >= GAME_WORLD_BUFFER_COUNT)
 		return;
+	WORD lastY = -1;
+	const BombShotFootprint* footprints[2] = {
+		&bombShotFootprints[bufferIndex], &wingmanBombFootprints[bufferIndex]
+	};
+	const WeaponState* bombs[2] = { &game->bombShot, &game->wingman.bomb };
+	for (UBYTE index = 0; index < 2; index++) {
+		if (footprints[index]->valid && footprints[index]->y > lastY)
+			lastY = footprints[index]->y;
+		const WeaponState* bomb = bombs[index];
+		if (bomb->active && bomb->y >= 0 &&
+			bomb->y + BOMB_SHOT_PIXEL_BOB_HEIGHT <= GAME_WORLD_HEIGHT &&
+			bomb->x > -BOMB_SHOT_PIXEL_BOB_WIDTH && bomb->x < SCREEN_WIDTH &&
+			bomb->y > lastY)
+			lastY = bomb->y;
+	}
+	if (lastY < 0)
+		return;
+	UWORD target = SCREEN_DIWSTRT_Y + lastY + BOMB_SHOT_PIXEL_BOB_HEIGHT;
+	while (currentRasterY() >= 300) { }
+	while (currentRasterY() <= target) { }
+}
+
+static UBYTE rocketPixelBobVisible(const WeaponState* weapon, UBYTE crashActive) {
+	return weapon->active && !crashActive && weapon->y >= 0 &&
+		weapon->y + ROCKET_PIXEL_BOB_HEIGHT <= GAME_WORLD_HEIGHT &&
+		weapon->x > -ROCKET_PIXEL_BOB_WIDTH && weapon->x < SCREEN_WIDTH;
+}
+
+static WORD rocketLastScreenYForUpdate(UBYTE bufferIndex,
+	const GameState* game) {
+	if (bufferIndex >= GAME_WORLD_BUFFER_COUNT)
+		return -1;
 	WORD lastScreenY = -1;
+#if HAR_HARDWARE_PLAYER_ROCKET
+	/* A previous hardware silhouette must finish DMA before its payload or
+	 * position is rewritten, including a handoff back to the BOB renderer. */
+	if (hardwareProjectileVisible) lastScreenY = hardwareProjectileY;
+#endif
 	const RocketShotFootprint* footprints[3] = {
 		&rocketShotFootprints[bufferIndex],
 		&wingmanRocketFootprints[bufferIndex],
@@ -12987,9 +14912,16 @@ static void waitUntilRocketRowsPassed(UBYTE bufferIndex,
 		&game->rocketShot, &game->wingman.rocket, &game->enemyMissile
 	};
 	for (UBYTE index = 0; index < 3; index++) {
-		if (weapons[index]->active && weapons[index]->y > lastScreenY)
+		if (rocketPixelBobVisible(weapons[index], index < 2 && game->crashTimer) &&
+			weapons[index]->y > lastScreenY)
 			lastScreenY = weapons[index]->y;
 	}
+	return lastScreenY;
+}
+
+static void waitUntilRocketRowsPassed(UBYTE bufferIndex,
+	const GameState* game) {
+	WORD lastScreenY = rocketLastScreenYForUpdate(bufferIndex, game);
 	if (lastScreenY < 0)
 		return;
 	UWORD targetRasterY = (UWORD)(SCREEN_DIWSTRT_Y + lastScreenY +
@@ -13047,6 +14979,83 @@ static void retireRocketPixelBobBeforeWorldMutation(UBYTE** worldBuffers,
 			footprints);
 }
 
+static void rocketRowMasks(UBYTE tileId, UBYTE row, UBYTE bitOffset,
+	UBYTE monochromeBlack, UWORD* mask, UWORD* planes) {
+	UBYTE opaque = 0, black = 0;
+	if (tileId < GAME_TILE_COUNT) {
+		const UBYTE* src = gameTiles + tileId * GAME_TILE_BYTES + row * GAME_TILE_PLANES;
+		opaque = src[0] | src[1] | src[2] | src[3] | src[4];
+		/* Source pen 0 is transparent; pen 10 remains black; all other
+		 * opaque pens become yellow (6), exactly as the pixel converter. */
+		black = monochromeBlack ? opaque : (UBYTE)(~src[0] & src[1] & ~src[2] & src[3] & ~src[4]);
+	}
+	*mask = ((UWORD)opaque << 8) >> bitOffset;
+	planes[0] = 0;
+	planes[1] = *mask;
+	planes[2] = ((UWORD)(opaque & ~black) << 8) >> bitOffset;
+	planes[3] = ((UWORD)black << 8) >> bitOffset;
+}
+
+/* Normal sprite pens 1/2 address reserved black/yellow in channels 4/5.
+ * The empty right half of the 16-pixel hardware sprite stays transparent. */
+static void buildProjectileHardwareSprite(UWORD* sprite, UBYTE tileId,
+	UBYTE monochromeBlack, WORD x, WORD y) {
+	setHardwareSpritePosition(sprite, ROCKET_PIXEL_BOB_HEIGHT, x, y);
+	for (UBYTE row = 0; row < ROCKET_PIXEL_BOB_HEIGHT; row++) {
+		UWORD mask, planes[GAME_WORLD_DISPLAY_PLANES];
+		rocketRowMasks(tileId, row, 0, monochromeBlack, &mask, planes);
+		sprite[2 + row * 2] = planes[3];
+		sprite[3 + row * 2] = planes[2];
+	}
+	sprite[2 + ROCKET_PIXEL_BOB_HEIGHT * 2] = 0;
+	sprite[3 + ROCKET_PIXEL_BOB_HEIGHT * 2] = 0;
+}
+
+typedef struct RocketRowShape {
+	UWORD opaque[ROCKET_PIXEL_BOB_HEIGHT];
+	UWORD black[ROCKET_PIXEL_BOB_HEIGHT];
+	UWORD key;
+	UBYTE valid;
+} RocketRowShape;
+
+static const RocketRowShape* rocketRowShape(UBYTE tileId, UBYTE bitOffset,
+	UBYTE monochromeBlack) {
+	/* Source tiles are immutable. The same shifted shape is shared by the
+	 * primary and seam placements, and often by consecutive shots. */
+	UWORD key = ((UWORD)tileId << 4) | (bitOffset << 1) | !!monochromeBlack;
+#if HAR_ROCKET_FULL_SHAPE_CACHE
+	/* Dedicated slots for every gameplay silhouette and shift prevent P1,
+	 * P2 and enemy missiles from evicting each other's immutable masks.
+	 * Keep a keyed fallback for other tiles used by diagnostics. */
+	static RocketRowShape shapes[11 * 8];
+	static RocketRowShape fallback;
+	BYTE group = -1;
+	if (monochromeBlack) {
+		if (tileId >= 53 && tileId <= 55) group = (BYTE)(8 + tileId - 53);
+	} else if (tileId >= 53 && tileId <= 56) {
+		group = (BYTE)(tileId - 53);
+	} else if (tileId >= 98 && tileId <= 101) {
+		group = (BYTE)(4 + tileId - 98);
+	}
+	RocketRowShape* shape = group >= 0 && bitOffset < 8 ?
+		&shapes[(UWORD)group * 8 + bitOffset] : &fallback;
+#else
+	static RocketRowShape shapes[8];
+	RocketRowShape* shape = &shapes[(tileId ^ (bitOffset * 3) ^ (monochromeBlack ? 5 : 0)) & 7];
+#endif
+	if (!shape->valid || shape->key != key) {
+		for (UBYTE row = 0; row < ROCKET_PIXEL_BOB_HEIGHT; row++) {
+			UWORD planes[GAME_WORLD_DISPLAY_PLANES];
+			rocketRowMasks(tileId, row, bitOffset, monochromeBlack,
+				&shape->opaque[row], planes);
+			shape->black[row] = planes[3];
+		}
+		shape->key = key;
+		shape->valid = 1;
+	}
+	return shape;
+}
+
 static void drawRocketShotPixelBobPlacement(UBYTE* bitmap,
 	RocketShotFootprint* footprint, UBYTE placement, UWORD bufferPixelX,
 	WORD screenY, UBYTE tileId, UBYTE monochromeBlack) {
@@ -13059,55 +15068,74 @@ static void drawRocketShotPixelBobPlacement(UBYTE* bitmap,
 		return;
 	footprint->byteX[placement] = byteX;
 	footprint->byteCount[placement] = byteCount;
-
+	const RocketRowShape* shape = rocketRowShape(tileId, bitOffset, monochromeBlack);
+	UBYTE* dest = bitmap + screenY * SCREEN_PLANES * GAME_WORLD_ROW_BYTES + byteX;
+	UBYTE* saved = (UBYTE*)&footprint->background[placement];
+	/* 68000 word accesses are safe only on even addresses. The shifted masks
+	 * already have the big-endian layout of two adjacent playfield bytes. */
+	if (byteCount == 2 && !(((ULONG)dest | (ULONG)saved) & 1)) {
+		for (UBYTE row = 0; row < ROCKET_PIXEL_BOB_HEIGHT; row++) {
+			UWORD mask = shape->opaque[row], dark = shape->black[row];
+			UWORD old = *(PixelBobWord*)dest;
+			*(PixelBobWord*)saved = old;
+			*(PixelBobWord*)dest = old & ~mask;
+			old = *(PixelBobWord*)(dest + GAME_WORLD_ROW_BYTES);
+			*(PixelBobWord*)(saved + 2) = old;
+			*(PixelBobWord*)(dest + GAME_WORLD_ROW_BYTES) = old | mask;
+			old = *(PixelBobWord*)(dest + 2 * GAME_WORLD_ROW_BYTES);
+			*(PixelBobWord*)(saved + 4) = old;
+			*(PixelBobWord*)(dest + 2 * GAME_WORLD_ROW_BYTES) = (old & ~mask) | (mask ^ dark);
+			old = *(PixelBobWord*)(dest + 3 * GAME_WORLD_ROW_BYTES);
+			*(PixelBobWord*)(saved + 6) = old;
+			*(PixelBobWord*)(dest + 3 * GAME_WORLD_ROW_BYTES) = (old & ~mask) | dark;
+			dest += SCREEN_PLANES * GAME_WORLD_ROW_BYTES;
+			saved += GAME_WORLD_DISPLAY_PLANES * ROCKET_PIXEL_BOB_MAX_BYTES_PER_ROW;
+		}
+		return;
+	}
 	for (UBYTE row = 0; row < ROCKET_PIXEL_BOB_HEIGHT; row++) {
-		UWORD sourceMask = 0;
-		UWORD sourcePlane[GAME_WORLD_DISPLAY_PLANES] = { 0, 0, 0, 0 };
-		for (UBYTE col = 0; col < ROCKET_PIXEL_BOB_WIDTH; col++) {
-			UBYTE color = gameTilePixelColor(tileId, col, row);
-			if (color == GAME_COLOR_SKY)
-				continue;
-			UBYTE pixelColor = monochromeBlack ? GAME_COLOR_BLACK :
-				(color == GAME_COLOR_BLACK ? GAME_COLOR_BLACK : GAME_COLOR_YELLOW);
-			UWORD bit = (UWORD)(0x8000 >> col);
-			sourceMask |= bit;
-			for (UBYTE plane = 0; plane < GAME_WORLD_DISPLAY_PLANES; plane++)
-				if (pixelColor & (1 << plane))
-					sourcePlane[plane] |= bit;
+		UWORD opaque = shape->opaque[row], black = shape->black[row];
+		for (UBYTE byte = 0; byte < byteCount; byte++) {
+			UBYTE mask = byte ? (UBYTE)opaque : (UBYTE)(opaque >> 8);
+			UBYTE dark = byte ? (UBYTE)black : (UBYTE)(black >> 8);
+			UBYTE* target = dest + byte;
+			/* Pens 6/10 share bit 1, never use bit 0, and split bits 2/3.
+			 * Save all covered bytes even where the shape is transparent. */
+			UBYTE old = target[0];
+			saved[byte] = old;
+			target[0] = old & ~mask;
+			old = target[GAME_WORLD_ROW_BYTES];
+			saved[2 + byte] = old;
+			target[GAME_WORLD_ROW_BYTES] = old | mask;
+			old = target[2 * GAME_WORLD_ROW_BYTES];
+			saved[4 + byte] = old;
+			target[2 * GAME_WORLD_ROW_BYTES] = (old & ~mask) | (mask ^ dark);
+			old = target[3 * GAME_WORLD_ROW_BYTES];
+			saved[6 + byte] = old;
+			target[3 * GAME_WORLD_ROW_BYTES] = (old & ~mask) | dark;
 		}
-		sourceMask >>= bitOffset;
-		for (UBYTE plane = 0; plane < GAME_WORLD_DISPLAY_PLANES; plane++)
-			sourcePlane[plane] >>= bitOffset;
-		UBYTE masks[2] = {
-			(UBYTE)(sourceMask >> 8), (UBYTE)sourceMask
-		};
-		UBYTE* dest = bitmap +
-			(screenY + row) * SCREEN_PLANES * GAME_WORLD_ROW_BYTES + byteX;
-		for (UBYTE plane = 0; plane < GAME_WORLD_DISPLAY_PLANES; plane++) {
-			UBYTE colors[2] = {
-				(UBYTE)(sourcePlane[plane] >> 8),
-				(UBYTE)sourcePlane[plane]
-			};
-			for (UBYTE byte = 0; byte < byteCount; byte++) {
-				UBYTE* target = dest + plane * GAME_WORLD_ROW_BYTES + byte;
-				footprint->background[placement][row][plane][byte] = *target;
-				*target = (UBYTE)((*target & ~masks[byte]) |
-					(colors[byte] & masks[byte]));
-			}
-		}
+		dest += SCREEN_PLANES * GAME_WORLD_ROW_BYTES;
+		saved += GAME_WORLD_DISPLAY_PLANES * ROCKET_PIXEL_BOB_MAX_BYTES_PER_ROW;
 	}
 }
 
 static void drawRocketPixelBob(UBYTE* bitmap, UBYTE bufferIndex,
 	const WeaponState* rocket, RocketShotFootprint* footprints,
 	UBYTE crashActive) {
-	if (bufferIndex >= GAME_WORLD_BUFFER_COUNT || !rocket->active ||
-		crashActive)
-		return;
-	if (rocket->y < 0 ||
-		rocket->y + ROCKET_PIXEL_BOB_HEIGHT > GAME_WORLD_HEIGHT ||
-		rocket->x <= -ROCKET_PIXEL_BOB_WIDTH ||
-		rocket->x >= SCREEN_WIDTH)
+#if HAR_HARDWARE_PROJECTILE_CHAIN
+	if (hardwareProjectileChainContains(rocket)) return;
+#endif
+#if HAR_HARDWARE_PLAYER_ROCKET
+	if (rocket == hardwareProjectileWeapon) return;
+#endif
+#if HAR_DEBUG_OMIT_PROJECTILE_BOBS && (!HAR_HEADLESS_AUTOPLAY || !HAR_DEBUG_PERF_LOG)
+#error Projectile omission is only permitted in headless performance diagnostics
+#endif
+#if HAR_DEBUG_OMIT_PROJECTILE_BOBS & 1
+	return;
+#endif
+	if (bufferIndex >= GAME_WORLD_BUFFER_COUNT ||
+		!rocketPixelBobVisible(rocket, crashActive))
 		return;
 
 	const LONG pagePixels =
@@ -13143,12 +15171,15 @@ static void drawRocketPixelBob(UBYTE* bitmap, UBYTE bufferIndex,
  * non-transparent source pixel to stable GAME_COLOR_BLACK. */
 static void drawEnemyMissilePixelBob(UBYTE* bitmap, UBYTE bufferIndex,
 	const GameState* game) {
+#if HAR_HARDWARE_PROJECTILE_CHAIN
+	if (hardwareProjectileChainContains(&game->enemyMissile)) return;
+#endif
+#if HAR_DEBUG_OMIT_PROJECTILE_BOBS & 1
+	return;
+#endif
 	const WeaponState* missile = &game->enemyMissile;
-	if (bufferIndex >= GAME_WORLD_BUFFER_COUNT || !missile->active)
-		return;
-	if (missile->y < 0 ||
-		missile->y + ROCKET_PIXEL_BOB_HEIGHT > GAME_WORLD_HEIGHT ||
-		missile->x <= -ROCKET_PIXEL_BOB_WIDTH || missile->x >= SCREEN_WIDTH)
+	if (bufferIndex >= GAME_WORLD_BUFFER_COUNT ||
+		!rocketPixelBobVisible(missile, 0))
 		return;
 
 	const LONG pagePixels =
@@ -13189,10 +15220,6 @@ static void drawBombShotPixelBobPlacement(UBYTE* bitmap,
 		{ 0x08, 0x02, 0x01 },
 		{ 0x04, 0x04, 0x04 }
 	};
-	static const UBYTE rowColor[2][BOMB_SHOT_PIXEL_BOB_HEIGHT] = {
-		{ GAME_COLOR_BLACK, GAME_COLOR_BLACK, GAME_COLOR_BLACK },
-		{ GAME_COLOR_BLACK, GAME_COLOR_BLACK, GAME_COLOR_BLACK }
-	};
 	phase &= 1;
 	UBYTE bitOffset = (UBYTE)(bufferPixelX & 7);
 	UWORD byteX = (UWORD)(bufferPixelX >> 3);
@@ -13207,26 +15234,27 @@ static void drawBombShotPixelBobPlacement(UBYTE* bitmap,
 
 	footprint->byteX[placement] = byteX;
 	footprint->byteCount[placement] = byteCount;
-
+	UBYTE* dest = bitmap + screenY * SCREEN_PLANES * GAME_WORLD_ROW_BYTES + byteX;
+	UBYTE* saved = (UBYTE*)&footprint->background[placement];
 	for (UBYTE row = 0; row < BOMB_SHOT_PIXEL_BOB_HEIGHT; row++) {
 		UWORD mask16 = (UWORD)rowShape[phase][row] <<
 			(16 - BOMB_SHOT_PIXEL_BOB_WIDTH - bitOffset);
-		UBYTE masks[BOMB_SHOT_PIXEL_BOB_MAX_BYTES_PER_ROW] = {
-			(UBYTE)(mask16 >> 8), (UBYTE)mask16
-		};
-		UBYTE* dest = bitmap +
-			(screenY + row) * SCREEN_PLANES * GAME_WORLD_ROW_BYTES + byteX;
-
-		for (UBYTE plane = 0; plane < GAME_WORLD_DISPLAY_PLANES; plane++) {
-			UBYTE colorSet = (UBYTE)(rowColor[phase][row] & (1 << plane));
-			for (UBYTE byte = 0; byte < byteCount; byte++) {
-				UBYTE* target = dest + plane * GAME_WORLD_ROW_BYTES + byte;
-				UBYTE old = *target;
-				footprint->background[placement][row][plane][byte] = old;
-				*target = (UBYTE)((old & ~masks[byte]) |
-					(colorSet ? masks[byte] : 0));
-			}
+		for (UBYTE byte = 0; byte < byteCount; byte++) {
+			UBYTE mask = byte ? (UBYTE)mask16 : (UBYTE)(mask16 >> 8);
+			UBYTE* target = dest + byte;
+#define BOMB_PLANE(p) do { \
+	UBYTE old = target[(p) * GAME_WORLD_ROW_BYTES]; \
+	saved[(p) * BOMB_SHOT_PIXEL_BOB_MAX_BYTES_PER_ROW + byte] = old; \
+	target[(p) * GAME_WORLD_ROW_BYTES] = (GAME_COLOR_BLACK & (1 << (p))) ? old | mask : old & ~mask; \
+} while (0)
+			BOMB_PLANE(0);
+			BOMB_PLANE(1);
+			BOMB_PLANE(2);
+			BOMB_PLANE(3);
+#undef BOMB_PLANE
 		}
+		dest += SCREEN_PLANES * GAME_WORLD_ROW_BYTES;
+		saved += GAME_WORLD_DISPLAY_PLANES * BOMB_SHOT_PIXEL_BOB_MAX_BYTES_PER_ROW;
 	}
 }
 
@@ -13237,6 +15265,9 @@ static void drawBombShotPixelBobPlacement(UBYTE* bitmap,
 static void drawBombPixelBob(UBYTE* bitmap, UBYTE bufferIndex,
 	const WeaponState* bomb, BombShotFootprint* footprints,
 	UWORD scrollX) {
+#if HAR_DEBUG_OMIT_PROJECTILE_BOBS & 2
+	return;
+#endif
 	if (bufferIndex >= GAME_WORLD_BUFFER_COUNT || !bomb->active)
 		return;
 	if (bomb->y < 0 ||
@@ -13271,7 +15302,7 @@ static void drawBombPixelBob(UBYTE* bitmap, UBYTE bufferIndex,
 	}
 }
 
-/* Powerup pickup rendering.  Its world X stays fixed, while Y is an exact
+/* Powerup pickup rendering. Enhanced can drift in world X, while Y is an exact
  * screen-pixel coordinate.  Earlier versions rounded Y to an 8-pixel tile
  * row even though updatePowerup() already moves at a smooth pixel cadence.
  * Draw the two masked bytes at the real Y and restore only the touched
@@ -13279,18 +15310,66 @@ static void drawBombPixelBob(UBYTE* bitmap, UBYTE bufferIndex,
 static UBYTE powerupBobFootprintValid = 0;
 static LONG powerupBobFootprintWorldColumnLeft = 0;
 static WORD powerupBobFootprintY = 0;
+static UBYTE powerupBobFootprintPhase = 0;
+static UBYTE powerupBobColumnCount = 2;
+static UBYTE powerupShiftedTiles[3][POWERUP_SPRITE_HEIGHT * (GAME_WORLD_DISPLAY_PLANES + 1)];
+
+static const UBYTE* powerupDrawTile(UBYTE column) {
+	return powerupShiftedTiles[column];
+}
+
+static void preparePowerupDrawTiles(UBYTE phase) {
+	static UBYTE cachedPhase = 255, cachedType = 255;
+	if (cachedPhase == phase && cachedType == powerupBobTileType)
+		return;
+	cachedPhase = phase;
+	cachedType = powerupBobTileType;
+	memset(powerupShiftedTiles, 0, sizeof(powerupShiftedTiles));
+	for (UBYTE row = 0; row < POWERUP_SPRITE_HEIGHT; row++) {
+		for (UBYTE plane = 0; plane <= GAME_WORLD_DISPLAY_PLANES; plane++) {
+			UWORD offset = row * (GAME_WORLD_DISPLAY_PLANES + 1) + plane;
+			ULONG bits = ((ULONG)powerupBobTileLeft[offset] << 16) |
+				((ULONG)powerupBobTileRight[offset] << 8);
+			bits >>= phase;
+			powerupShiftedTiles[0][offset] = (UBYTE)(bits >> 16);
+			powerupShiftedTiles[1][offset] = (UBYTE)(bits >> 8);
+			powerupShiftedTiles[2][offset] = (UBYTE)bits;
+		}
+	}
+}
+
+static const RenderColumn* powerupBackgroundColumns(LONG leftColumn) {
+	static RenderColumn columns[3];
+	static UBYTE cachedMode;
+	static UBYTE cachedCount;
+	if (powerupBackgroundCacheDirty || powerupBackgroundCacheLeft != leftColumn ||
+		cachedMode != currentWorldPresentationMode || cachedCount != powerupBobColumnCount) {
+		buildWorldTileColumn(leftColumn, &columns[0]);
+		buildWorldTileColumn(leftColumn + 1, &columns[1]);
+		if (powerupBobColumnCount == 3)
+			buildWorldTileColumn(leftColumn + 2, &columns[2]);
+		cachedCount = powerupBobColumnCount;
+		powerupBackgroundCacheLeft = leftColumn;
+		cachedMode = currentWorldPresentationMode;
+		powerupBackgroundCacheDirty = 0;
+#if HAR_HEADLESS_CLASSIC_CONTRACT_TEST
+		powerupBackgroundRebuilds++;
+#endif
+	}
+	return columns;
+}
 
 static void erasePowerupBobFootprint(UBYTE* bitmap) {
 	if (!powerupBobFootprintValid)
 		return;
+	const RenderColumn* rebuiltColumns =
+		powerupBackgroundColumns(powerupBobFootprintWorldColumnLeft);
 	/* Restore only the eight scanlines actually touched by the old canopy.
 	 * Redrawing both complete containing tiles used to overwrite 16 scanlines
 	 * per column (32 when crossing a tile boundary), making the single-buffered
 	 * erase interval visible as a faint flash. */
-	for (UBYTE column = 0; column < 2; column++) {
+	for (UBYTE column = 0; column < powerupBobColumnCount; column++) {
 		LONG worldColumn = powerupBobFootprintWorldColumnLeft + column;
-		RenderColumn rebuilt;
-		buildWorldTileColumn(worldColumn, &rebuilt);
 		UWORD tileX = ringWorldTileXForColumn(worldColumn);
 		for (UBYTE pixelRow = 0; pixelRow < POWERUP_SPRITE_HEIGHT;
 			pixelRow++) {
@@ -13300,10 +15379,8 @@ static void erasePowerupBobFootprint(UBYTE* bitmap) {
 			WORD tileRow = screenY >> 3;
 			if (tileRow < 0 || tileRow >= GAME_OBJECT_MAP_HEIGHT_TILES)
 				continue;
-			UBYTE tileId = rebuilt.tile[tileRow];
-			if (tileId >= GAME_TILE_COUNT)
-				tileId = 0;
-			const UBYTE* src = gameTiles + tileId * GAME_TILE_BYTES +
+			UBYTE tileId = rebuiltColumns[column].tile[tileRow];
+			const UBYTE* src = worldRenderTileData(tileId) +
 				(screenY & 7) * GAME_TILE_PLANES;
 			UBYTE* dest = bitmap +
 				screenY * SCREEN_PLANES * GAME_WORLD_ROW_BYTES + tileX;
@@ -13346,9 +15423,10 @@ static void drawPowerupBobColumnAtPixelY(UBYTE* bitmap, UWORD tileX,
  * immediately composite the new row before touching the next scanline. */
 static void redrawPowerupBobVerticalTransition(UBYTE* bitmap,
 	LONG worldColumnLeft, WORD oldY, WORD newY) {
-	RenderColumn rebuilt[2];
-	for (UBYTE column = 0; column < 2; column++)
-		buildWorldTileColumn(worldColumnLeft + column, &rebuilt[column]);
+	const RenderColumn* rebuilt = powerupBackgroundColumns(worldColumnLeft);
+	UWORD tilePositions[3] = { ringWorldTileXForColumn(worldColumnLeft),
+		ringWorldTileXForColumn(worldColumnLeft + 1),
+		ringWorldTileXForColumn(worldColumnLeft + 2) };
 
 	WORD firstY = oldY < newY ? oldY : newY;
 	WORD oldBottom = (WORD)(oldY + POWERUP_SPRITE_HEIGHT - 1);
@@ -13361,16 +15439,12 @@ static void redrawPowerupBobVerticalTransition(UBYTE* bitmap,
 		if (tileRow < 0 || tileRow >= GAME_OBJECT_MAP_HEIGHT_TILES)
 			continue;
 
-		for (UBYTE column = 0; column < 2; column++) {
-			LONG worldColumn = worldColumnLeft + column;
-			UWORD tileX = ringWorldTileXForColumn(worldColumn);
+		for (UBYTE column = 0; column < powerupBobColumnCount; column++) {
+			UWORD tileX = tilePositions[column];
 			UBYTE tileId = rebuilt[column].tile[tileRow];
-			if (tileId >= GAME_TILE_COUNT)
-				tileId = 0;
-			const UBYTE* worldSrc = gameTiles + tileId * GAME_TILE_BYTES +
+			const UBYTE* worldSrc = worldRenderTileData(tileId) +
 				(screenY & 7) * GAME_TILE_PLANES;
-			const UBYTE* bobTile = column ? powerupBobTileRight :
-				powerupBobTileLeft;
+			const UBYTE* bobTile = powerupDrawTile(column);
 			const UBYTE* bobSrc = 0;
 			UBYTE mask = 0;
 			if (screenY >= newY && screenY <= newBottom) {
@@ -13381,17 +15455,24 @@ static void redrawPowerupBobVerticalTransition(UBYTE* bitmap,
 
 			UBYTE* dest = bitmap +
 				screenY * SCREEN_PLANES * GAME_WORLD_ROW_BYTES + tileX;
-			for (UBYTE placement = 0; placement < 2; placement++) {
-				for (UBYTE plane = 0; plane < GAME_WORLD_DISPLAY_PLANES; plane++) {
-					UBYTE value = worldSrc[plane];
-					if (mask)
-						value = (UBYTE)((value & ~mask) |
-							(bobSrc[plane] & mask));
-					dest[plane * GAME_WORLD_ROW_BYTES] = value;
-				}
-				if (tileX >= GAME_WORLD_BUFFER_MARGIN_TILES + GAME_FETCH_BYTES)
-					break;
+			UBYTE value0 = worldSrc[0], value1 = worldSrc[1];
+			UBYTE value2 = worldSrc[2], value3 = worldSrc[3];
+			if (mask) {
+				value0 = (UBYTE)((value0 & ~mask) | (bobSrc[0] & mask));
+				value1 = (UBYTE)((value1 & ~mask) | (bobSrc[1] & mask));
+				value2 = (UBYTE)((value2 & ~mask) | (bobSrc[2] & mask));
+				value3 = (UBYTE)((value3 & ~mask) | (bobSrc[3] & mask));
+			}
+			dest[0 * GAME_WORLD_ROW_BYTES] = value0;
+			dest[1 * GAME_WORLD_ROW_BYTES] = value1;
+			dest[2 * GAME_WORLD_ROW_BYTES] = value2;
+			dest[3 * GAME_WORLD_ROW_BYTES] = value3;
+			if (tileX < GAME_WORLD_BUFFER_MARGIN_TILES + GAME_FETCH_BYTES) {
 				dest += GAME_WORLD_SCROLL_PAGE_BYTES;
+				dest[0 * GAME_WORLD_ROW_BYTES] = value0;
+				dest[1 * GAME_WORLD_ROW_BYTES] = value1;
+				dest[2 * GAME_WORLD_ROW_BYTES] = value2;
+				dest[3 * GAME_WORLD_ROW_BYTES] = value3;
 			}
 		}
 	}
@@ -13406,13 +15487,17 @@ static void updatePowerupBob(UBYTE* bitmap, const GameState* game) {
 	buildPowerupBobTileIfNeeded(game->powerup.type);
 	LONG worldColumnLeft = game->powerup.worldX >> 3;
 	WORD pixelY = game->powerup.y;
+	UBYTE phase = (UBYTE)(game->powerup.worldX & 7);
 
 	if (powerupBobFootprintValid &&
 		powerupBobFootprintWorldColumnLeft == worldColumnLeft &&
+		powerupBobFootprintPhase == phase &&
 		powerupBobFootprintY == pixelY)
 		return;
+	preparePowerupDrawTiles(phase);
 	if (powerupBobFootprintValid &&
-		powerupBobFootprintWorldColumnLeft == worldColumnLeft) {
+		powerupBobFootprintWorldColumnLeft == worldColumnLeft &&
+		powerupBobFootprintPhase == phase) {
 		redrawPowerupBobVerticalTransition(bitmap, worldColumnLeft,
 			powerupBobFootprintY, pixelY);
 		powerupBobFootprintY = pixelY;
@@ -13420,12 +15505,13 @@ static void updatePowerupBob(UBYTE* bitmap, const GameState* game) {
 	}
 	if (powerupBobFootprintValid)
 		erasePowerupBobFootprint(bitmap);
+	powerupBobColumnCount = phase ? 3 : 2;
+	powerupBobFootprintPhase = phase;
 
-	for (UBYTE column = 0; column < 2; column++) {
+	for (UBYTE column = 0; column < powerupBobColumnCount; column++) {
 		LONG worldColumn = worldColumnLeft + column;
 		UWORD tileX = ringWorldTileXForColumn(worldColumn);
-		const UBYTE* tile = column ? powerupBobTileRight :
-			powerupBobTileLeft;
+		const UBYTE* tile = powerupDrawTile(column);
 		drawPowerupBobColumnAtPixelY(bitmap, tileX, pixelY, tile);
 		if (tileX < GAME_WORLD_BUFFER_MARGIN_TILES + GAME_FETCH_BYTES)
 			drawPowerupBobColumnAtPixelY(bitmap,
@@ -14169,6 +16255,9 @@ static UBYTE objectUsesGroundTargetHitSfx(UBYTE objectId) {
  * itself, never one row short. */
 static void startGroundTargetHitImpact(GameState* game, WORD x,
 	LONG worldColumn, WORD tileY, UBYTE objectId) {
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+	ULONG impactStart = perfReadRasterClock();
+#endif
 	startWorldImpactQuiet(game, x, (WORD)(tileY * GAME_TILE_HEIGHT));
 	/* A miss on bare land gets its own dedicated sound instead of reusing
 	 * one of the "actually hit a target/building/ship" variants. */
@@ -14177,6 +16266,9 @@ static void startGroundTargetHitImpact(GameState* game, WORD x,
 	else
 		playGroundTargetHitSfx((UWORD)(worldColumn ^
 			((LONG)tileY << 8) ^ frameCounter), x);
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+	perfStageLines[46] += (perfReadRasterClock() - impactStart) & 0x00ffffffUL;
+#endif
 }
 
 /* Match collision to the one opaque pixel on the bomb's lowest row. CPC
@@ -14267,6 +16359,9 @@ static void updateWingmanPlayer2Bomb(GameState* game, UBYTE scrollPixels,
 		wingman->bomb.active = 0;
 		return;
 	}
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+	ULONG p2BombSubStart = perfReadRasterClock();
+#endif
 
 	ObjectCell cell;
 	LONG worldColumn = -1;
@@ -14287,6 +16382,11 @@ static void updateWingmanPlayer2Bomb(GameState* game, UBYTE scrollPixels,
 		bombHitObject = townBlockCellNearWorldPoint(game,
 			probeX, probeY,
 			&cell, &worldColumn, &tileY);
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+	ULONG p2BombSubNow = perfReadRasterClock();
+	perfStageLines[34] += (p2BombSubNow - p2BombSubStart) & 0x00ffffffUL;
+	p2BombSubStart = p2BombSubNow;
+#endif
 	if (!bombHitObject) {
 		if (wingman->bomb.y >= SEA_SURFACE_Y) {
 			startWaterSplash(game, wingman->bomb.x);
@@ -14296,6 +16396,12 @@ static void updateWingmanPlayer2Bomb(GameState* game, UBYTE scrollPixels,
 	}
 	retireBombPixelBobBeforeWorldMutation(worldBuffers,
 		wingmanBombFootprints);
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+	p2BombSubNow = perfReadRasterClock();
+	perfStageLines[35] += (p2BombSubNow - p2BombSubStart) & 0x00ffffffUL;
+	p2BombSubStart = p2BombSubNow;
+	perfStageLines[38] = cell.id; /* Object id, not a raster duration. */
+#endif
 
 	if (cell.id == HAR_OBJ_GROUND_TARGET) {
 		LONG targetAnchorColumn = groundTargetAnchorColumn(worldColumn);
@@ -14326,16 +16432,22 @@ static void updateWingmanPlayer2Bomb(GameState* game, UBYTE scrollPixels,
 		dirtyRedrawWorldColumn(worldBuffers, worldColumn - 1);
 	} else if (cell.id == HAR_OBJ_LAND) {
 		if (markLandCraterAtColumnRow(worldColumn, tileY))
-			dirtyRedrawWorldColumn(worldBuffers, worldColumn);
+			bobCompositorErase(worldBuffers[0], worldColumn, tileY, 1);
 	} else if (cell.id == HAR_OBJ_TOWN_BLOCK) {
 		game->bonusScore += TOWN_BLOCK_SCORE_VALUE;
 		game->hitsCount++;
 		updateHudValues(game);
 		addCpcTownHitSmokeAtColumnRow(worldColumn, tileY);
-		dirtyRedrawWorldColumn(worldBuffers, worldColumn);
+		dirtyRedrawWorldTileIfSmoke(worldBuffers, worldColumn, tileY);
+		dirtyRedrawWorldTileIfSmoke(worldBuffers, worldColumn, tileY - 1);
 		*hudDirty = 1;
 	}
 
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+	p2BombSubNow = perfReadRasterClock();
+	perfStageLines[36] += (p2BombSubNow - p2BombSubStart) & 0x00ffffffUL;
+	p2BombSubStart = p2BombSubNow;
+#endif
 	if (cell.id == HAR_OBJ_FLAK || cell.id == HAR_OBJ_SMOKE ||
 		cell.id == HAR_OBJ_PIER) {
 		/* Absorbed with no visible/audible effect, matching the player's
@@ -14347,6 +16459,9 @@ static void updateWingmanPlayer2Bomb(GameState* game, UBYTE scrollPixels,
 		startWorldImpact(game, probeX, (WORD)(tileY * GAME_TILE_HEIGHT));
 	}
 	wingman->bomb.active = 0;
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+	perfStageLines[37] += (perfReadRasterClock() - p2BombSubStart) & 0x00ffffffUL;
+#endif
 }
 
 static void destroyWingman(GameState* game, UBYTE** worldBuffers) {
@@ -14379,8 +16494,7 @@ static UBYTE wingmanObjectMapCollision(const GameState* game) {
 #if HAR_DEBUG_PERF_LOG
 		perfWingmanWorldProbes++;
 #endif
-		if (!townBlockCellAtWorldColumnRow(worldColumn, tileY, &cell) &&
-			!objectCellForWorldColumnTile(worldColumn, tileY, &cell))
+		if (!aircraftObjectCell(worldColumn, tileY, &cell))
 			continue;
 		switch (cell.id) {
 			case HAR_OBJ_CLOUD:
@@ -14636,6 +16750,9 @@ static UBYTE advancePlayerBombMotion(GameState* game, UBYTE scrollPixels) {
 
 static UBYTE updateWeapons(GameState* game, UBYTE scrollPixels, UBYTE** worldBuffers) {
 	UBYTE changed = 0;
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+	ULONG weaponPartStart = perfReadRasterClock();
+#endif
 
 	if (game->rocketShot.active) {
 		if (game->rocketShot.type == ROCKET_SHOT_STANDARD) {
@@ -14701,6 +16818,9 @@ static UBYTE updateWeapons(GameState* game, UBYTE scrollPixels, UBYTE** worldBuf
 			}
 		}
 		if (rocketHitObject) {
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+			perfStageLines[41] = rocketCell.id; /* Object id, not duration. */
+#endif
 			retireRocketPixelBobBeforeWorldMutation(worldBuffers,
 				rocketShotFootprints);
 			if (rocketCell.id == HAR_OBJ_GROUND_TARGET) {
@@ -14715,9 +16835,25 @@ static UBYTE updateWeapons(GameState* game, UBYTE scrollPixels, UBYTE** worldBuf
 				 * so no crater. rocketTileY here already IS the target's own
 				 * row (objectCellForWorldColumnTile only matches
 				 * HAR_OBJ_GROUND_TARGET at tileY==terrainY-1). */
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+				ULONG targetStart = perfReadRasterClock();
+#endif
 				markTargetDestroyedAtColumn(rocketWorldColumn);
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+				ULONG targetNow = perfReadRasterClock();
+				perfStageLines[43] += (targetNow - targetStart) & 0x00ffffffUL;
+				targetStart = targetNow;
+#endif
 				addCpcHitSmokeAtColumnRow(rocketWorldColumn, rocketTileY);
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+				targetNow = perfReadRasterClock();
+				perfStageLines[44] += (targetNow - targetStart) & 0x00ffffffUL;
+				targetStart = targetNow;
+#endif
 				dirtyRedrawGroundTarget(worldBuffers, rocketWorldColumn);
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+				perfStageLines[45] += (perfReadRasterClock() - targetStart) & 0x00ffffffUL;
+#endif
 			}
 			if (rocketCell.id == HAR_OBJ_ENEMY_SHIP) {
 				UBYTE shipChanged = damageEnemyShipAtColumnRow(rocketWorldColumn, rocketTileY);
@@ -14736,7 +16872,7 @@ static UBYTE updateWeapons(GameState* game, UBYTE scrollPixels, UBYTE** worldBuf
 			}
 			if (rocketCell.id == HAR_OBJ_LAND) {
 				if (markLandCraterAtColumnRow(rocketWorldColumn, rocketTileY))
-					dirtyRedrawWorldColumn(worldBuffers, rocketWorldColumn);
+					bobCompositorErase(worldBuffers[0], rocketWorldColumn, rocketTileY, 1);
 			}
 			if (rocketCell.id == HAR_OBJ_TOWN_BLOCK) {
 				/* Part 7: CPC destroys buildings tile-by-tile (checkenemyhit's
@@ -14797,6 +16933,11 @@ static UBYTE updateWeapons(GameState* game, UBYTE scrollPixels, UBYTE** worldBuf
 		changed = 1;
 	}
 
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+	ULONG weaponPartNow = perfReadRasterClock();
+	perfStageLines[39] += (weaponPartNow - weaponPartStart) & 0x00ffffffUL;
+	weaponPartStart = weaponPartNow;
+#endif
 	if (game->bombShot.active) {
 		/* CPC changes logical rows; the mini-BOB interpolates between them. */
 		advancePlayerBombMotion(game, scrollPixels);
@@ -14828,6 +16969,9 @@ static UBYTE updateWeapons(GameState* game, UBYTE scrollPixels, UBYTE** worldBuf
 			bombHitObject = townBlockCellNearWorldPoint(game, bombProbeX,
 				bombProbeY, &bombCell, &bombWorldColumn, &bombTileY);
 		if (bombHitObject) {
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+			perfStageLines[42] = bombCell.id; /* Object id, not duration. */
+#endif
 			retireBombPixelBobBeforeWorldMutation(worldBuffers,
 				bombShotFootprints);
 			if (bombCell.id == HAR_OBJ_GROUND_TARGET) {
@@ -14839,13 +16983,29 @@ static UBYTE updateWeapons(GameState* game, UBYTE scrollPixels, UBYTE** worldBuf
 				/* See the matching rocket branch above. */
 				LONG targetAnchorColumn =
 					groundTargetAnchorColumn(bombWorldColumn);
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+				ULONG targetStart = perfReadRasterClock();
+#endif
 				markTargetDestroyedAtColumn(targetAnchorColumn);
 				if (game->targetLock.active &&
 					groundTargetAnchorColumn(game->targetLock.worldX /
 						GAME_TILE_WIDTH) == targetAnchorColumn)
 					clearTargetLockWithTelemetry(game, bombCell.id);
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+				ULONG targetNow = perfReadRasterClock();
+				perfStageLines[43] += (targetNow - targetStart) & 0x00ffffffUL;
+				targetStart = targetNow;
+#endif
 				addCpcHitSmokeAtColumnRow(bombWorldColumn, bombTileY);
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+				targetNow = perfReadRasterClock();
+				perfStageLines[44] += (targetNow - targetStart) & 0x00ffffffUL;
+				targetStart = targetNow;
+#endif
 				dirtyRedrawGroundTarget(worldBuffers, targetAnchorColumn);
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+				perfStageLines[45] += (perfReadRasterClock() - targetStart) & 0x00ffffffUL;
+#endif
 			}
 			if (bombCell.id == HAR_OBJ_ENEMY_SHIP) {
 				UBYTE shipChanged = damageEnemyShipAtColumnRow(bombWorldColumn, bombTileY);
@@ -14864,19 +17024,19 @@ static UBYTE updateWeapons(GameState* game, UBYTE scrollPixels, UBYTE** worldBuf
 			}
 			if (bombCell.id == HAR_OBJ_LAND) {
 				if (markLandCraterAtColumnRow(bombWorldColumn, bombTileY))
-					dirtyRedrawWorldColumn(worldBuffers, bombWorldColumn);
+					bobCompositorErase(worldBuffers[0], bombWorldColumn, bombTileY, 1);
 			}
 			if (bombCell.id == HAR_OBJ_TOWN_BLOCK) {
 				/* CPC checkenemyhit -> drawsmokesprite: exact struck
 				 * building cell becomes smoke 52, plus smoke 51 one row
-				 * above only when that cell is sky. Rebuild the complete
-				 * column so the wide-building overlay also re-evaluates its
-				 * per-cell smoke skip. */
+				 * above only when that cell is sky. Facades now live in the
+				 * tile base, so only the changed smoke cells need repainting. */
 				game->bonusScore += TOWN_BLOCK_SCORE_VALUE;
 				game->hitsCount++;
 				updateHudValues(game);
 				addCpcTownHitSmokeAtColumnRow(bombWorldColumn, bombTileY);
-				dirtyRedrawWorldColumn(worldBuffers, bombWorldColumn);
+				dirtyRedrawWorldTileIfSmoke(worldBuffers, bombWorldColumn, bombTileY);
+				dirtyRedrawWorldTileIfSmoke(worldBuffers, bombWorldColumn, bombTileY - 1);
 			}
 			if (bombCell.id == HAR_OBJ_FLAK || bombCell.id == HAR_OBJ_SMOKE ||
 				bombCell.id == HAR_OBJ_PIER) {
@@ -14905,6 +17065,9 @@ static UBYTE updateWeapons(GameState* game, UBYTE scrollPixels, UBYTE** worldBuf
 		changed = 1;
 	}
 
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+	perfStageLines[40] += (perfReadRasterClock() - weaponPartStart) & 0x00ffffffUL;
+#endif
 	if (game->impact.active) {
 		if (game->impact.timer > 0)
 			game->impact.timer--;
@@ -14916,11 +17079,208 @@ static UBYTE updateWeapons(GameState* game, UBYTE scrollPixels, UBYTE** worldBuf
 	return changed;
 }
 
+#if HAR_CRASH_DEBRIS_BOBS
+typedef struct CrashDebrisFootprint {
+	UBYTE valid, rows, placements;
+	WORD y;
+	UWORD byteX[2];
+	UBYTE bytes[2];
+	UBYTE background[2][PLAYER_SPRITE_HEIGHT][GAME_WORLD_DISPLAY_PLANES][2];
+} CrashDebrisFootprint;
+static CrashDebrisFootprint crashDebrisFootprints[3];
+static UBYTE crashDebrisVisible;
+static UBYTE crashDebrisShapeValid[3];
+static UBYTE crashDebrisMasks[3][PLAYER_SPRITE_HEIGHT];
+static UBYTE crashDebrisPlanes[3][PLAYER_SPRITE_HEIGHT][GAME_WORLD_DISPLAY_PLANES];
+
+/* Save under the debris, not reconstructed terrain: other transient effects
+ * may be underneath. Callers erase parts in reverse compositing order before
+ * any terrain mutation, then draw all parts after the other BOBs. */
+static void eraseCrashDebrisBob(UBYTE* bitmap, CrashDebrisFootprint* footprint) {
+	if (!footprint->valid) return;
+	for (UBYTE placement = 0; placement < footprint->placements; placement++)
+		for (UBYTE row = 0; row < footprint->rows; row++)
+			for (UBYTE plane = 0; plane < GAME_WORLD_DISPLAY_PLANES; plane++) {
+				UBYTE* dest = bitmap + (footprint->y + row) * SCREEN_PLANES * GAME_WORLD_ROW_BYTES +
+					plane * GAME_WORLD_ROW_BYTES + footprint->byteX[placement];
+				for (UBYTE byte = 0; byte < footprint->bytes[placement]; byte++)
+					dest[byte] = footprint->background[placement][row][plane][byte];
+			}
+	footprint->valid = 0;
+}
+
+static void drawCrashDebrisBob(UBYTE* bitmap, CrashDebrisFootprint* footprint,
+	LONG scrollX, WORD x, WORD y, UBYTE part) {
+	/* Match the old sprite's eight pixel artwork at x+4 and its 16 source
+	 * rows, including the adjacent tile rows used by the original builder. */
+	footprint->valid = 0;
+	if (part >= PLAYER_CRASH_PART_COUNT) return;
+	WORD left = x + 4, right = left + 8;
+	WORD top = y < 0 ? 0 : y;
+	WORD bottom = y + PLAYER_SPRITE_HEIGHT;
+	if (left < 0) left = 0;
+	if (right > SCREEN_WIDTH) right = SCREEN_WIDTH;
+	if (bottom > GAME_WORLD_HEIGHT) bottom = GAME_WORLD_HEIGHT;
+	if (left >= right || top >= bottom) return;
+	const LONG pagePixels = (LONG)GAME_WORLD_SCROLL_PAGE_BYTES * GAME_TILE_WIDTH;
+	LONG localX = (scrollX + left) % pagePixels;
+	if (localX < 0) localX += pagePixels;
+	UWORD pixelX = (UWORD)(GAME_WORLD_BUFFER_MARGIN_PIXELS + localX);
+	footprint->y = top;
+	footprint->rows = (UBYTE)(bottom - top);
+	footprint->placements = pixelX <
+		(GAME_WORLD_BUFFER_MARGIN_TILES + GAME_FETCH_BYTES) * GAME_TILE_WIDTH ? 2 : 1;
+	static const UBYTE colours[4] = {
+		0, GAME_COLOR_DARK_GREY, GAME_COLOR_MID_GREY, GAME_COLOR_LIGHT_GREY
+	};
+	if (!crashDebrisShapeValid[part]) {
+		for (UBYTE row = 0; row < PLAYER_SPRITE_HEIGHT; row++)
+			for (UBYTE col = 0; col < 8; col++) {
+				UBYTE pen = gameColorToPlayerSpriteColor(gameTilePixelColor(67 + part, col, row));
+				if (!pen) continue;
+				UBYTE bit = 0x80 >> col;
+				crashDebrisMasks[part][row] |= bit;
+				for (UBYTE plane = 0; plane < GAME_WORLD_DISPLAY_PLANES; plane++)
+					if (colours[pen] & (1 << plane)) crashDebrisPlanes[part][row][plane] |= bit;
+			}
+		crashDebrisShapeValid[part] = 1;
+	}
+	UBYTE leftCut = left - x - 4;
+	UBYTE rightCut = x + 12 - right;
+	UBYTE sourceClip = (UBYTE)((0xFF >> leftCut) & (0xFF << rightCut));
+	for (UBYTE placement = 0; placement < footprint->placements; placement++) {
+		UWORD placedX = (UWORD)(pixelX + placement * pagePixels);
+		UWORD byteX = placedX >> 3;
+		UBYTE bytes = (UBYTE)(((placedX & 7) + right - left + 7) >> 3);
+		if (byteX + bytes > GAME_WORLD_ROW_BYTES) bytes = GAME_WORLD_ROW_BYTES - byteX;
+		footprint->byteX[placement] = byteX;
+		footprint->bytes[placement] = bytes;
+		for (UBYTE row = 0; row < footprint->rows; row++) {
+			UBYTE sourceRow = top + row - y;
+			UWORD shiftedMask = ((UWORD)(UBYTE)((crashDebrisMasks[part][sourceRow] & sourceClip) << leftCut) << 8) >> (placedX & 7);
+			UBYTE mask[2] = { shiftedMask >> 8, shiftedMask };
+			for (UBYTE plane = 0; plane < GAME_WORLD_DISPLAY_PLANES; plane++) {
+				UWORD shiftedPlane = ((UWORD)(UBYTE)((crashDebrisPlanes[part][sourceRow][plane] & sourceClip) << leftCut) << 8) >> (placedX & 7);
+				UBYTE planeBytes[2] = { shiftedPlane >> 8, shiftedPlane };
+				UBYTE* dest = bitmap + (top + row) * SCREEN_PLANES * GAME_WORLD_ROW_BYTES +
+					plane * GAME_WORLD_ROW_BYTES + byteX;
+				for (UBYTE byte = 0; byte < bytes; byte++) {
+					footprint->background[placement][row][plane][byte] = dest[byte];
+					dest[byte] = (dest[byte] & ~mask[byte]) | planeBytes[byte];
+				}
+			}
+		}
+	}
+	footprint->valid = 1;
+}
+static void eraseCrashDebrisFrame(UBYTE* bitmap) {
+	if (!crashDebrisVisible) return;
+	WORD stop = 0;
+	for (UBYTE part = 0; part < 3; part++) {
+		CrashDebrisFootprint* footprint = &crashDebrisFootprints[part];
+		if (footprint->valid && footprint->y + footprint->rows > stop)
+			stop = footprint->y + footprint->rows;
+	}
+	/* WaitVbl returns on PAL line 311. Debris written after its rows in
+	 * the preceding iteration must first be displayed in the next field;
+	 * erasing immediately at 311 would remove it before it was ever shown. */
+	while (currentRasterY() >= 300) { }
+	while (currentRasterY() <= SCREEN_DIWSTRT_Y + stop) { }
+	for (BYTE part = 2; part >= 0; part--)
+		eraseCrashDebrisBob(bitmap, &crashDebrisFootprints[part]);
+	crashDebrisVisible = 0;
+}
+
+static void drawCrashDebrisFrame(UBYTE* bitmap, const GameState* game) {
+	if (!game->crashTimer || crashDebrisVisible) return;
+	WORD stop = -1;
+	for (UBYTE part = 0; part < 3; part++)
+		if (game->crashPart[part].active && game->crashPart[part].y < GAME_WORLD_HEIGHT &&
+			game->crashPart[part].y + PLAYER_SPRITE_HEIGHT > stop)
+			stop = game->crashPart[part].y + PLAYER_SPRITE_HEIGHT;
+	if (stop < 0) return;
+	if (stop > GAME_WORLD_HEIGHT) stop = GAME_WORLD_HEIGHT;
+	while (currentRasterY() <= SCREEN_DIWSTRT_Y + stop) { }
+	for (UBYTE part = 0; part < 3; part++) {
+		if (!game->crashPart[part].active) continue;
+		drawCrashDebrisBob(bitmap, &crashDebrisFootprints[part], game->scrollX,
+			game->crashPart[part].x, game->crashPart[part].y, part);
+		if (crashDebrisFootprints[part].valid) crashDebrisVisible = 1;
+	}
+}
+
+#if HAR_HEADLESS_CLASSIC_CONTRACT_TEST
+static UBYTE referenceCrashDebrisBobsMatch(void) {
+	UBYTE* actual = (UBYTE*)AllocMem(GAME_WORLD_BITMAP_BYTES * 2, MEMF_ANY);
+	if (!actual) return 0;
+	UBYTE* expected = actual + GAME_WORLD_BITMAP_BYTES;
+	static CrashDebrisFootprint footprints[3];
+	UWORD sprite[PLAYER_SPRITE_WORDS];
+	UBYTE matched = 1;
+	const LONG period = (LONG)GAME_WORLD_SCROLL_PAGE_BYTES * 8;
+	for (UBYTE test = 0; test < 12 && matched; test++) {
+		WORD x = test < 8 ? 30 + test : (test == 8 ? -8 : SCREEN_WIDTH - 8);
+		WORD y = test == 10 ? -7 : (test == 11 ? GAME_WORLD_HEIGHT - 5 : 20);
+		LONG scroll = test & 1 ? period - 37 : 0;
+		memset(actual, 0x5A, GAME_WORLD_BITMAP_BYTES * 2);
+		memset(footprints, 0, sizeof(footprints));
+		for (UBYTE part = 0; part < 3; part++) {
+			/* Deliberately overlap parts to verify reverse-order save-under. */
+			drawCrashDebrisBob(actual, &footprints[part], scroll, x + part, y, part);
+			buildPlayerCrashPartSprite(sprite, x + part, y, part);
+			WORD left = x + part + 4;
+			WORD clippedLeft = left < 0 ? 0 : left;
+			LONG local = (scroll + clippedLeft) % period;
+			if (local < 0) local += period;
+			UWORD start = GAME_WORLD_BUFFER_MARGIN_PIXELS + local;
+			UBYTE placements = start <
+				(GAME_WORLD_BUFFER_MARGIN_TILES + GAME_FETCH_BYTES) * 8 ? 2 : 1;
+			for (UBYTE row = 0; row < PLAYER_SPRITE_HEIGHT; row++)
+				for (UBYTE col = 0; col < 8; col++) {
+					WORD screenX = left + col, screenY = y + row;
+					if (screenX < 0 || screenX >= SCREEN_WIDTH || screenY < 0 || screenY >= GAME_WORLD_HEIGHT) continue;
+					UWORD bit = 0x8000 >> (col + 4);
+					UBYTE pen = !!(sprite[2 + row * 2] & bit) | (!!(sprite[3 + row * 2] & bit) << 1);
+					if (!pen) continue;
+					UBYTE colour = pen == 1 ? GAME_COLOR_DARK_GREY :
+						(pen == 2 ? GAME_COLOR_MID_GREY : GAME_COLOR_LIGHT_GREY);
+					for (UBYTE placement = 0; placement < placements; placement++) {
+						UWORD pixel = start + screenX - clippedLeft + placement * period;
+						if (pixel >= GAME_WORLD_BUFFER_WIDTH) continue;
+						for (UBYTE plane = 0; plane < GAME_WORLD_DISPLAY_PLANES; plane++) {
+							UBYTE* dest = expected + screenY * SCREEN_PLANES * GAME_WORLD_ROW_BYTES + plane * GAME_WORLD_ROW_BYTES + (pixel >> 3);
+							UBYTE mask = 0x80 >> (pixel & 7);
+							if (colour & (1 << plane)) *dest |= mask;
+							else *dest &= ~mask;
+						}
+					}
+				}
+		}
+		for (ULONG byte = 0; byte < GAME_WORLD_BITMAP_BYTES; byte++)
+			if (actual[byte] != expected[byte]) { matched = 0; break; }
+		for (BYTE part = 2; part >= 0; part--) eraseCrashDebrisBob(actual, &footprints[part]);
+		for (ULONG byte = 0; byte < GAME_WORLD_BITMAP_BYTES; byte++)
+			if (actual[byte] != 0x5A) { matched = 0; break; }
+	}
+	FreeMem(actual, GAME_WORLD_BITMAP_BYTES * 2);
+	return matched;
+}
+#endif
+#endif
+
 /* Channels 3 and 5 are temporarily borrowed for crash debris. Channel 3 is
  * otherwise the enemy plane's attached half; channel 5 is hidden in normal
  * play because player and Wingman weapons are rendered as playfield Bobs. */
 static void updateCrashPartSprites(UWORD* crashPart1Sprite,
 	UWORD* enemySprite, UWORD* enemyAttachSprite, const GameState* game) {
+#if HAR_CRASH_DEBRIS_BOBS
+	hideHardwareSprite(crashPart1Sprite);
+	if (game->crashTimer) {
+		hideHardwareSprite(enemySprite);
+		hideHardwareSprite(enemyAttachSprite);
+	}
+	return;
+#endif
 	if (game->crashTimer) {
 		/* During eject, sprite 0 remains the seat/parachute. The abandoned
 		 * Harrier already owned enemy pair 2/3, so split that pair and put
@@ -14975,7 +17335,12 @@ static void pruneRuntimeFlakBehindColumn(LONG cutoffColumn) {
 			UBYTE slot = (UBYTE)(runtimeFlakColumns[index] &
 				(GAME_RUNTIME_FLAK_LOOKUP_SIZE - 1));
 			if (runtimeFlakLookupColumns[slot] == runtimeFlakColumns[index])
+				worldObjectCellChanged(runtimeFlakColumns[index], runtimeFlakLookupRows[slot]);
+			else
+				worldObjectCellChanged(runtimeFlakColumns[index], runtimeFlakRows[index]);
+			if (runtimeFlakLookupColumns[slot] == runtimeFlakColumns[index])
 				runtimeFlakLookupColumns[slot] = 0xffff;
+			invalidatePowerupBackgroundColumn(runtimeFlakColumns[index]);
 			runtimeFlakCount--;
 			runtimeFlakColumns[index] = runtimeFlakColumns[runtimeFlakCount];
 			runtimeFlakRows[index] = runtimeFlakRows[runtimeFlakCount];
@@ -14998,6 +17363,8 @@ static UBYTE removeRuntimeFlakAt(LONG worldColumn, WORD tileY) {
 		if (runtimeFlakColumns[index] != (UWORD)worldColumn ||
 			runtimeFlakRows[index] != (UBYTE)tileY)
 			continue;
+		worldObjectCellChanged(worldColumn, tileY);
+		invalidatePowerupBackgroundColumn(worldColumn);
 		/* Keep the compact runtime list by moving its final entry into the
 		 * consumed slot, matching pruneRuntimeFlakBehindColumn(). */
 		runtimeFlakCount--;
@@ -15017,12 +17384,26 @@ static UBYTE addRuntimeFlak(LONG worldColumn, WORD tileY, UBYTE tile) {
 		return 0;
 	if (runtimeFlakCount >= GAME_RUNTIME_FLAK_MAX)
 		return 0;
+	/* Rejected requests leave world data untouched; keep all derived
+	 * background and collision caches valid until an insertion succeeds. */
+	worldObjectCellChanged(worldColumn, tileY);
+	invalidatePowerupBackgroundColumn(worldColumn);
 	runtimeFlakColumns[runtimeFlakCount] = (UWORD)worldColumn;
 	runtimeFlakRows[runtimeFlakCount] = (UBYTE)tileY;
 	runtimeFlakTiles[runtimeFlakCount] = tile;
 	runtimeFlakCount++;
 	UBYTE slot = (UBYTE)((UWORD)worldColumn &
 		(GAME_RUNTIME_FLAK_LOOKUP_SIZE - 1));
+	/* Replacing a direct-map slot also changes the old column's lookup. */
+#if HAR_LOCAL_SEA_CANDIDATES
+	if (runtimeFlakLookupColumns[slot] != 0xffff &&
+		rowMayChangeSeaCandidates(runtimeFlakLookupRows[slot]))
+		seaClassificationRevision++;
+#endif
+	if (runtimeFlakLookupColumns[slot] != 0xffff) {
+		invalidatePowerupBackgroundColumn(runtimeFlakLookupColumns[slot]);
+		invalidateBobEraseColumns(runtimeFlakLookupColumns[slot], runtimeFlakLookupColumns[slot]);
+	}
 	runtimeFlakLookupColumns[slot] = (UWORD)worldColumn;
 	runtimeFlakLookupRows[slot] = (UBYTE)tileY;
 	runtimeFlakLookupTiles[slot] = tile;
@@ -15076,6 +17457,8 @@ static UBYTE cpcFlakL884bForWorldColumn(LONG worldColumn) {
 }
 
 static void resetRuntimeFlak(void) {
+	worldObjectsReset();
+	powerupBackgroundCacheDirty = 1;
 	runtimeFlakCount = 0;
 	for (UWORD slot = 0; slot < GAME_RUNTIME_FLAK_LOOKUP_SIZE; slot++)
 		runtimeFlakLookupColumns[slot] = 0xffff;
@@ -15475,6 +17858,15 @@ static void spawnPowerup(GameState* game, UBYTE type, UBYTE startRow) {
 	p->y = (WORD)(startRow << 3);
 	p->logicalY = p->y;
 	p->fallCounter = 0;
+	p->fallFraction = 0;
+	p->driftFraction = 0;
+	/* Independent deterministic variation: do not consume the terrain/enemy RNG. */
+	UWORD motion = (UWORD)(game->campaignSeed ^ game->scrollX ^
+		((UWORD)type << 8) ^ game->missionNumber);
+	motion = (UWORD)(motion * 1509u + 41u);
+	motion ^= motion >> 7;
+	p->fallRate = (UBYTE)(6 + (motion & 3));
+	p->driftRate = (motion & 4) ? 1 : -1;
 }
 
 /* CPC's spawnid sequence (post-R-roll, post-wingman-check):
@@ -15739,6 +18131,21 @@ static UBYTE powerupHitsPlayer(const GameState* game, const PowerupState* p) {
 	return 0;
 }
 
+static void moveEnhancedPowerup(PowerupState* p) {
+	p->fallFraction += p->fallRate;
+	p->y += p->fallFraction >> 3;
+	p->fallFraction &= 7;
+	p->logicalY = p->y;
+	p->driftFraction += p->driftRate;
+	if (p->driftFraction >= 8) {
+		p->worldX++;
+		p->driftFraction -= 8;
+	} else if (p->driftFraction <= -8) {
+		p->worldX--;
+		p->driftFraction += 8;
+	}
+}
+
 static UBYTE updatePowerup(GameState* game) {
 	PowerupState* p = &game->powerup;
 	if (!p->active)
@@ -15753,7 +18160,7 @@ static UBYTE updatePowerup(GameState* game) {
 
 	/* CPC checks contact at its current character row on every call, then
 	 * advances one complete row only when wingmanpowerupspeed reaches five.
-	 * Both profiles share that logic and the smooth 1/2-pixel presentation. */
+	 * Enhanced checks the same contacts but uses its slower fractional motion. */
 	if (powerupHitsPlayer(game, p)) {
 		activatePowerup(game, p->type);
 		destroyPowerup(game, 0);
@@ -15762,6 +18169,10 @@ static UBYTE updatePowerup(GameState* game) {
 
 	if (powerupHitsSolidWorld(game, p)) {
 		destroyPowerup(game, 1);
+		return 1;
+	}
+	if (game->gameMode == GAME_MODE_ENHANCED) {
+		moveEnhancedPowerup(p);
 		return 1;
 	}
 
@@ -15853,8 +18264,7 @@ static UBYTE playerObjectMapCollision(const GameState* game, LONG* hitWorldColum
 			 * bombs still hit the same visible tile. Destroyed facade cells are
 			 * skipped by townBlockCellAtWorldColumnRow(); the fallback then sees
 			 * their persistent smoke and preserves CPC's non-fatal smoke contact. */
-			if (!townBlockCellAtWorldColumnRow(worldColumn, tileY, &cell) &&
-				!objectCellForWorldColumnTile(worldColumn, tileY, &cell))
+			if (!aircraftObjectCell(worldColumn, tileY, &cell))
 				continue;
 			collisionClass = cpcPlayerCollisionForObjectId(cell.id);
 			if (collisionClass == PLAYER_OBJECT_COLLISION_SAFE)
@@ -17182,7 +19592,7 @@ static void respawnPlayer(GameState* game) {
 }
 
 static void startAircraftFailure(GameState* game, UBYTE cause) {
-#if HAR_HEADLESS_AUTOPLAY
+#if HAR_HEADLESS_AUTOPLAY && !HAR_HEADLESS_DAMAGE_EXERCISE
 	(void)game;
 	(void)cause;
 	return;
@@ -17193,6 +19603,10 @@ static void startAircraftFailure(GameState* game, UBYTE cause) {
 		game->takeoffState != TAKEOFF_STATE_AIRBORNE)
 		return;
 	LONG failureWorldColumn = ((LONG)game->scrollX + game->playerX) >> 3;
+#if HAR_HEADLESS_DAMAGE_EXERCISE
+	if (!headlessDamageStats[DAMAGE_FAILURE_FRAME])
+		headlessDamageStats[DAMAGE_FAILURE_FRAME] = frameCounter;
+#endif
 	WORD failureClearance = (WORD)(terrainSurfacePixelYForWorldColumn(
 		failureWorldColumn) - (game->playerY + PLAYER_SPRITE_HEIGHT));
 	telemetryLogGameEvent(TELEMETRY_GAME_EVENT_AIRCRAFT_FAILURE,
@@ -17546,28 +19960,591 @@ static UBYTE referenceBuffersEqual(const UBYTE* left, const UBYTE* right,
 	return 1;
 }
 
+/* Pixel-wise reference also checks saved bytes and untouched surroundings. */
+static UBYTE referenceBombPlacementMatches(void) {
+	enum { bytes = 5 * SCREEN_PLANES * GAME_WORLD_ROW_BYTES };
+	UBYTE* actual = AllocMem(bytes * 2, MEMF_PUBLIC);
+	if (!actual) return 0;
+	UBYTE* expected = actual + bytes;
+	static BombShotFootprint actualFootprint, expectedFootprint;
+	UBYTE identical = 1;
+	for (UBYTE phase = 0; phase < 2; phase++) {
+		for (UBYTE alignment = 0; alignment < 16; alignment++) {
+			for (UWORD i = 0; i < bytes; i++) actual[i] = expected[i] = (UBYTE)(i * 17 + 3);
+			memset(&actualFootprint, 0x55, sizeof(actualFootprint));
+			memset(&expectedFootprint, 0x55, sizeof(expectedFootprint));
+			for (UBYTE placement = 0; placement < 2; placement++) {
+				UWORD x = placement ? (GAME_WORLD_ROW_BYTES - 1) * 8 + (alignment & 7) : 16 + alignment;
+				UBYTE count = (x & 7) > 4 ? 2 : 1;
+				if ((x >> 3) + count > GAME_WORLD_ROW_BYTES) count = 1;
+				expectedFootprint.byteX[placement] = x >> 3;
+				expectedFootprint.byteCount[placement] = count;
+				for (UBYTE row = 0; row < 3; row++) {
+					UBYTE* line = expected + (row + 1) * SCREEN_PLANES * GAME_WORLD_ROW_BYTES;
+					for (UBYTE plane = 0; plane < GAME_WORLD_DISPLAY_PLANES; plane++)
+						for (UBYTE byte = 0; byte < count; byte++)
+							expectedFootprint.background[placement][row][plane][byte] =
+								line[plane * GAME_WORLD_ROW_BYTES + (x >> 3) + byte];
+					/* Original three-pixel silhouette: diagonal 0,2,3 or vertical 1. */
+					UWORD pixelX = x + (phase ? 1 : (row ? row + 1 : 0));
+					if (pixelX < GAME_WORLD_BUFFER_WIDTH) {
+						UBYTE bit = 0x80 >> (pixelX & 7);
+						for (UBYTE plane = 0; plane < GAME_WORLD_DISPLAY_PLANES; plane++) {
+							UBYTE* target = line + plane * GAME_WORLD_ROW_BYTES + (pixelX >> 3);
+							*target = (*target & ~bit) | ((GAME_COLOR_BLACK & (1 << plane)) ? bit : 0);
+						}
+					}
+				}
+				drawBombShotPixelBobPlacement(actual, &actualFootprint, placement, x, 1, phase);
+			}
+			if (!referenceBuffersEqual(actual, expected, bytes) ||
+				!referenceBuffersEqual((UBYTE*)&actualFootprint, (UBYTE*)&expectedFootprint,
+					sizeof(actualFootprint))) identical = 0;
+			actualFootprint.valid = 1;
+			actualFootprint.placementCount = 2;
+			actualFootprint.y = 1;
+			eraseBombPixelBobFootprint(actual, 0, &actualFootprint);
+			for (UWORD i = 0; i < bytes; i++)
+				if (actual[i] != (UBYTE)(i * 17 + 3)) identical = 0;
+			if (actualFootprint.valid || actualFootprint.placementCount) identical = 0;
+		}
+	}
+	FreeMem(actual, bytes * 2);
+	return identical;
+}
+
+/* Compare bytes actually fetched by the display with freshly reconstructed
+ * world columns, not just the primary copies used by the ring writer. */
+#if HAR_MIRRORED_TILE_BATCH
+static UBYTE referenceMirroredColumnRowsMatch(void) {
+	UBYTE* actual = AllocMem(2UL * GAME_WORLD_BITMAP_BYTES, MEMF_PUBLIC);
+	if (!actual) return 0;
+	UBYTE* expected = actual + GAME_WORLD_BITMAP_BYTES;
+	UBYTE savedMode = currentWorldPresentationMode;
+	UBYTE identical = 1;
+	for (UBYTE mode = 0; mode < 2 && identical; mode++) {
+		currentWorldPresentationMode = mode ? GAME_MODE_ENHANCED : GAME_MODE_CLASSIC;
+		for (UBYTE phase = 0; phase < 16 && identical; phase++) {
+			RenderColumn column;
+			for (UBYTE row = 0; row < GAME_OBJECT_MAP_HEIGHT_TILES; row++)
+				column.tile[row] = (UBYTE)(phase * 16 + row);
+			for (UBYTE edge = 0; edge < 2 && identical; edge++) {
+				UWORD x = GAME_WORLD_BUFFER_MARGIN_TILES + (edge ? GAME_FETCH_BYTES - 1 : 0);
+				UWORD start = edge ? (phase * 2) % GAME_OBJECT_MAP_HEIGHT_TILES : 0;
+				UWORD count = edge ? 9 : GAME_OBJECT_MAP_HEIGHT_TILES;
+				memset(actual, 0x5a, 2UL * GAME_WORLD_BITMAP_BYTES);
+				drawMirroredWorldColumnRows(actual, x, &column, start, count);
+				/* Original independent placement calls remain the reference. */
+				drawWorldColumnRowsFromCache(expected, x, &column, start, count);
+				drawWorldColumnRowsFromCache(expected, x + GAME_WORLD_SCROLL_PAGE_BYTES, &column, start, count);
+				if (!referenceBuffersEqual(actual, expected, GAME_WORLD_BITMAP_BYTES)) identical = 0;
+			}
+		}
+	}
+	currentWorldPresentationMode = savedMode;
+	FreeMem(actual, 2UL * GAME_WORLD_BITMAP_BYTES);
+	return identical;
+}
+#endif
+
+static UBYTE referencePowerupTransitionMatches(void) {
+	powerupBobColumnCount = 2;
+	UBYTE* actual = AllocMem(2UL * GAME_WORLD_BITMAP_BYTES, MEMF_PUBLIC);
+	if (!actual) return 0;
+	UBYTE* expected = actual + GAME_WORLD_BITMAP_BYTES;
+	UBYTE savedMode = currentWorldPresentationMode;
+	LONG columns[] = { 0, GAME_FETCH_BYTES - 1, GAME_WORLD_SCROLL_PAGE_BYTES - 1, -1 };
+	for (UWORD segment = 0; segment < HAR_LEVEL_SEGMENT_COUNT; segment++)
+		if (harLevelRoute[segment].terrainKind == HAR_TERRAIN_TOWN) {
+			columns[3] = harLevelRoute[segment].startColumn + 4;
+			break;
+		}
+	static const WORD heights[] = { -1, 0, 7, 8, 119, 159, 167, 168 };
+	UBYTE identical = columns[3] >= 0;
+	for (UBYTE mode = 0; mode < 2 && identical; mode++) {
+		currentWorldPresentationMode = mode ? GAME_MODE_ENHANCED : GAME_MODE_CLASSIC;
+		for (UBYTE scene = 0; scene < 4 && identical; scene++) {
+			powerupBackgroundCacheDirty = 1;
+			for (UBYTE step = 0; step < sizeof(heights) / sizeof(heights[0]) && identical; step++) {
+				WORD oldY = heights[step], newY = oldY + ((step & 1) ? -1 : 1);
+				UBYTE phase = step & 7;
+				powerupBobColumnCount = phase ? 3 : 2;
+				memset(actual, 0x5a, GAME_WORLD_BITMAP_BYTES);
+				/* The compositor's background consists of the two base tile columns.
+				 * Generate those afresh, independently of its restoration cache. */
+				for (UBYTE column = 0; column < powerupBobColumnCount; column++) {
+					RenderColumn fresh;
+					buildWorldTileColumn(columns[scene] + column, &fresh);
+					UWORD x = ringWorldTileXForColumn(columns[scene] + column);
+					for (WORD row = 0; row * GAME_TILE_HEIGHT < GAME_WORLD_HEIGHT; row++) {
+						drawGameScrollTile(actual, x, row, fresh.tile[row]);
+						if (x < GAME_WORLD_BUFFER_MARGIN_TILES + GAME_FETCH_BYTES)
+							drawGameScrollTile(actual, x + GAME_WORLD_SCROLL_PAGE_BYTES, row, fresh.tile[row]);
+					}
+				}
+				memcpy(expected, actual, GAME_WORLD_BITMAP_BYTES);
+				buildPowerupBobTileIfNeeded(step % 6);
+				preparePowerupDrawTiles(phase);
+				for (UBYTE column = 0; column < powerupBobColumnCount; column++) {
+					UWORD x = ringWorldTileXForColumn(columns[scene] + column);
+					const UBYTE* tile = powerupDrawTile(column);
+					drawPowerupBobColumnAtPixelY(actual, x, oldY, tile);
+					drawPowerupBobColumnAtPixelY(expected, x, newY, tile);
+					if (x < GAME_WORLD_BUFFER_MARGIN_TILES + GAME_FETCH_BYTES) {
+						drawPowerupBobColumnAtPixelY(actual, x + GAME_WORLD_SCROLL_PAGE_BYTES, oldY, tile);
+						drawPowerupBobColumnAtPixelY(expected, x + GAME_WORLD_SCROLL_PAGE_BYTES, newY, tile);
+					}
+				}
+				redrawPowerupBobVerticalTransition(actual, columns[scene], oldY, newY);
+				if (!referenceBuffersEqual(actual, expected, GAME_WORLD_BITMAP_BYTES)) identical = 0;
+			}
+		}
+	}
+	currentWorldPresentationMode = savedMode;
+	powerupBackgroundCacheDirty = 1;
+	FreeMem(actual, 2UL * GAME_WORLD_BITMAP_BYTES);
+	return identical;
+}
+
+static UBYTE referencePowerupDriftMatches(void) {
+	for (UBYTE rate = 6; rate <= 9; rate++) {
+		for (BYTE direction = -1; direction <= 1; direction += 2) {
+			PowerupState p;
+			memset(&p, 0, sizeof(p));
+			p.fallRate = rate;
+			p.driftRate = direction;
+			p.worldX = 100;
+			for (UBYTE frame = 0; frame < 80; frame++) {
+				WORD oldY = p.y;
+				moveEnhancedPowerup(&p);
+				if (p.y < oldY || p.y > oldY + 2 || p.logicalY != p.y)
+					return 0;
+			}
+			if (p.y != rate * 10 || p.worldX != 100 + direction * 10)
+				return 0;
+		}
+	}
+	/* Independently check every shifted source bit, including the mask plane. */
+	for (UBYTE type = 0; type < 6; type++) {
+		buildPowerupBobTileIfNeeded(type);
+		for (UBYTE phase = 0; phase < 8; phase++) {
+			preparePowerupDrawTiles(phase);
+			for (UBYTE row = 0; row < POWERUP_SPRITE_HEIGHT; row++)
+				for (UBYTE plane = 0; plane <= GAME_WORLD_DISPLAY_PLANES; plane++)
+					for (UBYTE x = 0; x < 24; x++) {
+						UWORD offset = row * (GAME_WORLD_DISPLAY_PLANES + 1) + plane;
+						BYTE sourceX = (BYTE)x - phase;
+						UBYTE expected = 0;
+						if (sourceX >= 0 && sourceX < 16) {
+							const UBYTE* tile = sourceX < 8 ? powerupBobTileLeft : powerupBobTileRight;
+							expected = (tile[offset] >> (7 - (sourceX & 7))) & 1;
+						}
+						if (((powerupDrawTile(x >> 3)[offset] >> (7 - (x & 7))) & 1) != expected)
+							return 0;
+					}
+		}
+	}
+	return 1;
+}
+
+static UBYTE referenceFailureSmokeCacheMatches(void) {
+	static const LONG columns[] = { -1, 0, 1, 15, 16, 17, 65535, 65536 };
+	UBYTE savedMode = currentWorldPresentationMode;
+	UBYTE identical = 1;
+	memset(failureSmokeEraseColumns, 0, sizeof(failureSmokeEraseColumns));
+	for (UBYTE mode = 0; mode < 2; mode++) {
+		currentWorldPresentationMode = mode ? GAME_MODE_ENHANCED : GAME_MODE_CLASSIC;
+		for (UBYTE i = 0; i < sizeof(columns) / sizeof(columns[0]); i++) {
+			LONG col = columns[i];
+			RenderColumn expected;
+			buildWorldTileColumn(col, &expected);
+			const RenderColumn* actual = failureSmokeEraseColumn(col);
+			if (!referenceBuffersEqual((const UBYTE*)actual, (const UBYTE*)&expected, sizeof(expected))) identical = 0;
+			ULONG builds = failureSmokeEraseBuilds;
+			failureSmokeEraseColumn(col);
+			if (failureSmokeEraseBuilds != builds) identical = 0;
+			failureSmokeEraseColumn(col + 16);
+			actual = failureSmokeEraseColumn(col);
+			if (failureSmokeEraseBuilds != builds + 2 ||
+				!referenceBuffersEqual((const UBYTE*)actual, (const UBYTE*)&expected, sizeof(expected))) identical = 0;
+			worldObjectsReset();
+			actual = failureSmokeEraseColumn(col);
+			if (failureSmokeEraseBuilds != builds + 3 ||
+				!referenceBuffersEqual((const UBYTE*)actual, (const UBYTE*)&expected, sizeof(expected))) identical = 0;
+			currentWorldPresentationMode = mode ? GAME_MODE_CLASSIC : GAME_MODE_ENHANCED;
+			buildWorldTileColumn(col, &expected);
+			actual = failureSmokeEraseColumn(col);
+			if (failureSmokeEraseBuilds != builds + 4 ||
+				!referenceBuffersEqual((const UBYTE*)actual, (const UBYTE*)&expected, sizeof(expected))) identical = 0;
+			currentWorldPresentationMode = mode ? GAME_MODE_ENHANCED : GAME_MODE_CLASSIC;
+		}
+	}
+	currentWorldPresentationMode = savedMode;
+	return identical;
+}
+
+static UBYTE referenceFailureSmokeRowsMatch(void) {
+	enum { bytes = 4 * SCREEN_PLANES * GAME_WORLD_ROW_BYTES };
+	UBYTE* actual = AllocMem(2UL * bytes, MEMF_PUBLIC);
+	if (!actual) return 0;
+	UBYTE* expected = actual + bytes;
+	UBYTE identical = 1;
+	for (UBYTE age = 0; age < 30 && identical; age++) {
+		UBYTE size = aircraftFailureSmokeSize(age);
+		UBYTE phase = (UBYTE)(aircraftFailureSmokeVisualPhase(age) + age % 6);
+		UBYTE color = age & 15;
+		for (UBYTE position = 0; position < 16 && identical; position++) {
+			LONG worldX = position < 8 ? (LONG)position - 8 :
+				(LONG)GAME_WORLD_SCROLL_PAGE_BYTES * 8 - 8 + (position & 7);
+			WORD top = (position & 1) ? -1 : 1;
+			for (UWORD byte = 0; byte < bytes; byte++)
+				actual[byte] = expected[byte] = (UBYTE)(byte * 17 + age);
+			drawFailureSmokeRows(actual, worldX, top, size, age >= 12, phase, color);
+			for (UBYTE y = 0; y < size; y++)
+				for (UBYTE x = 0; x < size; x++)
+					if (age < 12 || ((x + y + phase) & 3))
+						plotAircraftFailureSmokePixel(expected, worldX + x,
+							(WORD)(top + y), color);
+			for (UWORD byte = 0; byte < bytes; byte++)
+				if (actual[byte] != expected[byte]) { identical = 0; break; }
+		}
+	}
+	FreeMem(actual, 2UL * bytes);
+	return identical;
+}
+
+static UBYTE referenceFailureSmokeEraseMatches(void) {
+	resetCpcRandomSequence(0x37A2);
+	UBYTE* actual = AllocMem(2UL * GAME_WORLD_BITMAP_BYTES, MEMF_PUBLIC);
+	if (!actual) return 0;
+	UBYTE* expected = actual + GAME_WORLD_BITMAP_BYTES;
+	UBYTE savedMode = currentWorldPresentationMode;
+	LONG bases[3] = { -2, GAME_WORLD_SCROLL_PAGE_BYTES * 8 - 2, -1 };
+	for (UWORD segment = 0; segment < HAR_LEVEL_SEGMENT_COUNT; segment++)
+		if (harLevelRoute[segment].terrainKind == HAR_TERRAIN_TOWN) {
+			bases[2] = harLevelRoute[segment].startColumn * 8 + 7;
+			break;
+		}
+	UBYTE identical = bases[2] >= 0;
+	static const UBYTE offsets[] = { 0, 7, 17, 35, 65, 95 };
+	static const WORD heights[] = { -1, 7, 63, 119, GAME_WORLD_HEIGHT - 2, GAME_WORLD_HEIGHT };
+	for (UBYTE mode = 0; mode < 2 && identical; mode++) {
+		currentWorldPresentationMode = mode ? GAME_MODE_ENHANCED : GAME_MODE_CLASSIC;
+		for (UBYTE scene = 0; scene < 3 && identical; scene++) {
+			resetAircraftFailureSmoke();
+			memset(actual, 0x5a, GAME_WORLD_BITMAP_BYTES);
+			for (UBYTE i = 0; i < AIRCRAFT_FAILURE_SMOKE_MAX; i++) {
+				AircraftFailureSmokeParticle* particle = &aircraftFailureSmoke[i];
+				particle->active = 1;
+				particle->age = (UBYTE)(i * 5);
+				particle->worldX = bases[scene] + offsets[i];
+				particle->y = heights[i];
+				/* Fresh whole columns are the independent background reference. */
+				for (LONG column = particle->worldX >> 3;
+					column <= (particle->worldX + 2) >> 3; column++)
+					renderRingWorldColumn(actual, column);
+			}
+			memcpy(expected, actual, GAME_WORLD_BITMAP_BYTES);
+			drawAircraftFailureSmoke(actual, 0);
+			UBYTE changed = 0;
+			for (ULONG byte = 0; byte < GAME_WORLD_BITMAP_BYTES; byte++)
+				if (actual[byte] != expected[byte]) { changed = 1; break; }
+			if (!changed) identical = 0;
+			eraseAircraftFailureSmokeFootprint(actual, 0);
+			for (ULONG byte = 0; byte < GAME_WORLD_BITMAP_BYTES; byte++)
+				if (actual[byte] != expected[byte]) { identical = 0; break; }
+			if (aircraftFailureSmokeFootprints[0].valid) identical = 0;
+		}
+	}
+	resetAircraftFailureSmoke();
+	currentWorldPresentationMode = savedMode;
+	FreeMem(actual, 2UL * GAME_WORLD_BITMAP_BYTES);
+	return identical;
+}
+
+static char visibleRingFailureInfo[180];
+static char* referenceAppendValue(char* out, ULONG value) {
+	char digits[10]; UBYTE count = 0;
+	do { digits[count++] = (char)('0' + value % 10); value /= 10; } while (value);
+	while (count) *out++ = digits[--count];
+	*out++ = ','; *out = 0; return out;
+}
+static UBYTE referenceVisibleRingColumnsMatch(void) {
+	memcpy(visibleRingFailureInfo, "allocation", 11);
+	resetCpcRandomSequence(0x37A2);
+	UBYTE* actual = AllocMem(2UL * GAME_WORLD_BITMAP_BYTES, MEMF_PUBLIC);
+	if (!actual) return 0;
+	UBYTE* expected = actual + GAME_WORLD_BITMAP_BYTES;
+	memcpy(visibleRingFailureInfo, "fixture", 8);
+	UBYTE savedMode = currentWorldPresentationMode;
+	LONG starts[3] = { 4, -1, -1 };
+	for (UWORD segment = 0; segment < HAR_LEVEL_SEGMENT_COUNT; segment++) {
+		if (harLevelRoute[segment].terrainKind == HAR_TERRAIN_TOWN && starts[1] < 0)
+			starts[1] = harLevelRoute[segment].startColumn + 4;
+		if (harLevelRoute[segment].terrainKind == HAR_TERRAIN_CPC_RANDOM_LAND && starts[2] < 0)
+			starts[2] = harLevelRoute[segment].startColumn + 4;
+	}
+	UBYTE identical = starts[1] >= 0 && starts[2] >= 0;
+	resetDestroyedTargets();
+	resetDestroyedShipColumns();
+	resetLandCraters();
+	resetRuntimeFlak();
+	for (UBYTE mode = 0; mode < 2 && identical; mode++) {
+		currentWorldPresentationMode = mode ? GAME_MODE_ENHANCED : GAME_MODE_CLASSIC;
+		for (UBYTE scene = 0; scene < 3 && identical; scene++) {
+			GameState probe;
+			memset(&probe, 0, sizeof(probe));
+			probe.takeoffState = TAKEOFF_STATE_AIRBORNE;
+			probe.speedLevel = GAME_SPEED_LEVEL_MAX;
+			initRingWorldBuffer(actual, (UWORD)starts[scene]);
+			memset(expected, 0, GAME_WORLD_BITMAP_BYTES);
+			LONG previousColumn = -1;
+			for (UWORD step = 0; step < 2 * GAME_WORLD_SCROLL_PAGE_BYTES * 8 && identical; step += 3) {
+				probe.scrollX = (UWORD)(starts[scene] * 8 + step);
+				serviceRingWorldStream(actual, &probe);
+				LONG left = scrollLeftWorldColumnForScroll(probe.scrollX);
+				if (left == previousColumn) continue;
+				previousColumn = left;
+				UWORD displayByte = displayByteOffsetForGameState(&probe);
+				static const UBYTE samples[] = { 2, GAME_FETCH_BYTES / 2, GAME_FETCH_BYTES - 1 };
+				for (UBYTE sample = 0; sample < sizeof(samples); sample++) {
+					LONG column = left + samples[sample];
+					renderRingWorldColumn(expected, column);
+					UWORD referenceByte = ringWorldTileXForColumn(column);
+					UWORD fetchedByte = displayByte + samples[sample];
+					if (fetchedByte >= GAME_WORLD_ROW_BYTES) { memcpy(visibleRingFailureInfo, "fetch bounds", 13); identical = 0; break; }
+					for (UWORD y = 0; y < GAME_WORLD_HEIGHT; y++)
+						for (UBYTE plane = 0; plane < GAME_WORLD_DISPLAY_PLANES; plane++) {
+							ULONG row = (ULONG)(y * SCREEN_PLANES + plane) * GAME_WORLD_ROW_BYTES;
+							if (identical && actual[row + fetchedByte] != expected[row + referenceByte]) {
+								char* out = visibleRingFailureInfo;
+								out = referenceAppendValue(out, mode); out = referenceAppendValue(out, scene);
+								out = referenceAppendValue(out, step); out = referenceAppendValue(out, column);
+								out = referenceAppendValue(out, y); out = referenceAppendValue(out, plane);
+								out = referenceAppendValue(out, actual[row + fetchedByte]);
+								out = referenceAppendValue(out, expected[row + referenceByte]);
+								out = referenceAppendValue(out, ringWorldLastStreamedColumn);
+								identical = 0;
+							}
+						}
+				}
+			}
+		}
+	}
+	currentWorldPresentationMode = savedMode;
+	FreeMem(actual, 2UL * GAME_WORLD_BITMAP_BYTES);
+	return identical;
+}
+
+static UBYTE referenceProjectileHardwareSpriteMatches(void) {
+	const UWORD* palette = (const UWORD*)gamePalette;
+	for (UBYTE pen = 0; pen < 16; pen++) {
+		UWORD expected = pen == 13 ? WINGMAN_SPRITE_DARK_RGB :
+			pen == 14 ? WINGMAN_SPRITE_MID_RGB :
+			pen == 15 ? WINGMAN_SPRITE_LIGHT_RGB : palette[16 + pen];
+		for (UBYTE active = 0; active < 2; active++)
+			if (projectileSpritePaletteWord(palette,
+				16 + projectileAttachedPenMap[pen], active) != expected) return 0;
+	}
+	/* Unattached seat/parachute, enemy/crash pair and Wingman retain RGB.
+	 * Channel 5 crash fragments recover their original colours when inactive. */
+	static const UBYTE preserved[] = {17, 18, 19, 21, 22, 23, 27};
+	for (UBYTE i = 0; i < sizeof(preserved); i++)
+		if (projectileSpritePaletteWord(palette, preserved[i], 1) !=
+			palette[preserved[i]]) return 0;
+	if (projectileSpritePaletteWord(palette, 25, 0) != palette[25] ||
+		projectileSpritePaletteWord(palette, 26, 0) != palette[26]) return 0;
+	for (UWORD tile = 0; tile < 256; tile++) {
+		for (UBYTE mono = 0; mono < 2; mono++) {
+			UWORD guarded[24];
+			for (UBYTE i = 0; i < 24; i++) guarded[i] = 0xa55a;
+			UWORD* sprite = guarded + 2;
+			buildProjectileHardwareSprite(sprite, (UBYTE)tile, mono, 17, 19);
+			if (guarded[0] != 0xa55a || guarded[1] != 0xa55a ||
+				guarded[22] != 0xa55a || guarded[23] != 0xa55a ||
+				sprite[18] || sprite[19] || (sprite[1] & HW_SPRITE_ATTACH_BIT)) return 0;
+			for (UBYTE row = 0; row < 8; row++) {
+				for (UBYTE x = 0; x < 16; x++) {
+					UBYTE source = x < 8 ? gameTilePixelColor((UBYTE)tile, x, row) : 0;
+					UBYTE expected = !source ? 0 :
+						(mono || source == GAME_COLOR_BLACK ? 1 : 2);
+					UWORD bit = 0x8000U >> x;
+					UBYTE actual = !!(sprite[2 + row * 2] & bit) |
+						(!!(sprite[3 + row * 2] & bit) << 1);
+					if (actual != expected) return 0;
+					if (actual && projectileSpritePaletteWord(palette, 24 + actual, 1) !=
+						palette[expected == 1 ? GAME_COLOR_BLACK : GAME_COLOR_YELLOW]) return 0;
+				}
+			}
+		}
+	}
+	return 1;
+}
+
+static UBYTE referenceRocketPlacementMatches(void) {
+	enum { bytes = 10 * SCREEN_PLANES * GAME_WORLD_ROW_BYTES };
+	UBYTE* actual = AllocMem(bytes * 2, MEMF_PUBLIC);
+	if (!actual) return 0;
+	UBYTE* expected = actual + bytes;
+	static RocketShotFootprint actualFootprint, expectedFootprint;
+	static const UBYTE tiles[] = {0, 53, 54, 55, 255};
+	UBYTE identical = 1;
+	for (UBYTE tile = 0; tile < sizeof(tiles); tile++) {
+		for (UBYTE position = 0; position < 18; position++) {
+			UWORD x = position < 16 ? 16 + position :
+				(GAME_WORLD_ROW_BYTES - 1) * 8 + (position == 17 ? 7 : 0);
+			UBYTE count = (x & 7) ? 2 : 1;
+			if ((x >> 3) + count > GAME_WORLD_ROW_BYTES) count = 1;
+			UBYTE placement = position & 1;
+			for (UBYTE mono = 0; mono < 2; mono++) {
+				for (UWORD i = 0; i < bytes; i++) actual[i] = expected[i] = (UBYTE)(i * 17 + 3);
+				memset(&actualFootprint, 0x55, sizeof(actualFootprint));
+				memset(&expectedFootprint, 0x55, sizeof(expectedFootprint));
+				expectedFootprint.byteX[placement] = x >> 3;
+				expectedFootprint.byteCount[placement] = count;
+				for (UBYTE row = 0; row < ROCKET_PIXEL_BOB_HEIGHT; row++) {
+					UBYTE* line = expected + (row + 1) * SCREEN_PLANES * GAME_WORLD_ROW_BYTES;
+					for (UBYTE plane = 0; plane < GAME_WORLD_DISPLAY_PLANES; plane++)
+						for (UBYTE byte = 0; byte < count; byte++)
+							expectedFootprint.background[placement][row][plane][byte] =
+								line[plane * GAME_WORLD_ROW_BYTES + (x >> 3) + byte];
+					for (UBYTE col = 0; col < 8 && x + col < GAME_WORLD_BUFFER_WIDTH; col++) {
+						UBYTE color = gameTilePixelColor(tiles[tile], col, row);
+						if (color == GAME_COLOR_SKY) continue;
+						UBYTE mapped = mono || color == GAME_COLOR_BLACK ? GAME_COLOR_BLACK : GAME_COLOR_YELLOW;
+						UBYTE bit = 0x80 >> ((x + col) & 7);
+						for (UBYTE plane = 0; plane < GAME_WORLD_DISPLAY_PLANES; plane++) {
+							UBYTE* target = line + plane * GAME_WORLD_ROW_BYTES + ((x + col) >> 3);
+							*target = (*target & ~bit) | ((mapped & (1 << plane)) ? bit : 0);
+						}
+					}
+				}
+				drawRocketShotPixelBobPlacement(actual, &actualFootprint, placement, x, 1, tiles[tile], mono);
+				if (!referenceBuffersEqual(actual, expected, bytes) ||
+					!referenceBuffersEqual((UBYTE*)&actualFootprint, (UBYTE*)&expectedFootprint,
+						sizeof(actualFootprint))) identical = 0;
+				{
+					/* Erase every tested alignment. Move the already-verified
+					 * second placement into a standalone erasure footprint. */
+					if (placement) {
+						actualFootprint.byteX[0] = actualFootprint.byteX[placement];
+						actualFootprint.byteCount[0] = actualFootprint.byteCount[placement];
+						memcpy(actualFootprint.background[0], actualFootprint.background[placement],
+							sizeof(actualFootprint.background[0]));
+					}
+					actualFootprint.valid = 1;
+					actualFootprint.placementCount = 1;
+					actualFootprint.y = 1;
+					eraseRocketPixelBobFootprint(actual, 0, &actualFootprint);
+					for (UWORD i = 0; i < bytes; i++)
+						if (actual[i] != (UBYTE)(i * 17 + 3)) identical = 0;
+					if (actualFootprint.valid || actualFootprint.placementCount) identical = 0;
+				}
+			}
+		}
+	}
+	FreeMem(actual, bytes * 2);
+	return identical;
+}
+
+/* Independent full-window reference: bypass both the candidate window and
+ * the cached sea-cell resolver so stale entries cannot validate themselves. */
+static UBYTE referenceWaveCandidatesMatch(GameState* game) {
+	ensureSeaWaveCandidates(game);
+	UBYTE count = 0;
+	LONG first = ((LONG)game->scrollX >> 3) - 2;
+	for (LONG col = first; col <= first + GAME_FETCH_BYTES + 5; col++) {
+		UWORD hash = ambienceHashForColumn(col);
+		WORD y = (WORD)(SEA_SURFACE_Y + 4 + (((hash >> 4) & 3) * 8));
+		ObjectCell cell;
+#if HAR_OBJECT_CELL_CACHE || HAR_DEBUG_OBJECT_SHADOW
+		if ((hash & 3) || !resolveObjectCellForWorldColumnTile(col, y >> 3, &cell) ||
+#else
+		if ((hash & 3) || !objectCellForWorldColumnTile(col, y >> 3, &cell) ||
+#endif
+			cell.id != HAR_OBJ_SEA)
+			continue;
+		if (count >= seaWaveCandidateCount || seaWaveCandidates[count].column != col ||
+			seaWaveCandidates[count].hash != hash || seaWaveCandidates[count].y != y)
+			return 0;
+		count++;
+	}
+	return count == seaWaveCandidateCount;
+}
+
 static void writeClassicContractResult(const char* result) {
 	BPTR file = Open((CONST_STRPTR)"DH1:classic_contract.txt", MODE_NEWFILE);
 	if (!file)
 		return;
 	Write(file, (APTR)result, (LONG)strlen(result));
+	struct Process* process = (struct Process*)FindTask(0);
+	struct CommandLineInterface* cli = process->pr_CLI ?
+		(struct CommandLineInterface*)BADDR(process->pr_CLI) : 0;
+	char info[80];
+	static const char label[] = "\ncli-default-stack-bytes,";
+	memcpy(info, label, sizeof(label) - 1);
+	/* DOS may run the command on a different stack from the shell task.
+	 * Report the configured CLI size, not task bounds as active headroom. */
+	char* out = referenceAppendValue(info + sizeof(label) - 1,
+		cli ? (ULONG)cli->cli_DefaultStack * 4 : 0);
+	*out++ = '\n';
+	Write(file, info, (LONG)(out - info));
 	Close(file);
 }
 
 static int runClassicGameplayContractTest(void) {
-	GameState classic;
-	GameState enhanced;
-	GameState highScoreTest;
-	GameState bombTest;
-	GameState wingmanBombTest;
-	GameState townCollisionTest;
-	WeaponState maverickTest;
+#if HAR_HEADLESS_CRASH_BOB_TEST_ONLY && HAR_CRASH_DEBRIS_BOBS
+	UBYTE crashMatched = referenceCrashDebrisBobsMatch();
+	writeClassicContractResult(crashMatched ? "PASS crash-bob-pixels-and-restoration" :
+		"FAIL crash-bob-pixels-and-restoration");
+	return crashMatched ? 0 : 1;
+#endif
+#if HAR_HEADLESS_PROJECTILE_SPRITE_TEST_ONLY
+	UBYTE spriteMatched = referenceProjectileHardwareSpriteMatches();
+#if HAR_HARDWARE_PLAYER_ROCKET
+	spriteMatched = spriteMatched && referenceHardwareProjectileEligibilityMatches();
+#endif
+	writeClassicContractResult(spriteMatched ? "PASS projectile-sprite-pixels-and-palette" :
+		"FAIL projectile-sprite-pixels-and-palette");
+	return spriteMatched ? 0 : 1;
+#endif
+#if HAR_HEADLESS_BOMB_ERASE_TEST_ONLY
+	UBYTE matched = referenceBombPlacementMatches();
+	writeClassicContractResult(matched ? "PASS bomb-draw-and-erase-reference" :
+		"FAIL bomb-draw-and-erase-reference");
+	return matched ? 0 : 1;
+#endif
+#if HAR_HEADLESS_POWERUP_DRIFT_TEST_ONLY
+	configureRuntimeLevelRoute(0, 0);
+	buildHarLevelObjectIndex();
+	UBYTE powerupMatched = referencePowerupDriftMatches();
+	if (!powerupMatched) {
+		writeClassicContractResult("FAIL powerup-motion-or-shift");
+		return 1;
+	}
+	powerupMatched = referencePowerupTransitionMatches();
+	writeClassicContractResult(powerupMatched ? "PASS powerup-drift-and-pixels" :
+		"FAIL powerup-drift-and-pixels");
+	return powerupMatched ? 0 : 1;
+#endif
+	/* Keep large test fixtures off the command stack so nested rendering
+	 * checks do not require an enlarged CLI stack. */
+	static GameState classic;
+	static GameState enhanced;
+	static GameState highScoreTest;
+	static GameState bombTest;
+	static GameState wingmanBombTest;
+	static GameState townCollisionTest;
+	static WeaponState maverickTest;
 	ULONG fuelFrames = 0;
 	UWORD bombMomentumFrames = 0;
 	UWORD bombDescentFrames = 0;
 	UWORD townSmokeCellsTested = 0;
 	UWORD tankPairsTested = 0;
 	UWORD failures = 0;
+	static char failureDetails[2048];
+	UWORD failureDetailsUsed = 5;
+	memcpy(failureDetails, "FAIL\n", 6);
 	memset(&classic, 0, sizeof(classic));
 	memset(&enhanced, 0, sizeof(enhanced));
 	memset(&highScoreTest, 0, sizeof(highScoreTest));
@@ -17581,9 +20558,520 @@ static int runClassicGameplayContractTest(void) {
 #define CONTRACT_CHECK(condition, name) do { \
 	if (!(condition)) { \
 		KPrintF("CLASSIC CONTRACT FAIL: " name "\n"); \
+		const char* detail = name; \
+		while (*detail && failureDetailsUsed + 2 < sizeof(failureDetails)) \
+			failureDetails[failureDetailsUsed++] = *detail++; \
+		if (failureDetailsUsed + 1 < sizeof(failureDetails)) \
+			failureDetails[failureDetailsUsed++] = '\n'; \
+		failureDetails[failureDetailsUsed] = 0; \
 		failures++; \
 	} \
 } while (0)
+	{
+		static const LONG queries[] = {-1, 0, 1, 37, 500, 996, 997,
+			1000, 65534, 65535, 65536, 65573, 131071};
+		UBYTE identical = 1;
+		resetLandCraters();
+		for (UBYTE phase = 0; phase < 4; phase++) {
+			if (phase == 1) {
+				/* Deliberately unordered history: the last insertion is not max. */
+				for (UBYTE index = 0; index < GAME_LAND_CRATER_MAX; index++)
+					if (!markLandCraterAtColumnRow((index * 37U) % 997U,
+						index % GAME_SEA_TOP_TILE_Y)) identical = 0;
+				if (markLandCraterAtColumnRow(65535, 0) ||
+					markLandCraterAtColumnRow(0, 0)) identical = 0;
+			} else if (phase == 2) resetLandCraters();
+			else if (phase == 3) {
+				if (!markLandCraterAtColumnRow(65535, 14) ||
+					!markLandCraterAtColumnRow(65536, 0)) identical = 0;
+			}
+			if (markLandCraterAtColumnRow(-1, 0) ||
+				markLandCraterAtColumnRow(500, -1) ||
+				markLandCraterAtColumnRow(500, GAME_SEA_TOP_TILE_Y)) identical = 0;
+			for (UWORD sample = 0; sample < 1010 + sizeof(queries) / sizeof(queries[0]); sample++) {
+				LONG col = sample < 1010 ? sample : queries[sample - 1010];
+				UWORD expectedMask = 0;
+				for (WORD row = -1; row < GAME_OBJECT_MAP_HEIGHT_TILES; row++) {
+					UBYTE expected = 0;
+					if (col >= 0 && row >= 0)
+						for (UBYTE index = 0; index < landCraterCount; index++)
+							if (landCraterColumns[index] == (UWORD)col &&
+								landCraterRows[index] == (UBYTE)row) expected = 1;
+					if (isLandCraterAtColumnRow(col, row) != expected) identical = 0;
+					if (expected && row < GAME_SEA_TOP_TILE_Y)
+						expectedMask |= (UWORD)(1U << row);
+				}
+				if (landCraterMaskForColumn(col) != expectedMask) identical = 0;
+			}
+		}
+		resetLandCraters();
+		CONTRACT_CHECK(identical, "Crater bounds match independent history scans, unordered/full insertion, aliases and reset");
+	}
+#if HAR_CRATER_SUCCESS_NOTIFY
+	{
+		LONG savedLeft = powerupBackgroundCacheLeft;
+		resetLandCraters();
+		powerupBackgroundCacheLeft = 0;
+		powerupBackgroundCacheDirty = 0;
+		ULONG revision = worldObjectRevision;
+		CONTRACT_CHECK(!markLandCraterAtColumnRow(-1, 0) &&
+			!markLandCraterAtColumnRow(0, -1) &&
+			!markLandCraterAtColumnRow(0, GAME_SEA_TOP_TILE_Y) &&
+			worldObjectRevision == revision && !powerupBackgroundCacheDirty &&
+			!landCraterCount, "Invalid crater requests preserve cache validity");
+		CONTRACT_CHECK(markLandCraterAtColumnRow(0, 0) &&
+			worldObjectRevision != revision && powerupBackgroundCacheDirty &&
+			isLandCraterAtColumnRow(0, 0), "Actual crater insertion invalidates background");
+		powerupBackgroundCacheDirty = 0;
+		revision = worldObjectRevision;
+		CONTRACT_CHECK(!markLandCraterAtColumnRow(0, 0) &&
+			worldObjectRevision == revision && !powerupBackgroundCacheDirty &&
+			landCraterCount == 1, "Duplicate crater preserves cache validity");
+		for (UWORD col = 1; col < GAME_LAND_CRATER_MAX; col++)
+			CONTRACT_CHECK(markLandCraterAtColumnRow(col, 0), "Crater capacity fixture fills");
+		powerupBackgroundCacheLeft = GAME_LAND_CRATER_MAX;
+		powerupBackgroundCacheDirty = 0;
+		revision = worldObjectRevision;
+		CONTRACT_CHECK(!markLandCraterAtColumnRow(GAME_LAND_CRATER_MAX, 0) &&
+			worldObjectRevision == revision && !powerupBackgroundCacheDirty &&
+			landCraterCount == GAME_LAND_CRATER_MAX &&
+			!isLandCraterAtColumnRow(GAME_LAND_CRATER_MAX, 0),
+			"Full crater history rejection preserves background and terrain");
+		resetLandCraters();
+		powerupBackgroundCacheLeft = savedLeft;
+	}
+#endif
+#if HAR_HEADLESS_CRATER_BOUND_TEST_ONLY
+	writeClassicContractResult(failures ? failureDetails :
+		(HAR_CRATER_SUCCESS_NOTIFY ? "PASS crater-bound-and-mutation-contract" : "PASS crater-column-bound-contract"));
+	return failures ? 1 : 0;
+#endif
+	{
+		resetRocketShotPixelBobFootprints();
+		CONTRACT_CHECK(rocketLastScreenYForUpdate(0, &classic) == -1,
+			"Empty missile update needs no raster wait");
+		classic.rocketShot.active = 1;
+		classic.rocketShot.x = SCREEN_WIDTH;
+		classic.rocketShot.y = 80;
+		CONTRACT_CHECK(rocketLastScreenYForUpdate(0, &classic) == -1,
+			"Right-offscreen rocket needs no new-row wait");
+		classic.rocketShot.x = -ROCKET_PIXEL_BOB_WIDTH;
+		CONTRACT_CHECK(rocketLastScreenYForUpdate(0, &classic) == -1,
+			"Left-offscreen rocket needs no new-row wait");
+		classic.rocketShot.x++;
+		CONTRACT_CHECK(rocketLastScreenYForUpdate(0, &classic) == 80,
+			"Partially visible rocket retains raster protection");
+		classic.rocketShot.y = GAME_WORLD_HEIGHT - ROCKET_PIXEL_BOB_HEIGHT;
+		CONTRACT_CHECK(rocketLastScreenYForUpdate(0, &classic) == classic.rocketShot.y,
+			"Bottommost drawable rocket retains raster protection");
+		classic.rocketShot.y++;
+		CONTRACT_CHECK(rocketLastScreenYForUpdate(0, &classic) == -1,
+			"Vertically rejected rocket needs no new-row wait");
+		classic.rocketShot.y = 90;
+		classic.crashTimer = 1;
+		classic.wingman.rocket = classic.rocketShot;
+		CONTRACT_CHECK(rocketLastScreenYForUpdate(0, &classic) == -1,
+			"Crash suppresses both friendly new-row waits");
+		classic.enemyMissile = classic.rocketShot;
+		classic.enemyMissile.y = 50;
+		CONTRACT_CHECK(rocketLastScreenYForUpdate(0, &classic) == 50,
+			"Enemy missile remains protected during player crash");
+		rocketShotFootprints[0].valid = 1;
+		rocketShotFootprints[0].y = 100;
+		CONTRACT_CHECK(rocketLastScreenYForUpdate(0, &classic) == 100,
+			"Old footprint remains protected after new rocket is suppressed");
+		CONTRACT_CHECK(rocketLastScreenYForUpdate(GAME_WORLD_BUFFER_COUNT, &classic) == -1,
+			"Invalid missile buffer requires no raster wait");
+		resetRocketShotPixelBobFootprints();
+		memset(&classic, 0, sizeof(classic));
+		classic.gameMode = GAME_MODE_CLASSIC;
+	}
+#if HAR_HEADLESS_ROCKET_WAIT_TEST_ONLY
+	writeClassicContractResult(failures ? failureDetails : "PASS rocket-wait-visibility-contract");
+	return failures ? 1 : 0;
+#endif
+	{
+		LONG savedLeft = powerupBackgroundCacheLeft;
+		resetRuntimeFlak();
+		powerupBackgroundCacheLeft = 0;
+		powerupBackgroundCacheDirty = 0;
+		ULONG revision = worldObjectRevision;
+		CONTRACT_CHECK(!addRuntimeFlak(-1, 5, 47) &&
+			!addRuntimeFlak(0, -1, 47) &&
+			!addRuntimeFlak(0, GAME_OBJECT_MAP_HEIGHT_TILES, 47) &&
+			!removeRuntimeFlakAt(0, 5), "Invalid or absent flak operations reject");
+		CONTRACT_CHECK(worldObjectRevision == revision &&
+			!powerupBackgroundCacheDirty && !runtimeFlakCount,
+			"Rejected flak operations retain cache validity and empty world");
+		CONTRACT_CHECK(addRuntimeFlak(0, 5, 47) &&
+			worldObjectRevision != revision && powerupBackgroundCacheDirty,
+			"Successful flak insertion invalidates background");
+		powerupBackgroundCacheDirty = 0;
+		revision = worldObjectRevision;
+		CONTRACT_CHECK(!addRuntimeFlak(0, 5, 53) && !removeRuntimeFlakAt(0, 6) &&
+			worldObjectRevision == revision && !powerupBackgroundCacheDirty &&
+			runtimeFlakCount == 1 && runtimeFlakTileAtColumnRow(0, 5) == 47,
+			"Duplicate insertion and wrong-row removal preserve flak and caches");
+		for (UWORD col = 1; col < GAME_RUNTIME_FLAK_MAX; col++)
+			CONTRACT_CHECK(addRuntimeFlak(col, 5, 47), "Flak capacity fixture fills");
+		revision = worldObjectRevision;
+		powerupBackgroundCacheLeft = GAME_RUNTIME_FLAK_MAX;
+		powerupBackgroundCacheDirty = 0;
+		CONTRACT_CHECK(!addRuntimeFlak(GAME_RUNTIME_FLAK_MAX, 5, 47) &&
+			worldObjectRevision == revision && !powerupBackgroundCacheDirty &&
+			runtimeFlakCount == GAME_RUNTIME_FLAK_MAX,
+			"Full flak list rejection preserves caches and count");
+		powerupBackgroundCacheLeft = 0;
+		CONTRACT_CHECK(removeRuntimeFlakAt(0, 5) &&
+			worldObjectRevision != revision && powerupBackgroundCacheDirty &&
+			!runtimeFlakTileAtColumnRow(0, 5) &&
+			runtimeFlakCount == GAME_RUNTIME_FLAK_MAX - 1,
+			"Successful flak removal invalidates background and consumes cell");
+		resetRuntimeFlak();
+		powerupBackgroundCacheLeft = savedLeft;
+	}
+#if HAR_HEADLESS_FLAK_MUTATION_TEST_ONLY
+	writeClassicContractResult(failures ? failureDetails : "PASS flak-mutation-cache-contract");
+	return failures ? 1 : 0;
+#endif
+	/* Exercise the actual freestanding memory routines, including odd
+	 * addresses and counts beyond the 68000 word-counter range. */
+	{
+		UBYTE identical = 1;
+		for (LONG col = -1; col <= GAME_LEVEL_WIDTH_TILES + 16; col++) {
+			UBYTE expected = 0;
+			for (UBYTE index = 0; index < HAR_LEVEL_OBJECT_COUNT; index++) {
+				if (harLevelObjects[index].column == col &&
+					harLevelObjects[index].id == HAR_OBJ_ENEMY_SHIP) expected = 1;
+			}
+			if (columnMayContainEnemyShip(col) != expected) identical = 0;
+		}
+		CONTRACT_CHECK(identical, "Enemy-ship candidate columns match independent full object scan");
+	}
+	{
+		/* Call the actual support routine, not a compiler-folded intrinsic. */
+		void* (*volatile setBytes)(void*, int, ULONG) = memset;
+		UBYTE* bytes = AllocMem(65548, MEMF_PUBLIC);
+		UBYTE identical = 1;
+		static const int colors[] = {0, 255, 0x123, -7};
+		CONTRACT_CHECK(bytes != 0, "Memory-fill reference buffer allocates");
+		if (bytes) {
+			for (UBYTE offset = 0; offset < 4; offset++) {
+				for (UBYTE color = 0; color < 4; color++) {
+					for (UWORD length = 0; length <= 65; length++) {
+						for (UWORD i = 0; i < 72; i++) bytes[i] = (UBYTE)(i * 17 + 3);
+						if (setBytes(bytes + offset, colors[color], length) != bytes + offset) identical = 0;
+						for (UWORD i = 0; i < 72; i++) {
+							UBYTE expected = i >= offset && i < offset + length ?
+								(UBYTE)colors[color] : (UBYTE)(i * 17 + 3);
+							if (bytes[i] != expected) identical = 0;
+						}
+					}
+				}
+				for (ULONG i = 0; i < 65548; i++) bytes[i] = (UBYTE)(i * 17 + 3);
+				setBytes(bytes + offset, 0x123, 65537);
+				for (ULONG i = 0; i < 65548; i++) {
+					UBYTE expected = i >= offset && i < offset + 65537UL ? 0x23 : (UBYTE)(i * 17 + 3);
+					if (bytes[i] != expected) identical = 0;
+				}
+			}
+			FreeMem(bytes, 65548);
+		}
+		CONTRACT_CHECK(identical, "Wide memory fill preserves bytes, boundaries, return value and long lengths");
+	}
+	{
+		void* (*volatile copyBytes)(void*, const void*, ULONG) = memcpy;
+		UBYTE* bytes = AllocMem(2UL * 65548, MEMF_PUBLIC);
+		UBYTE identical = 1;
+		CONTRACT_CHECK(bytes != 0, "Memory-copy reference buffers allocate");
+		if (bytes) {
+			UBYTE* source = bytes + 65548;
+			for (ULONG i = 0; i < 65548; i++) source[i] = (UBYTE)(i * 29 + (i >> 8));
+			for (UBYTE sourceOffset = 0; sourceOffset < 4; sourceOffset++) {
+				for (UBYTE destinationOffset = 0; destinationOffset < 4; destinationOffset++) {
+					for (UWORD length = 0; length <= 65; length++) {
+						for (UWORD i = 0; i < 72; i++) bytes[i] = (UBYTE)(i * 17 + 3);
+						if (copyBytes(bytes + destinationOffset, source + sourceOffset, length) !=
+							bytes + destinationOffset) identical = 0;
+						for (UWORD i = 0; i < 72; i++) {
+							UBYTE expected = i >= destinationOffset && i < destinationOffset + length ?
+								source[sourceOffset + i - destinationOffset] : (UBYTE)(i * 17 + 3);
+							if (bytes[i] != expected) identical = 0;
+						}
+					}
+					/* Long copies cover every destination alignment and both
+					 * parity paths; the short sweep covers all 16 combinations. */
+					if (sourceOffset != destinationOffset && sourceOffset != 0) continue;
+					for (ULONG i = 0; i < 65548; i++) bytes[i] = (UBYTE)(i * 17 + 3);
+					if (copyBytes(bytes + destinationOffset, source + sourceOffset, 65537) !=
+						bytes + destinationOffset) identical = 0;
+					for (ULONG i = 0; i < 65548; i++) {
+						UBYTE expected = i >= destinationOffset && i < destinationOffset + 65537UL ?
+							source[sourceOffset + i - destinationOffset] : (UBYTE)(i * 17 + 3);
+						if (bytes[i] != expected || source[i] != (UBYTE)(i * 29 + (i >> 8))) identical = 0;
+					}
+				}
+			}
+			FreeMem(bytes, 2UL * 65548);
+		}
+		CONTRACT_CHECK(identical, "Wide memory copy preserves source, destination bounds, return and long lengths");
+	}
+	UBYTE visibleRingOkay = referenceVisibleRingColumnsMatch();
+	if (!visibleRingOkay) {
+		const char* detail = visibleRingFailureInfo;
+		while (*detail && failureDetailsUsed + 2 < sizeof(failureDetails))
+			failureDetails[failureDetailsUsed++] = *detail++;
+		failureDetails[failureDetailsUsed++] = '\n';
+		failureDetails[failureDetailsUsed] = 0;
+	}
+	CONTRACT_CHECK(visibleRingOkay,
+		"Visible ring fetch matches fresh terrain through two periods in both modes");
+#if HAR_HEADLESS_CONTRACT_FAIL_FAST
+	if (failures) { writeClassicContractResult(failureDetails); return 1; }
+#endif
+	CONTRACT_CHECK(referenceFailureSmokeEraseMatches(),
+		"Sparse failure smoke erase restores fresh world at clipped edges and ring seams in both modes");
+	CONTRACT_CHECK(referenceFailureSmokeRowsMatch(),
+		"Batched smoke rows match the pixel renderer across ages, pens, shifts and ring seams");
+	CONTRACT_CHECK(referenceFailureSmokeCacheMatches(),
+		"Smoke terrain cache matches fresh columns, reuses hits and refreshes aliases, revisions and modes");
+	CONTRACT_CHECK(referencePowerupTransitionMatches(),
+		"Powerup vertical transitions match fresh background plus drawing at tile, screen and ring boundaries");
+#if HAR_MIRRORED_TILE_BATCH
+	CONTRACT_CHECK(referenceMirroredColumnRowsMatch(),
+		"Mirrored column batches match independent writes for all tile IDs, partial ranges and buffer edges in both modes");
+#endif
+	/* Verify the planar missile transform against the former pixel decoder. */
+	{
+		UBYTE identical = 1;
+		for (UWORD tile = 0; tile < 256; tile++) {
+			for (UBYTE row = 0; row < ROCKET_PIXEL_BOB_HEIGHT; row++) {
+				for (UBYTE mono = 0; mono < 2; mono++) {
+					UWORD expectedMask = 0, expected[4] = { 0, 0, 0, 0 };
+					for (UBYTE col = 0; col < ROCKET_PIXEL_BOB_WIDTH; col++) {
+						UBYTE color = gameTilePixelColor((UBYTE)tile, col, row);
+						if (color == GAME_COLOR_SKY) continue;
+						UBYTE mapped = mono || color == GAME_COLOR_BLACK ? GAME_COLOR_BLACK : GAME_COLOR_YELLOW;
+						UWORD bit = 0x8000 >> col;
+						expectedMask |= bit;
+						for (UBYTE plane = 0; plane < 4; plane++)
+							if (mapped & (1 << plane)) expected[plane] |= bit;
+					}
+					for (UBYTE shift = 0; shift < 8; shift++) {
+						UWORD actualMask, actual[4];
+						rocketRowMasks((UBYTE)tile, row, shift, mono, &actualMask, actual);
+						/* Check cached gameplay directions and keyed fallback against
+						 * the independent pixel decoder, including repeated shifts. */
+						if (tile == 0 || tile == 255 || (tile >= 53 && tile <= 56) ||
+							(tile >= 98 && tile <= 101)) {
+							const RocketRowShape* cached = rocketRowShape((UBYTE)tile, shift, mono);
+							if (cached->opaque[row] != (expectedMask >> shift) ||
+								cached->black[row] != (expected[3] >> shift)) identical = 0;
+						}
+						if (actualMask != (expectedMask >> shift)) identical = 0;
+						for (UBYTE plane = 0; plane < 4; plane++)
+							if (actual[plane] != (expected[plane] >> shift)) identical = 0;
+					}
+				}
+			}
+		}
+		CONTRACT_CHECK(identical, "Planar missile masks match original pixels for all tiles and shifts");
+	}
+	/* Compare the audio hot loop with the original generator, including wrap. */
+	{
+		static UBYTE expected[BOB_TILE_BYTES], saved[BOB_TILE_BYTES];
+		static const UBYTE kinds[] = {0, 1, 4, 5};
+		static const UBYTE sourceTiles[] = {40, 41, 51, 52};
+		UBYTE savedKind = bombImpactBobTileKind;
+		UBYTE identical = 1;
+		memcpy(saved, bombImpactBobTile, sizeof(saved));
+		for (UBYTE sample = 0; sample < 4; sample++) {
+			memset(expected, 0, sizeof(expected));
+			for (UBYTE row = 0; row < GAME_TILE_HEIGHT; row++) {
+				for (UBYTE col = 0; col < GAME_TILE_WIDTH; col++) {
+					UBYTE color = gameTilePixelColor(sourceTiles[sample], col, row);
+					if (color == GAME_COLOR_SKY) continue;
+					UBYTE bit = 0x80 >> col;
+					if (sample >= 2) color = GAME_COLOR_WHITE;
+					for (UBYTE plane = 0; plane < GAME_WORLD_DISPLAY_PLANES; plane++)
+						if (color & (1 << plane)) expected[row * 5 + plane] |= bit;
+					expected[row * 5 + 4] |= bit;
+				}
+			}
+			bombImpactBobTileKind = 0xff;
+			buildBombImpactBobTileIfNeeded(kinds[sample]);
+			if (!referenceBuffersEqual(expected, bombImpactBobTile, sizeof(expected))) identical = 0;
+		}
+		memcpy(bombImpactBobTile, saved, sizeof(saved));
+		bombImpactBobTileKind = savedKind;
+		CONTRACT_CHECK(identical, "Planar impact masks and colors match original per-pixel conversion");
+	}
+	CONTRACT_CHECK(referenceRocketPlacementMatches(),
+		"Missile compositor matches pixels and saved backgrounds across shifts and clipped edges");
+	CONTRACT_CHECK(referenceBombPlacementMatches(),
+		"Bomb compositor and erasure preserve pixels, both placements, clipped edges and saved backgrounds");
+	{
+		static UBYTE audioTest[ENGINE_BUFFER_BYTES];
+		UBYTE* savedBuffer = engineBuffer;
+		UWORD savedState = engineLfsr;
+		UWORD savedOffset = engineWriteOffset;
+		UBYTE identical = 1;
+		engineBuffer = audioTest;
+		static const UWORD startingOffsets[] = {0, ENGINE_BUFFER_BYTES - 18, ENGINE_BUFFER_BYTES - 17};
+		for (UBYTE placement = 0; placement < sizeof(startingOffsets) / sizeof(startingOffsets[0]); placement++) {
+		for (UBYTE speed = 0; speed <= GAME_SCROLL_SPEED_MAX_PIXELS; speed++) {
+			engineLfsr = 0xace1;
+			engineWriteOffset = startingOffsets[placement];
+			for (UWORD batch = 0; batch < 128; batch++) {
+				UWORD before = engineLfsr;
+				UWORD offset = engineWriteOffset;
+				mutateEngineBuffer(speed);
+				UWORD after = engineLfsr;
+				engineLfsr = before;
+				for (UWORD i = 0; i < ENGINE_MUTATE_BYTES; i++) {
+					if (audioTest[offset] != nextEngineNoiseByte(speed)) identical = 0;
+					if (++offset == ENGINE_BUFFER_BYTES) offset = 0;
+				}
+				if (engineLfsr != after || engineWriteOffset != offset) identical = 0;
+			}
+		}
+		}
+		for (UBYTE speed = 0; speed <= GAME_SCROLL_SPEED_MAX_PIXELS; speed++) {
+			engineLfsr = 0xace1;
+			prepareEngineBuffer(speed);
+			if (engineLfsr != 0xace1) identical = 0;
+			for (UWORD byte = 0; byte < ENGINE_BUFFER_BYTES; byte++)
+				if (audioTest[byte] != nextEngineNoiseByte(speed)) identical = 0;
+			UWORD expectedEnd = engineLfsr;
+			engineLfsr = 0xace1;
+			if (!consumePreparedEngineBuffer(speed) || engineLfsr != expectedEnd) identical = 0;
+			if (consumePreparedEngineBuffer(speed)) identical = 0;
+			prepareEngineBuffer(speed);
+			if (consumePreparedEngineBuffer(speed + 1)) identical = 0;
+			prepareEngineBuffer(speed);
+			engineLfsr ^= 1;
+			if (consumePreparedEngineBuffer(speed)) identical = 0;
+		}
+		engineBuffer = savedBuffer;
+		engineLfsr = savedState;
+		engineWriteOffset = savedOffset;
+		CONTRACT_CHECK(identical, "Engine generation/preparation preserves bytes, state and wrap");
+	}
+	{
+		const UBYTE* left[4] = { harCpcHarrierFlyingLeftPixels,
+			harCpcHarrierLandingLeftPixels, harCpcEnemyPlaneFlyingLeftPixels,
+			harCpcEnemyPlaneBrokenLeftPixels };
+		const UBYTE* right[4] = { harCpcHarrierFlyingRightPixels,
+			harCpcHarrierLandingRightPixels, harCpcEnemyPlaneFlyingRightPixels,
+			harCpcEnemyPlaneBrokenRightPixels };
+		static UWORD fast[2][PLAYER_SPRITE_WORDS];
+		static UWORD reference[2][PLAYER_SPRITE_WORDS];
+		static const UWORD emptyRows[PLAYER_SPRITE_HEIGHT] = {0};
+		static GameState ejectProbe;
+		memset(&ejectProbe, 0, sizeof(ejectProbe));
+		ejectProbe.ejectState = 1;
+		memset(attachedSpriteResidents, 0, sizeof(attachedSpriteResidents));
+		attachedSpriteResidentSkips = 0;
+		UBYTE identical = 1;
+		for (UBYTE pass = 0; pass < 2; pass++) {
+			for (UBYTE variant = 0; variant < 4; variant++) {
+				WORD x = pass ? 319 : -8;
+				WORD y = pass ? 255 : 0;
+				buildAttachedSpriteFromCpcPlusHalves(fast[0], fast[1],
+					PLAYER_SPRITE_HEIGHT, x, y, left[variant], right[variant]);
+				buildAttachedSpriteFromCpcPlusHalvesMapped(reference[0], reference[1],
+					PLAYER_SPRITE_HEIGHT, x, y, left[variant], right[variant], 0);
+				for (UBYTE half = 0; half < 2; half++)
+					for (UWORD word = 0; word < PLAYER_SPRITE_WORDS; word++)
+						if (fast[half][word] != reference[half][word]) identical = 0;
+				for (UBYTE action = 0; action < 6; action++) {
+					if (action == 0) {
+						hideHardwareSprite(fast[0]);
+						hideHardwareSprite(fast[1]);
+					} else if (action == 1) {
+						buildSpriteFromRows(fast[1], PLAYER_SPRITE_HEIGHT, 0, 0, emptyRows, emptyRows);
+					} else if (action == 2) {
+						buildPlayerCrashPartSprite(fast[0], 0, 0, 0);
+					} else if (action == 3) {
+						buildAttachedSpriteFromCpcPlusHalvesMapped(fast[0], fast[1], PLAYER_SPRITE_HEIGHT,
+							0, 0, left[(variant + 1) & 3], right[(variant + 1) & 3], 0);
+					} else if (action == 4) {
+						buildSpriteFromCpcPlusHalves(fast[0], PLAYER_SPRITE_HEIGHT, 0, 0,
+							left[variant], right[variant], cpcPlusPenToWingmanHardwareColor);
+					} else {
+						buildEjectSprite(fast[0], &ejectProbe);
+					}
+					buildAttachedSpriteFromCpcPlusHalves(fast[0], fast[1], PLAYER_SPRITE_HEIGHT,
+						x + action, y, left[variant], right[variant]);
+					buildAttachedSpriteFromCpcPlusHalvesMapped(reference[0], reference[1], PLAYER_SPRITE_HEIGHT,
+						x + action, y, left[variant], right[variant], 0);
+					if (!referenceBuffersEqual((UBYTE*)fast, (UBYTE*)reference, sizeof(fast))) identical = 0;
+				}
+			}
+		}
+		CONTRACT_CHECK(identical, "Cached aircraft sprite words match original conversion");
+		CONTRACT_CHECK(attachedSpriteResidentSkips > 0, "Unchanged attached sprites retain their payload while moving");
+		memset(attachedSpriteResidents, 0, sizeof(attachedSpriteResidents));
+	}
+	{
+		UBYTE savedPresentation = currentWorldPresentationMode;
+		currentWorldPresentationMode = GAME_MODE_CLASSIC;
+		const UBYTE* classicFacade = worldRenderTileData(64);
+		CONTRACT_CHECK(worldRenderTileData(GAME_TILE_COUNT) == gameTiles &&
+			worldRenderTileData(255) == gameTiles,
+			"Classic rejects Enhanced and invalid render ids");
+		currentWorldPresentationMode = GAME_MODE_ENHANCED;
+		CONTRACT_CHECK(worldRenderTileData(64) == classicFacade,
+			"Original facade source remains immutable across modes");
+		CONTRACT_CHECK(worldRenderTileData(GAME_TILE_COUNT) == enhancedTownTiles &&
+			worldRenderTileData(GAME_TILE_COUNT + ENHANCED_TOWN_TILE_COUNT - 1) ==
+				enhancedTownTiles + sizeof(enhancedTownTiles) - GAME_TILE_BYTES,
+			"Enhanced city first and last tiles resolve within bank");
+		CONTRACT_CHECK(worldRenderTileData(GAME_TILE_COUNT + ENHANCED_TOWN_TILE_COUNT) == gameTiles &&
+			worldRenderTileData(255) == gameTiles,
+			"Enhanced invalid render ids safely resolve to sky");
+		currentWorldPresentationMode = savedPresentation;
+	}
+	/* Compare the fixed-stride tile renderer with the previous generic path,
+	 * including original, Enhanced and invalid IDs, plus the bottom edge. */
+	{
+		UBYTE* optimized = (UBYTE*)AllocMem(GAME_WORLD_BITMAP_BYTES, MEMF_PUBLIC);
+		UBYTE* reference = (UBYTE*)AllocMem(GAME_WORLD_BITMAP_BYTES, MEMF_PUBLIC);
+		UBYTE savedPresentation = currentWorldPresentationMode;
+		CONTRACT_CHECK(optimized && reference, "World tile reference buffers allocate");
+		if (optimized && reference) {
+			for (UBYTE mode = GAME_MODE_CLASSIC; mode <= GAME_MODE_ENHANCED; mode++) {
+				currentWorldPresentationMode = mode;
+				memset(optimized, 0xa5, GAME_WORLD_BITMAP_BYTES);
+				memset(reference, 0xa5, GAME_WORLD_BITMAP_BYTES);
+				for (UWORD tile = 0; tile < 256; tile++) {
+					WORD x = tile % GAME_WORLD_ROW_BYTES;
+					WORD y = tile / GAME_WORLD_ROW_BYTES;
+					drawGameScrollTile(optimized, x, y, (UBYTE)tile);
+					drawGameTileWithStride(reference, GAME_WORLD_ROW_BYTES, x, y, (UBYTE)tile);
+				}
+				drawGameScrollTile(optimized, GAME_WORLD_ROW_BYTES - 1,
+					GAME_WORLD_HEIGHT / GAME_TILE_HEIGHT - 1, 42);
+				drawGameTileWithStride(reference, GAME_WORLD_ROW_BYTES,
+					GAME_WORLD_ROW_BYTES - 1, GAME_WORLD_HEIGHT / GAME_TILE_HEIGHT - 1, 42);
+				UBYTE identical = 1;
+				ULONG byte = 0;
+				for (UWORD row = 0; row < GAME_WORLD_HEIGHT; row++) {
+					for (UWORD plane = 0; plane < SCREEN_PLANES; plane++) {
+						for (UWORD x = 0; x < GAME_WORLD_ROW_BYTES; x++, byte++) {
+							UBYTE expected = plane < GAME_WORLD_DISPLAY_PLANES ? reference[byte] : 0xa5;
+							if (optimized[byte] != expected) identical = 0;
+						}
+					}
+				}
+				CONTRACT_CHECK(identical,
+					"Visible tile planes match reference; unused plane remains untouched");
+			}
+		}
+		currentWorldPresentationMode = savedPresentation;
+		if (optimized) FreeMem(optimized, GAME_WORLD_BITMAP_BYTES);
+		if (reference) FreeMem(reference, GAME_WORLD_BITMAP_BYTES);
+	}
 	/* A completed landing disables normal speed/throttle scrolling, but its
 	 * scripted 80-pixel carrier reposition still exposes ten new columns.
 	 * Those columns must continue to receive one-pixel-equivalent streaming
@@ -17629,6 +21117,19 @@ static int runClassicGameplayContractTest(void) {
 			CONTRACT_CHECK(referenceBuffersEqual(optimized, reference,
 				SCREEN_BITMAP_BYTES),
 				"Masked planar rectangle matches pixel reference");
+			for (UBYTE mode = 0; mode < 2; mode++) {
+				UBYTE outer = mode ? HUD_COLOR_SAFE : GAME_COLOR_RED;
+				memset(optimized, 0xa5, SCREEN_BITMAP_BYTES);
+				memset(reference, 0xa5, SCREEN_BITMAP_BYTES);
+				fillRect(optimized, 0, 30, SCREEN_WIDTH, 36, HUD_COLOR_BACKGROUND);
+				drawHudStatusPanel(optimized, outer);
+				referenceFillRect(reference, 0, 30, SCREEN_WIDTH, 36, HUD_COLOR_BACKGROUND);
+				referenceFillRect(reference, 42, 31, 236, 35, outer);
+				referenceFillRect(reference, 44, 33, 232, 32, HUD_COLOR_VALUE);
+				referenceFillRect(reference, 46, 35, 228, 28, HUD_COLOR_BACKGROUND);
+				CONTRACT_CHECK(referenceBuffersEqual(optimized, reference, SCREEN_BITMAP_BYTES),
+					"HUD border strips match nested rectangles without touching surrounding pixels");
+			}
 
 			drawCharStyled(optimized, 44, 42, 'G', FONT_STYLE_CPC_HUD, 0);
 			referenceDrawCharStyled(reference, 44, 42, 'G',
@@ -17740,7 +21241,487 @@ static int runClassicGameplayContractTest(void) {
 	 * and destroying either half must consume just one destruction slot while
 	 * hiding both columns. */
 	resetCpcRandomSequence(0x37A2);
+	{
+		UBYTE identical = 1;
+		RenderColumn expected;
+		resetRuntimeFlak();
+		bobEraseColumn(0);
+		bobEraseColumn(1);
+		failureSmokeEraseColumn(0);
+		ULONG builds = bobEraseColumnBuilds;
+		CONTRACT_CHECK(addRuntimeFlak(64, 5, 47), "Bob cache distant flak inserts");
+		bobEraseColumn(0);
+		bobEraseColumn(1);
+#if HAR_LOCAL_BOB_ERASE_CACHE
+		CONTRACT_CHECK(bobEraseColumnBuilds == builds, "Distant mutation retains both bob background columns");
+#endif
+		CONTRACT_CHECK(addRuntimeFlak(0, 5, 47), "Bob cache local flak inserts");
+		const RenderColumn* actual = bobEraseColumn(0);
+		buildWorldTileColumn(0, &expected);
+		if (expected.tile[5] != 47 || !referenceBuffersEqual((const UBYTE*)actual,
+			(const UBYTE*)&expected, sizeof(expected))) identical = 0;
+		if (!referenceBuffersEqual((const UBYTE*)failureSmokeEraseColumn(0), (const UBYTE*)&expected, sizeof(expected))) identical = 0;
+		CONTRACT_CHECK(addRuntimeFlak(GAME_RUNTIME_FLAK_LOOKUP_SIZE, 5, 47),
+			"Bob cache flak slot replacement inserts");
+		actual = bobEraseColumn(0);
+		buildWorldTileColumn(0, &expected);
+		if (expected.tile[5] == 47 || !referenceBuffersEqual((const UBYTE*)actual,
+			(const UBYTE*)&expected, sizeof(expected))) identical = 0;
+		if (!referenceBuffersEqual((const UBYTE*)failureSmokeEraseColumn(0), (const UBYTE*)&expected, sizeof(expected))) identical = 0;
+		CONTRACT_CHECK(markShipWreckSmokeAtColumnRow(0, 18, GAME_SHIP_WRECK_SMOKE_TILE_A),
+			"Bob cache persistent smoke inserts");
+		actual = bobEraseColumn(0);
+		buildWorldTileColumn(0, &expected);
+		if (!referenceBuffersEqual((const UBYTE*)actual, (const UBYTE*)&expected,
+			sizeof(expected))) identical = 0;
+		if (!referenceBuffersEqual((const UBYTE*)failureSmokeEraseColumn(0), (const UBYTE*)&expected, sizeof(expected))) identical = 0;
+		CONTRACT_CHECK(identical, "Bob and failure smoke backgrounds match live flak replacement and persistent smoke");
+		resetRuntimeFlak();
+		resetDestroyedShipColumns();
+	}
+	{
+		RenderColumn expected;
+		UBYTE identical = 1;
+		UBYTE savedMode = currentWorldPresentationMode;
+		memset(bobEraseColumns, 0, sizeof(bobEraseColumns));
+		for (UBYTE mode = 0; mode < 2; mode++) {
+			currentWorldPresentationMode = mode ? GAME_MODE_ENHANCED : GAME_MODE_CLASSIC;
+			for (UWORD segment = 0; segment < HAR_LEVEL_SEGMENT_COUNT; segment++) {
+				for (WORD offset = -1; offset <= 2; offset++) {
+					LONG col = harLevelRoute[segment].startColumn + offset;
+					buildWorldTileColumn(col, &expected);
+					const RenderColumn* actual = bobEraseColumn(col);
+					if (!referenceBuffersEqual((const UBYTE*)actual, (const UBYTE*)&expected,
+						sizeof(expected))) identical = 0;
+					ULONG builds = bobEraseColumnBuilds;
+					bobEraseColumn(col);
+					if (bobEraseColumnBuilds != builds) identical = 0;
+					/* Revision and presentation changes must force fresh world data. */
+					worldObjectsReset();
+					bobEraseColumn(col);
+					if (bobEraseColumnBuilds != builds + 1) identical = 0;
+					currentWorldPresentationMode = mode ? GAME_MODE_CLASSIC : GAME_MODE_ENHANCED;
+					buildWorldTileColumn(col, &expected);
+					actual = bobEraseColumn(col);
+					if (bobEraseColumnBuilds != builds + 2 ||
+						!referenceBuffersEqual((const UBYTE*)actual, (const UBYTE*)&expected,
+							sizeof(expected))) identical = 0;
+					currentWorldPresentationMode = mode ? GAME_MODE_ENHANCED : GAME_MODE_CLASSIC;
+				}
+			}
+		}
+		currentWorldPresentationMode = savedMode;
+		memset(bobEraseColumns, 0, sizeof(bobEraseColumns));
+		CONTRACT_CHECK(identical, "Bob erase columns match fresh world data, reuse hits and invalidate revision/mode changes");
+	}
+	{
+		/* Independent old full-column repaint versus the one-row crater path.
+		 * Compare the entire bitmap after multiple real terrain mutations. */
+		UBYTE* actual = AllocMem(2UL * GAME_WORLD_BITMAP_BYTES, MEMF_PUBLIC);
+		UBYTE identical = actual != 0;
+		UBYTE savedMode = currentWorldPresentationMode;
+		if (actual) {
+			UBYTE* expected = actual + GAME_WORLD_BITMAP_BYTES;
+			memset(actual, 0x55, 2UL * GAME_WORLD_BITMAP_BYTES);
+			for (UBYTE mode = 0; mode < 2; mode++) {
+				currentWorldPresentationMode = mode ? GAME_MODE_ENHANCED : GAME_MODE_CLASSIC;
+				UBYTE samples = 0, duplicateSeen = 0, singleSeen = 0;
+				for (LONG col = 0; col < currentGameLevelWidthTiles && samples < 8; col += 37) {
+					const LevelSegmentDef* segment = levelSegmentForWorldColumn(col);
+					if (!segment || segment->terrainKind != HAR_TERRAIN_CPC_RANDOM_LAND) continue;
+					WORD row = terrainYForWorldColumn(col, segment, segment->terrainKind);
+					if (row < 0 || row >= GAME_SEA_TOP_TILE_Y) continue;
+					resetLandCraters();
+					ObjectCell cell;
+					if (!objectCellForWorldColumnTile(col, row, &cell) || cell.id != HAR_OBJ_LAND) continue;
+					renderRingWorldColumn(actual, col);
+					renderRingWorldColumn(expected, col);
+					if (!markLandCraterAtColumnRow(col, row)) identical = 0;
+					bobCompositorErase(actual, col, row, 1);
+					renderRingWorldColumn(expected, col);
+					RenderColumn rebuilt;
+					buildWorldTileColumn(col, &rebuilt);
+					if (rebuilt.tile[row] != GAME_LAND_CRATER_TILE) identical = 0;
+					if (ringWorldTileXForColumn(col) < GAME_WORLD_BUFFER_MARGIN_TILES + GAME_FETCH_BYTES)
+						duplicateSeen = 1;
+					else singleSeen = 1;
+					samples++;
+				}
+				if (samples != 8 || !duplicateSeen || !singleSeen ||
+					!referenceBuffersEqual(actual, expected, GAME_WORLD_BITMAP_BYTES)) identical = 0;
+			}
+			FreeMem(actual, 2UL * GAME_WORLD_BITMAP_BYTES);
+		}
+		resetLandCraters();
+		currentWorldPresentationMode = savedMode;
+		CONTRACT_CHECK(identical, "Single-row crater repaint matches full columns in both modes and ring placements");
+	}
+	{
+		static const LONG columns[] = {-1, 0, 1, 256, 257, 258, 514, 1542,
+			1543, 65535, 65536, 65793};
+		UBYTE identical = 1;
+		resetLandCraters();
+		for (UBYTE phase = 0; phase < 3; phase++) {
+			if (phase == 1) {
+				for (UBYTE index = 0; index < GAME_LAND_CRATER_MAX; index++)
+					if (!markLandCraterAtColumnRow((index / 15) * 257L, index % 15)) identical = 0;
+				if (landCraterCount != GAME_LAND_CRATER_MAX) identical = 0;
+			} else if (phase == 2) resetLandCraters();
+			for (UBYTE sample = 0; sample < sizeof(columns) / sizeof(columns[0]); sample++) {
+				UWORD mask = landCraterMaskForColumn(columns[sample]);
+				for (WORD row = 0; row < GAME_OBJECT_MAP_HEIGHT_TILES; row++, mask >>= 1)
+					if ((mask & 1) != isLandCraterAtColumnRow(columns[sample], row)) identical = 0;
+			}
+		}
+		CONTRACT_CHECK(identical, "Crater column masks match original row queries at full capacity, boundaries and reset");
+	}
+	{
+		RenderColumn cloudColumn;
+		UBYTE claimed[GAME_OBJECT_MAP_HEIGHT_TILES];
+		UBYTE identical = 1;
+		for (LONG col = -1; col <= currentGameLevelWidthTiles; col++) {
+			for (UBYTE pattern = 0; pattern < 2; pattern++) {
+				for (UBYTE row = 0; row < GAME_OBJECT_MAP_HEIGHT_TILES; row++) {
+					claimed[row] = pattern && ((col + row) & 1);
+					cloudColumn.tile[row] = claimed[row] || row >= GAME_SEA_TOP_TILE_Y ? 0x55 : 0;
+				}
+				applyWorldColumnClouds(col, &cloudColumn, claimed);
+				for (UBYTE row = 0; row < GAME_OBJECT_MAP_HEIGHT_TILES; row++) {
+					UBYTE expected = claimed[row] || row >= GAME_SEA_TOP_TILE_Y ?
+						0x55 : cpcCloudTileAtColumnRow(col, row);
+					if (cloudColumn.tile[row] != expected) identical = 0;
+				}
+			}
+		}
+		CONTRACT_CHECK(identical, "Bulk cloud columns match every original row query with terrain precedence");
+	}
+	/* Check the fast vertical rejection against an independent object scan
+	 * at each friendly ship's horizontal edges and throughout screen height. */
+	{
+		static GameState probe;
+		memset(&probe, 0, sizeof(probe));
+		buildHarLevelObjectIndex();
+		UBYTE identical = 1;
+		static const WORD offsets[] = {-1, 0, 11, 12};
+		for (UBYTE ship = 0; ship < harOwnFrigateCount; ship++) {
+			for (UBYTE edge = 0; edge < 4; edge++) {
+				LONG col = harLevelObjects[harOwnFrigateIndex[ship]].column + offsets[edge];
+				probe.scrollX = col < 0 ? 0 : col * 8;
+				WORD x = col < 0 ? -8 : 0;
+				for (WORD y = -1; y <= HUD_TOP; y++) {
+					UBYTE expected = 0;
+					if (y >= 0 && y < HUD_TOP) {
+						for (UBYTE i = 0; i < HAR_LEVEL_OBJECT_COUNT; i++) {
+							const LevelObjectDef* object = &harLevelObjects[i];
+							if (object->id != HAR_OBJ_OWN_FRIGATE || object->rowMode != HAR_ROW_ABSOLUTE ||
+								(y >> 3) < object->row - 1 || (y >> 3) > object->row + 1) continue;
+							if (object->flags & HAR_OBJECT_FLAG_NATIVE_CARRIER) {
+								if (col >= object->column && col < object->column + 12) expected = 1;
+							} else if (col == object->column) expected = 1;
+						}
+					}
+					if (ownFrigateCellNearWorldPoint(&probe, x, y, 0, 0, 0) != expected) identical = 0;
+				}
+			}
+		}
+		CONTRACT_CHECK(identical, "Frigate height rejection matches full object scan at every pixel height");
+	}
+	/* Flak changes one cell; compare row restoration with the former full
+	 * column path, including masked objects and both physical ring copies. */
+	{
+		UBYTE* patched = AllocMem(GAME_WORLD_BITMAP_BYTES, MEMF_PUBLIC);
+		UBYTE* full = AllocMem(GAME_WORLD_BITMAP_BYTES, MEMF_PUBLIC);
+		UBYTE savedMode = currentWorldPresentationMode;
+		UBYTE identical = 1;
+		CONTRACT_CHECK(patched && full, "Flak removal reference buffers allocate");
+		if (patched && full) {
+			static const LONG columns[] = {0, 8, 63, 64};
+			static const WORD rows[] = {5, 12, 18, 14};
+			for (UBYTE mode = 0; mode < 2; mode++) {
+				currentWorldPresentationMode = mode ? GAME_MODE_ENHANCED : GAME_MODE_CLASSIC;
+				for (UBYTE sample = 0; sample < 8; sample++) {
+					LONG col = sample < 4 ? columns[sample] :
+						harLevelRoute[(sample - 4) % HAR_LEVEL_SEGMENT_COUNT].startColumn + 3;
+					WORD row = rows[sample & 3];
+					resetRuntimeFlak();
+					CONTRACT_CHECK(addRuntimeFlak(col, row, 47), "Flak removal reference inserts cell");
+					memset(patched, 0x5a, GAME_WORLD_BITMAP_BYTES);
+					renderRingWorldColumn(patched, col);
+					memcpy(full, patched, GAME_WORLD_BITMAP_BYTES);
+					CONTRACT_CHECK(removeRuntimeFlakAt(col, row), "Flak removal reference consumes cell");
+					bobCompositorErase(patched, col, row, 1);
+					renderRingWorldColumn(full, col);
+					if (!referenceBuffersEqual(patched, full, GAME_WORLD_BITMAP_BYTES)) identical = 0;
+				}
+			}
+		}
+		CONTRACT_CHECK(identical, "Single-cell flak restoration matches full column in both graphics modes");
+		currentWorldPresentationMode = savedMode;
+		resetRuntimeFlak();
+		if (patched) FreeMem(patched, GAME_WORLD_BITMAP_BYTES);
+		if (full) FreeMem(full, GAME_WORLD_BITMAP_BYTES);
+	}
+	{
+		UBYTE* patched = (UBYTE*)AllocMem(GAME_WORLD_BITMAP_BYTES, MEMF_PUBLIC);
+		UBYTE* full = (UBYTE*)AllocMem(GAME_WORLD_BITMAP_BYTES, MEMF_PUBLIC);
+		UBYTE savedParked = carrierParkedWingmanVisible;
+		CONTRACT_CHECK(patched && full, "Carrier transition reference buffers allocate");
+		if (patched && full) {
+			memset(patched, 0x5a, GAME_WORLD_BITMAP_BYTES);
+			carrierParkedWingmanVisible = 1;
+			for (LONG col = 8; col < 8 + WORLD_RENDER_CARRIER_WIDTH_TILES; col++)
+				renderRingWorldColumn(patched, col);
+			memcpy(full, patched, GAME_WORLD_BITMAP_BYTES);
+			carrierParkedWingmanVisible = 0;
+			UBYTE* buffers[] = { patched };
+			dirtyRedrawNativeCarrierAt(buffers, 8);
+			for (LONG col = 8; col < 8 + WORLD_RENDER_CARRIER_WIDTH_TILES; col++)
+				renderRingWorldColumn(full, col);
+			UBYTE identical = 1;
+			for (ULONG byte = 0; byte < GAME_WORLD_BITMAP_BYTES; byte++) {
+				if (patched[byte] != full[byte]) { identical = 0; break; }
+			}
+			CONTRACT_CHECK(identical, "Carrier aircraft removal matches complete redraw byte for byte");
+		}
+		carrierParkedWingmanVisible = savedParked;
+		if (patched) FreeMem(patched, GAME_WORLD_BITMAP_BYTES);
+		if (full) FreeMem(full, GAME_WORLD_BITMAP_BYTES);
+	}
 	resetDestroyedTargets();
+	for (UWORD segment = 1; segment < sizeof(harLevelRoute) / sizeof(harLevelRoute[0]); segment++)
+		CONTRACT_CHECK(harLevelRoute[segment].startColumn > harLevelRoute[segment - 1].endColumn,
+			"Cached route lookup segments remain disjoint");
+	/* Cached cosmetic queries must follow live world mutations, including
+	 * reuse of a direct-mapped slot by a different world column. */
+	{
+		resetRuntimeFlak();
+		resetDestroyedShipColumns();
+		ObjectCell aircraftCell;
+		UBYTE sameCells = 1;
+		for (LONG col = -1; col < currentGameLevelWidthTiles; col += 17) {
+			for (WORD row = -1; row <= GAME_OBJECT_MAP_HEIGHT_TILES; row++) {
+				ObjectCell reference;
+				UBYTE expected = townBlockCellAtWorldColumnRow(col, row, &reference) ||
+					objectCellForWorldColumnTile(col, row, &reference);
+				for (UBYTE pass = 0; pass < 2; pass++) {
+					UBYTE actual = aircraftObjectCell(col, row, &aircraftCell);
+					if (actual != expected || (actual &&
+						(aircraftCell.id != reference.id || aircraftCell.tile != reference.tile ||
+						 aircraftCell.flags != reference.flags || aircraftCell.hp != reference.hp)))
+						sameCells = 0;
+				}
+			}
+		}
+		CONTRACT_CHECK(sameCells, "Aircraft cache matches facade and base resolver across route");
+		CONTRACT_CHECK(aircraftObjectCell(0, 18, &aircraftCell) && aircraftCell.id == HAR_OBJ_SEA,
+			"Aircraft cache begins with sea");
+		CONTRACT_CHECK(seaWaveCellIsSea(0, 18), "Wave cache starts on sea");
+		(void)powerupBackgroundColumns(0);
+		ULONG rebuildsBeforeDistantFlak = powerupBackgroundRebuilds;
+		CONTRACT_CHECK(addRuntimeFlak(64, 18, 47), "Distant flak test inserts");
+		(void)powerupBackgroundColumns(0);
+		CONTRACT_CHECK(powerupBackgroundRebuilds == rebuildsBeforeDistantFlak,
+			"Distant flak does not rebuild powerup background");
+		CONTRACT_CHECK(removeRuntimeFlakAt(64, 18), "Distant flak test removes");
+		(void)powerupBackgroundColumns(0);
+		CONTRACT_CHECK(powerupBackgroundRebuilds == rebuildsBeforeDistantFlak,
+			"Distant flak removal does not rebuild powerup background");
+		CONTRACT_CHECK(addRuntimeFlak(1, 18, 47), "Right background column flak inserts");
+		CONTRACT_CHECK(powerupBackgroundColumns(0)[1].tile[18] == 47 &&
+			powerupBackgroundRebuilds == rebuildsBeforeDistantFlak + 1,
+			"Right background column invalidates and displays local flak");
+		CONTRACT_CHECK(removeRuntimeFlakAt(1, 18), "Right background column flak removes");
+		(void)powerupBackgroundColumns(0);
+		CONTRACT_CHECK(addRuntimeFlak(0, 18, 47), "Flak slot replacement primes local column");
+		CONTRACT_CHECK(powerupBackgroundColumns(0)[0].tile[18] == 47,
+			"Flak slot replacement primes cached background");
+		CONTRACT_CHECK(addRuntimeFlak(GAME_RUNTIME_FLAK_LOOKUP_SIZE, 18, 47),
+			"Flak slot replacement inserts colliding distant column");
+		CONTRACT_CHECK(powerupBackgroundColumns(0)[0].tile[18] == seaTileForColumn(0, 18),
+			"Replaced flak slot invalidates the former local column");
+		resetRuntimeFlak();
+		CONTRACT_CHECK(addRuntimeFlak(0, 18, 47), "Wave cache flak test inserts");
+		CONTRACT_CHECK(!seaWaveCellIsSea(0, 18), "Wave cache sees added flak");
+		CONTRACT_CHECK(aircraftObjectCell(0, 18, &aircraftCell) && aircraftCell.id == HAR_OBJ_FLAK,
+			"Aircraft cache sees inserted flak");
+		CONTRACT_CHECK(powerupBackgroundColumns(0)[0].tile[18] == 47,
+			"Powerup background cache sees added flak");
+		(void)seaWaveCellIsSea(64, 18);
+		CONTRACT_CHECK(!seaWaveCellIsSea(0, 18), "Wave cache checks slot identity");
+		CONTRACT_CHECK(removeRuntimeFlakAt(0, 18), "Wave cache flak test removes");
+		CONTRACT_CHECK(seaWaveCellIsSea(0, 18), "Wave cache sees removed flak");
+		CONTRACT_CHECK(aircraftObjectCell(0, 18, &aircraftCell) && aircraftCell.id == HAR_OBJ_SEA,
+			"Aircraft cache sees removed flak");
+		{
+			RenderColumn fresh;
+			buildWorldTileColumn(0, &fresh);
+			const RenderColumn* cached = powerupBackgroundColumns(0);
+			UBYTE identical = 1;
+			for (UWORD row = 0; row < GAME_OBJECT_MAP_HEIGHT_TILES; row++)
+				if (cached[0].tile[row] != fresh.tile[row]) identical = 0;
+			CONTRACT_CHECK(identical, "Powerup background matches rebuilt world after removal");
+		}
+		CONTRACT_CHECK(markShipWreckSmokeAtColumnRow(0, 18, GAME_SHIP_WRECK_SMOKE_TILE_A),
+			"Wave cache smoke test inserts");
+		CONTRACT_CHECK(!seaWaveCellIsSea(0, 18), "Wave cache sees persistent smoke");
+		CONTRACT_CHECK(aircraftObjectCell(0, 18, &aircraftCell) && aircraftCell.id == HAR_OBJ_SMOKE,
+			"Aircraft cache sees persistent smoke");
+		resetDestroyedShipColumns();
+		CONTRACT_CHECK(seaWaveCellIsSea(0, 18), "Wave cache sees reset smoke");
+	}
+	/* Retaining wave pixels must match erasing/drawing the complete list,
+	 * including animation, incoming/outgoing waves and the physical ring seam. */
+	{
+		UBYTE* partial = AllocMem(GAME_WORLD_BITMAP_BYTES, MEMF_ANY);
+		UBYTE* full = AllocMem(GAME_WORLD_BITMAP_BYTES, MEMF_ANY);
+		static SeaWaveFootprint partialFootprints[SEA_WAVE_MAX], fullFootprints[SEA_WAVE_MAX];
+		GameState waveTest;
+		ULONG savedFrame = frameCounter;
+		memset(&waveTest, 0, sizeof(waveTest));
+		waveTest.takeoffState = TAKEOFF_STATE_READY;
+		CONTRACT_CHECK(partial && full, "Wave redraw reference buffers allocate");
+		UBYTE identical = 1;
+		UWORD retainedFrames = 0;
+		if (partial && full) {
+			for (UBYTE scene = 0; scene < 2; scene++) {
+				memset(partial, 0x55, GAME_WORLD_BITMAP_BYTES);
+				memset(full, 0x55, GAME_WORLD_BITMAP_BYTES);
+				memset(partialFootprints, 0, sizeof(partialFootprints));
+				memset(fullFootprints, 0, sizeof(fullFootprints));
+				for (UBYTE step = 0; step < 48; step++) {
+					waveTest.scrollX = (scene ? (GAME_WORLD_SCROLL_PAGE_BYTES - 8) * 8 : 0) + step * 3;
+					frameCounter = step;
+					memcpy(seaWaveFootprints[0], partialFootprints, sizeof(partialFootprints));
+					UBYTE keep = retainSeaWavesForRedraw(partial, 0, &waveTest);
+					if (keep) retainedFrames++;
+					drawSeaWavesFrom(partial, 0, &waveTest, keep);
+					memcpy(partialFootprints, seaWaveFootprints[0], sizeof(partialFootprints));
+					memcpy(seaWaveFootprints[0], fullFootprints, sizeof(fullFootprints));
+					eraseSeaWaves(full, 0);
+					drawSeaWavesFrom(full, 0, &waveTest, 0);
+					memcpy(fullFootprints, seaWaveFootprints[0], sizeof(fullFootprints));
+					ULONG waveOffset = (ULONG)SEA_SURFACE_Y * SCREEN_PLANES * GAME_WORLD_ROW_BYTES;
+					ULONG waveBytes = (4 + 24 + SEA_WAVE_HEIGHT) * SCREEN_PLANES * GAME_WORLD_ROW_BYTES;
+					if (!referenceBuffersEqual(partial + waveOffset, full + waveOffset, waveBytes)) identical = 0;
+				}
+				/* Exercise the phase-only writer directly against independent
+				 * erase/draw, including all four phases at both ring positions. */
+				for (UBYTE phase = 0; phase < 4; phase++) {
+					frameCounter = (ULONG)phase * SEA_WAVE_PHASE_FRAMES;
+					memcpy(seaWaveFootprints[0], partialFootprints, sizeof(partialFootprints));
+					updateSeaWavePhasesInPlace(partial, 0);
+					memcpy(partialFootprints, seaWaveFootprints[0], sizeof(partialFootprints));
+					memcpy(seaWaveFootprints[0], fullFootprints, sizeof(fullFootprints));
+					eraseSeaWaves(full, 0);
+					drawSeaWavesFrom(full, 0, &waveTest, 0);
+					memcpy(fullFootprints, seaWaveFootprints[0], sizeof(fullFootprints));
+					if (!referenceBuffersEqual(partial, full, GAME_WORLD_BITMAP_BYTES)) identical = 0;
+				}
+				if (!referenceBuffersEqual(partial, full, GAME_WORLD_BITMAP_BYTES)) identical = 0;
+			}
+		}
+		CONTRACT_CHECK(identical, "Retained wave pixels match full redraw across phases and ring seam");
+		CONTRACT_CHECK(retainedFrames > 0, "Wave redraw reference exercises retained pixels");
+		CONTRACT_CHECK(seaWaveShiftRetentions > 0, "Wave redraw reference retains waves after outgoing head");
+		memset(seaWaveFootprints[0], 0, sizeof(partialFootprints));
+		frameCounter = savedFrame;
+		if (partial) FreeMem(partial, GAME_WORLD_BITMAP_BYTES);
+		if (full) FreeMem(full, GAME_WORLD_BITMAP_BYTES);
+	}
+	/* Incremental candidate selection must retain the original ordered waves. */
+	{
+		GameState waveTest;
+		memset(&waveTest, 0, sizeof(waveTest));
+		UBYTE identical = 1;
+		/* Jumps between route sections; forward and backward pixel steps
+		 * cover reuse, partial window overlap, coast edges and ring seams. */
+		for (UWORD segment = 0; segment < HAR_LEVEL_SEGMENT_COUNT; segment++) {
+			for (WORD offset = -24; offset <= 96; offset += 3) {
+				LONG x = harLevelRoute[segment].startColumn * 8 + offset;
+				waveTest.scrollX = x < 0 ? 0 : x;
+				if (!referenceWaveCandidatesMatch(&waveTest)) identical = 0;
+			}
+			for (WORD offset = 96; offset >= 0; offset -= 7) {
+				waveTest.scrollX = harLevelRoute[segment].startColumn * 8 + offset;
+				if (!referenceWaveCandidatesMatch(&waveTest)) identical = 0;
+			}
+		}
+		waveTest.scrollX = 0;
+		ensureSeaWaveCandidates(&waveTest);
+		CONTRACT_CHECK(seaWaveCandidateCount != 0, "Wave mutation test has a candidate");
+		if (seaWaveCandidateCount) {
+			LONG col = seaWaveCandidates[0].column;
+			WORD row = seaWaveCandidates[0].y >> 3;
+			CONTRACT_CHECK(addRuntimeFlak(col, row, 47), "Wave candidate flak inserts");
+			if (!referenceWaveCandidatesMatch(&waveTest)) identical = 0;
+			CONTRACT_CHECK(addRuntimeFlak(col + GAME_RUNTIME_FLAK_LOOKUP_SIZE, row, 47),
+				"Wave candidate flak slot replaces");
+			if (!referenceWaveCandidatesMatch(&waveTest)) identical = 0;
+			resetRuntimeFlak();
+			ensureSeaWaveCandidates(&waveTest);
+#if HAR_LOCAL_SEA_CANDIDATES
+			ULONG oldSeaRevision = seaClassificationRevision;
+#endif
+			CONTRACT_CHECK(addRuntimeFlak(col, 3, 47), "Wave test inserts sky flak");
+#if HAR_LOCAL_SEA_CANDIDATES
+			CONTRACT_CHECK(seaClassificationRevision == oldSeaRevision,
+				"Sky flak preserves sea classification revision");
+#endif
+			if (!referenceWaveCandidatesMatch(&waveTest)) identical = 0;
+			CONTRACT_CHECK(addRuntimeFlak(col, row, 47), "Wave test replaces sky flak with sea flak");
+			if (!referenceWaveCandidatesMatch(&waveTest)) identical = 0;
+			pruneRuntimeFlakBehindColumn(col + 1);
+			if (!referenceWaveCandidatesMatch(&waveTest)) identical = 0;
+			resetRuntimeFlak();
+			CONTRACT_CHECK(addRuntimeFlak(col, row, 47), "Wave test primes sea slot for sky replacement");
+			if (!referenceWaveCandidatesMatch(&waveTest)) identical = 0;
+			CONTRACT_CHECK(addRuntimeFlak(col + GAME_RUNTIME_FLAK_LOOKUP_SIZE, 3, 47),
+				"Distant sky flak replaces a sea-row lookup slot");
+			if (!referenceWaveCandidatesMatch(&waveTest)) identical = 0;
+			resetRuntimeFlak();
+			markShipWreckSmokeAtColumnRow(col, row, GAME_SHIP_WRECK_SMOKE_TILE_A);
+			if (!referenceWaveCandidatesMatch(&waveTest)) identical = 0;
+			resetDestroyedShipColumns();
+			if (!referenceWaveCandidatesMatch(&waveTest)) identical = 0;
+		}
+		CONTRACT_CHECK(identical, "Incremental waves match full scan across route, reverse motion and mutations");
+	}
+	/* Bulk smoke composition must retain the exact single-cell priority,
+	 * including overlaps and rows already claimed by a higher-priority item. */
+	{
+		UBYTE identical = 1;
+		resetDestroyedShipColumns();
+		for (UWORD segment = 0; segment < HAR_LEVEL_SEGMENT_COUNT; segment++) {
+			LONG col = harLevelRoute[segment].startColumn;
+			for (WORD row = 0; row < GAME_OBJECT_MAP_HEIGHT_TILES; row++) {
+				if (harLevelRoute[segment].terrainKind == HAR_TERRAIN_TOWN)
+					markTownHitSmokeAtColumnRow(col, row, CPC_TOWN_SMOKE_A);
+				if ((row % 4) == 0)
+					markShipWreckSmokeAtColumnRow(col, row, GAME_SHIP_WRECK_SMOKE_TILE_B);
+			}
+			for (WORD offset = -1; offset <= 1; offset++) {
+				for (UBYTE pass = 0; pass < 3; pass++) {
+					RenderColumn expected, actual;
+					UBYTE expectedClaims[GAME_OBJECT_MAP_HEIGHT_TILES];
+					UBYTE actualClaims[GAME_OBJECT_MAP_HEIGHT_TILES];
+					for (WORD row = 0; row < GAME_OBJECT_MAP_HEIGHT_TILES; row++) {
+						expected.tile[row] = actual.tile[row] = (UBYTE)(row + 1);
+						expectedClaims[row] = actualClaims[row] = (UBYTE)((row + pass) % 3);
+						UBYTE tile = persistentHitSmokeTileAtColumnRow(col + offset, row);
+						if (tile && expectedClaims[row] < 2) {
+							expected.tile[row] = tile;
+							expectedClaims[row] = 2;
+						}
+					}
+					applyWorldColumnSmoke(col + offset, &actual, actualClaims);
+					for (WORD row = 0; row < GAME_OBJECT_MAP_HEIGHT_TILES; row++)
+						if (actual.tile[row] != expected.tile[row] || actualClaims[row] != expectedClaims[row]) identical = 0;
+				}
+			}
+			resetDestroyedShipColumns();
+		}
+		CONTRACT_CHECK(identical, "Bulk smoke preserves per-cell priorities at route boundaries");
+	}
 	for (UWORD index = 0; index + 1 < cpcLandProceduralLength; index++) {
 		if (cpcLandProceduralTarget(index) != CPC_LAND_TARGET_TANK_FRONT)
 			continue;
@@ -17760,6 +21741,61 @@ static int runClassicGameplayContractTest(void) {
 		tankPairsTested++;
 	}
 	CONTRACT_CHECK(tankPairsTested > 0, "Fixed test seed generates tank pair");
+	{
+		UBYTE* actual = AllocMem(2UL * GAME_WORLD_BITMAP_BYTES, MEMF_PUBLIC);
+		UBYTE identical = actual != 0;
+		UBYTE savedMode = currentWorldPresentationMode;
+		if (actual) {
+			UBYTE* expected = actual + GAME_WORLD_BITMAP_BYTES;
+			UBYTE* buffers[1] = {actual};
+			memset(actual, 0x55, 2UL * GAME_WORLD_BITMAP_BYTES);
+			for (UBYTE mode = 0; mode < 2; mode++) {
+				currentWorldPresentationMode = mode ? GAME_MODE_ENHANCED : GAME_MODE_CLASSIC;
+				UBYTE tested = 0, placements = 0;
+#if HAR_DESTROYED_TARGET_ROWS
+				ULONG modeRepairStart = destroyedTargetRowRepairs;
+#endif
+				for (UWORD local = 0; local < cpcLandProceduralLength; local++) {
+					UBYTE kind = cpcLandProceduralTarget(local);
+					if (!kind || (tested & (1 << kind))) continue;
+					LONG hitColumn = CPC_LAND_PROCEDURAL_WORLD_START + local;
+					LONG anchor = groundTargetAnchorColumn(hitColumn);
+					UBYTE count = groundTargetIsTwoColumnTank(anchor) ? 2 : 1;
+					WORD row = landSurfaceYForWorldColumn(anchor) - 1;
+					resetDestroyedTargets();
+					resetDestroyedShipColumns();
+					for (UBYTE col = 0; col < count; col++) {
+						renderRingWorldColumn(actual, anchor + col);
+						renderRingWorldColumn(expected, anchor + col);
+						placements |= ringWorldTileXForColumn(anchor + col) <
+							GAME_WORLD_BUFFER_MARGIN_TILES + GAME_FETCH_BYTES ? 1 : 2;
+					}
+#if HAR_DESTROYED_TARGET_ROWS
+					ULONG repairsBefore = destroyedTargetRowRepairs;
+					dirtyRedrawGroundTarget(buffers, hitColumn);
+					if (destroyedTargetRowRepairs != repairsBefore ||
+						!referenceBuffersEqual(actual, expected, GAME_WORLD_BITMAP_BYTES)) identical = 0;
+#endif
+					markTargetDestroyedAtColumn(hitColumn);
+					addCpcHitSmokeAtColumnRow(hitColumn, row);
+					dirtyRedrawGroundTarget(buffers, hitColumn);
+					for (UBYTE col = 0; col < count; col++)
+						renderRingWorldColumn(expected, anchor + col);
+					if (!referenceBuffersEqual(actual, expected, GAME_WORLD_BITMAP_BYTES)) identical = 0;
+					tested |= 1 << kind;
+				}
+				if (tested != 0x3e || placements != 3) identical = 0;
+#if HAR_DESTROYED_TARGET_ROWS
+				if (destroyedTargetRowRepairs == modeRepairStart) identical = 0;
+#endif
+			}
+			FreeMem(actual, 2UL * GAME_WORLD_BITMAP_BYTES);
+		}
+		resetDestroyedTargets();
+		resetDestroyedShipColumns();
+		currentWorldPresentationMode = savedMode;
+		CONTRACT_CHECK(identical, "Compact target repaint matches full columns for every target, tank half, mode and ring placement");
+	}
 	CONTRACT_CHECK(attractDemoWatchdogAction(
 		ATTRACT_DEMO_WATCHDOG_CRASH_FRAMES - 1, 0) ==
 		ATTRACT_DEMO_WATCHDOG_NONE, "Attract watchdog waits before crash");
@@ -18102,6 +22138,60 @@ static int runClassicGameplayContractTest(void) {
 	resetCpcTownBlockTable();
 	generateCpcTownBlockTable();
 	resetDestroyedShipColumns();
+	{
+		UBYTE* actual = AllocMem(2UL * GAME_WORLD_BITMAP_BYTES, MEMF_PUBLIC);
+		UBYTE identical = actual != 0;
+		UBYTE savedMode = currentWorldPresentationMode;
+		if (actual) {
+			UBYTE* expected = actual + GAME_WORLD_BITMAP_BYTES;
+			UBYTE* buffers[1] = {actual};
+			memset(actual, 0x55, 2UL * GAME_WORLD_BITMAP_BYTES);
+			for (UBYTE mode = 0; mode < 2; mode++) {
+				UBYTE tested[HAR_CPC_TOWN_BLOCK_COUNT] = {0};
+				UBYTE placements = 0, smokePatterns = 0;
+				UWORD cases = 0;
+				currentWorldPresentationMode = mode ? GAME_MODE_ENHANCED : GAME_MODE_CLASSIC;
+				for (LONG col = 411; col <= 610; col++) {
+					const LevelSegmentDef* segment = levelSegmentForWorldColumn(col);
+					if (!segment || segment->terrainKind != HAR_TERRAIN_TOWN) continue;
+					UBYTE kind = cpcTownProceduralBlockId((UWORD)(col - segment->startColumn));
+					if (kind >= HAR_CPC_TOWN_BLOCK_COUNT) continue;
+					for (UBYTE localRow = 0; localRow < HAR_CPC_TOWN_BLOCK_HEIGHT; localRow++) {
+						WORD row = CPC_TOWN_TERRAIN_ROW - 3 + localRow;
+						ObjectCell cell;
+						if (tested[kind] & (1 << localRow)) continue;
+						resetDestroyedShipColumns();
+						if (!townBlockCellAtWorldColumnRow(col, row, &cell)) continue;
+						resetRuntimeFlak();
+						/* The generic sky probe used by smoke creation does not
+						 * classify facades. Occupy the upper cell on alternate
+						 * samples to exercise the one-row smoke path explicitly. */
+						if (cases & 1) addRuntimeFlak(col, row - 1, 57);
+						renderRingWorldColumn(actual, col);
+						renderRingWorldColumn(expected, col);
+						addCpcTownHitSmokeAtColumnRow(col, row);
+						smokePatterns |= townHitSmokeTileAtColumnRow(col, row - 1) ? 1 : 2;
+						dirtyRedrawWorldTileIfSmoke(buffers, col, row);
+						dirtyRedrawWorldTileIfSmoke(buffers, col, row - 1);
+						renderRingWorldColumn(expected, col);
+						if (!referenceBuffersEqual(actual, expected, GAME_WORLD_BITMAP_BYTES)) identical = 0;
+						placements |= ringWorldTileXForColumn(col) <
+							GAME_WORLD_BUFFER_MARGIN_TILES + GAME_FETCH_BYTES ? 1 : 2;
+						tested[kind] |= 1 << localRow;
+						cases++;
+					}
+				}
+				CONTRACT_CHECK(cases > 0, "Town repaint samples generated facades");
+				CONTRACT_CHECK(placements == 3, "Town repaint covers both ring placements");
+				CONTRACT_CHECK(smokePatterns == 3, "Town repaint covers one and two smoke rows");
+			}
+			FreeMem(actual, 2UL * GAME_WORLD_BITMAP_BYTES);
+		}
+		resetDestroyedShipColumns();
+		currentWorldPresentationMode = savedMode;
+		CONTRACT_CHECK(identical, "Local town hit repaint matches full bitmap in both modes, smoke patterns and ring placements");
+		resetRuntimeFlak();
+	}
 	for (LONG column = 411; column <= 610 && townSmokeCellsTested < 32;
 		column++) {
 		for (WORD row = 0; row < GAME_OBJECT_MAP_HEIGHT_TILES; row++) {
@@ -18152,10 +22242,93 @@ static int runClassicGameplayContractTest(void) {
 		shipWreckSmokeTileAtColumnRow(151, 10) ==
 			GAME_SHIP_WRECK_SMOKE_TILE_B,
 		"Persistent target smoke exceeds old 24-cell capacity");
+	{
+		UBYTE identical = 1;
+		static const LONG columns[] = {-1, 0, 1, 119, 120, 151, 152, 255,
+			256, 257, 376, 407, 511, 65535, 65536, 65537};
+		for (UBYTE phase = 0; phase < 3; phase++) {
+			if (phase == 1) {
+				resetDestroyedShipColumns();
+				markShipWreckSmokeAtColumnRow(0, 0, GAME_SHIP_WRECK_SMOKE_TILE_A);
+				markShipWreckSmokeAtColumnRow(256, 1, GAME_SHIP_WRECK_SMOKE_TILE_B);
+				markShipWreckSmokeAtColumnRow(65535, 24, GAME_SHIP_WRECK_SMOKE_TILE_A);
+			} else if (phase == 2) resetDestroyedShipColumns();
+			for (UBYTE sample = 0; sample < sizeof(columns) / sizeof(columns[0]); sample++) {
+				LONG col = columns[sample];
+				for (WORD row = -1; row <= GAME_OBJECT_MAP_HEIGHT_TILES; row++) {
+					UBYTE expected = 0;
+					if (col >= 0 && row >= 0) {
+						for (UBYTE index = 0; index < shipWreckSmokeCount; index++) {
+							if (shipWreckSmokeColumns[index] == (UWORD)col &&
+								shipWreckSmokeRows[index] == (UBYTE)row) {
+								expected = shipWreckSmokeTiles[index];
+								break;
+							}
+						}
+					}
+					if (shipWreckSmokeTileAtColumnRow(col, row) != expected) identical = 0;
+				}
+			}
+		}
+		CONTRACT_CHECK(identical, "Smoke membership filter matches raw list through collisions, boundaries, capacity and reset");
+	}
 
+#if HAR_OBJECT_CELL_CACHE && HAR_OBJECT_CELL_CACHE_VERIFY
+	{
+		/* Warm both sides of target mutations and deliberately recycle slots.
+		 * Every cache hit is compared with the uncached resolver above. */
+		static const LONG columns[] = {0, 1, 64, 65, 65536, 65537,
+			CPC_LAND_PROCEDURAL_WORLD_START + 20,
+			CPC_LAND_PROCEDURAL_WORLD_START + 21};
+		ObjectCell cell;
+		for (UBYTE phase = 0; phase < 4; phase++) {
+			if (phase == 0 || phase == 3) {
+				resetDestroyedTargets();
+				resetDestroyedShipColumns();
+				resetLandCraters();
+				resetRuntimeFlak();
+			} else {
+				markShipWreckSmokeAtColumnRow(0, 2, GAME_SHIP_WRECK_SMOKE_TILE_A);
+				markTargetDestroyedAtColumn(CPC_LAND_PROCEDURAL_WORLD_START + 21);
+				markLandCraterAtColumnRow(CPC_LAND_PROCEDURAL_WORLD_START + 20, 14);
+				if (phase == 1) addRuntimeFlak(65, 4, 53);
+				else removeRuntimeFlakAt(65, 4);
+			}
+			for (UBYTE sample = 0; sample < sizeof(columns) / sizeof(columns[0]); sample++)
+				for (WORD row = 0; row < GAME_OBJECT_MAP_HEIGHT_TILES; row++) {
+					objectCellForWorldColumnTile(columns[sample], row, &cell);
+					objectCellForWorldColumnTile(columns[sample], row, &cell);
+				}
+		}
+		CONTRACT_CHECK(objectCacheStats[0] > 0 && objectCacheStats[2] == 0,
+			"Active object cache matches uncached cells through mutations, resets and slot reuse");
+	}
+#endif
+#if HAR_RENDER_COLUMN_CACHE && HAR_RENDER_COLUMN_CACHE_VERIFY
+	CONTRACT_CHECK(renderColumnCacheStats[0] > 0 && renderColumnCacheStats[2] == 0,
+		"Retained render columns and navigation metadata match full rebuilds");
+#endif
+#if HAR_LOCAL_AIRCRAFT_CACHE && HAR_LOCAL_AIRCRAFT_CACHE_VERIFY
+	{
+		ObjectCell cell;
+		for (UWORD segment = 0; segment < HAR_LEVEL_SEGMENT_COUNT; segment++) {
+			LONG column = harLevelRoute[segment].startColumn + 2;
+			for (UBYTE phase = 0; phase < 3; phase++) {
+				if (phase == 1) markTownHitSmokeAtColumnRow(column, 11, CPC_TOWN_SMOKE_B);
+				if (phase == 2) resetDestroyedShipColumns();
+				for (WORD row = 0; row < GAME_OBJECT_MAP_HEIGHT_TILES; row++) {
+					aircraftObjectCell(column, row, &cell);
+					aircraftObjectCell(column, row, &cell);
+				}
+			}
+		}
+		CONTRACT_CHECK(aircraftCacheStats[0] > 0 && aircraftCacheStats[2] == 0,
+			"Local aircraft cache preserves facade and base collision cells");
+	}
+#endif
 	if (failures) {
 		KPrintF("CLASSIC CONTRACT: %ld failure(s)\n", (LONG)failures);
-		writeClassicContractResult("FAIL\n");
+		writeClassicContractResult(failureDetails);
 		return 20;
 	}
 	KPrintF("CLASSIC CONTRACT PASS: fuel=%ld frames, GameState=%ld bytes\n",
@@ -18190,7 +22363,7 @@ static void applyPlayerFlakDamage(GameState* game) {
 		return;
 
 	UBYTE threshold = flakDamageThresholdForGame(game);
-#if HAR_HEADLESS_AUTOPLAY
+#if HAR_HEADLESS_AUTOPLAY && !HAR_HEADLESS_DAMAGE_EXERCISE
 	/* A full-route performance/parity run audits every flak contact but must
 	 * not turn the synthetic pilot into a zero-armour actor.  Leaving armour
 	 * at zero while startAircraftFailure() is compiled as a no-op created an
@@ -18213,7 +22386,7 @@ static void applyPlayerFlakDamage(GameState* game) {
 }
 
 static void startPlayerCrashWithSfx(GameState* game, WORD x, WORD y, UBYTE sfxId) {
-#if HAR_HEADLESS_AUTOPLAY
+#if HAR_HEADLESS_AUTOPLAY && !HAR_HEADLESS_DAMAGE_EXERCISE
 	/* Performance runs must cover the complete map. Collision detection still
 	 * executes, but the synthetic pilot is invulnerable so one terrain contact
 	 * cannot turn the remaining samples into a stationary game-over screen. */
@@ -18227,6 +22400,10 @@ static void startPlayerCrashWithSfx(GameState* game, WORD x, WORD y, UBYTE sfxId
 		return;
 	telemetryLogGameEvent(TELEMETRY_GAME_EVENT_PLAYER_CRASH, sfxId,
 		(UWORD)(((LONG)game->scrollX + x) >> 3), game, (UWORD)y);
+#if HAR_HEADLESS_DAMAGE_EXERCISE
+	if (!headlessDamageStats[DAMAGE_CRASH_FRAME])
+		headlessDamageStats[DAMAGE_CRASH_FRAME] = frameCounter;
+#endif
 
 	game->armour = 0;
 	game->crashTimer = PLAYER_CRASH_FRAMES;
@@ -18433,7 +22610,15 @@ static UBYTE updateGameCollisions(GameState* game, UBYTE** worldBuffers,
 	UBYTE enemyChanged = 0;
 	LONG collisionWorldColumn;
 	WORD collisionTileY;
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+	ULONG collisionSubStart = perfReadRasterClock();
+#endif
 	UBYTE objectCollision = playerObjectMapCollision(game, &collisionWorldColumn, &collisionTileY);
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+	ULONG collisionSubNow = perfReadRasterClock();
+	perfStageLines[16] += (collisionSubNow - collisionSubStart) & 0x00ffffffUL;
+	collisionSubStart = collisionSubNow;
+#endif
 	if (objectCollision != PLAYER_OBJECT_COLLISION_SMOKE)
 		game->smokeDamageContact = 0;
 
@@ -18447,12 +22632,17 @@ static UBYTE updateGameCollisions(GameState* game, UBYTE** worldBuffers,
 		}
 	}
 
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+	collisionSubNow = perfReadRasterClock();
+	perfStageLines[17] += (collisionSubNow - collisionSubStart) & 0x00ffffffUL;
+	collisionSubStart = collisionSubNow;
+#endif
 	if (objectCollision == PLAYER_OBJECT_COLLISION_FATAL) {
 		telemetryLogRenderEvent(6, objectCollision, (UWORD)((game->scrollX + game->playerX) >> 3), game->scrollX, (UWORD)game->playerY);
 		telemetryLogGameEvent(TELEMETRY_GAME_EVENT_PLAYER_COLLISION,
 			objectCollision, (UWORD)collisionWorldColumn, game,
 			(UWORD)collisionTileY);
-#if HAR_HEADLESS_AUTOPLAY
+#if HAR_HEADLESS_AUTOPLAY && !HAR_HEADLESS_DAMAGE_EXERCISE
 		/* Keep collision detection and its telemetry active, but let the
 		 * invulnerable route driver continue.  Returning here every frame left
 		 * the driver embedded in one cell and made a renderer test look like a
@@ -18474,13 +22664,17 @@ static UBYTE updateGameCollisions(GameState* game, UBYTE** worldBuffers,
 		 * so consume the runtime flak explicitly and reconstruct whatever
 		 * belongs underneath it (plain sky or a cloud tile). */
 		if (removeRuntimeFlakAt(collisionWorldColumn, collisionTileY))
-			dirtyRedrawWorldColumn(worldBuffers, collisionWorldColumn);
+			bobCompositorErase(worldBuffers[0], collisionWorldColumn, collisionTileY, 1);
 		*hudChanged = 1;
 		if (game->crashTimer) {
 			*weaponChanged = 1;
 			return enemyChanged;
 		}
 	}
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+	collisionSubNow = perfReadRasterClock();
+	perfStageLines[18] += (collisionSubNow - collisionSubStart) & 0x00ffffffUL;
+#endif
 	if (objectCollision == PLAYER_OBJECT_COLLISION_SMOKE) {
 		/* A hardware sprite can overlap the persistent smoke for several
 		 * frames. CPC's object-map drawing naturally debounced that contact;
@@ -18717,12 +22911,247 @@ static void updateEnemySprite(UWORD* enemySprite, UWORD* enemyAttachSprite,
 	}
 }
 
+#if HAR_HARDWARE_PLAYER_ROCKET
+static UBYTE hardwarePlayerRocketEligible(const GameState* game) {
+	const WeaponState* rocket = &game->rocketShot;
+	if (game->gameOver || game->ejectState ||
+		!rocketPixelBobVisible(rocket, game->crashTimer) ||
+		rocket->x < 0 || rocket->x + ROCKET_PIXEL_BOB_WIDTH > SCREEN_WIDTH)
+		return 0;
+	/* Sprite 4 would cover sprite 6 and all playfield BOBs, unlike the old
+	 * compositing order. Reject their bounding boxes conservatively. */
+	if (game->wingman.active && rectsOverlap(rocket->x, rocket->y, 8, 8,
+		wingmanScreenX(game), game->wingman.screenY,
+		PLAYER_SPRITE_WIDTH, PLAYER_SPRITE_HEIGHT)) return 0;
+	if (rocketPixelBobVisible(&game->wingman.rocket, game->crashTimer) &&
+		rectsOverlap(rocket->x, rocket->y, 8, 8,
+			game->wingman.rocket.x, game->wingman.rocket.y, 8, 8)) return 0;
+	if (rocketPixelBobVisible(&game->enemyMissile, 0) &&
+		rectsOverlap(rocket->x, rocket->y, 8, 8,
+			game->enemyMissile.x, game->enemyMissile.y, 8, 8)) return 0;
+	return 1;
+}
+
+#if HAR_HARDWARE_PROJECTILE_CHAIN
+/* One blank scanline is required by sprite DMA to fetch the next controls.
+ * Keep two blank lines conservatively: eight image rows plus two = 10. */
+static UBYTE selectHardwareProjectileChain(const GameState* game,
+	const WeaponState** selected) {
+	if (game->gameOver || game->ejectState || game->crashTimer) return 0;
+	const WeaponState* candidates[3] = {
+		&game->rocketShot, &game->wingman.rocket, &game->enemyMissile
+	};
+	UBYTE count = 0;
+	for (UBYTE i = 0; i < 3; i++) {
+		const WeaponState* weapon = candidates[i];
+		if (!rocketPixelBobVisible(weapon, 0) || weapon->x < 0 ||
+			weapon->x + ROCKET_PIXEL_BOB_WIDTH > SCREEN_WIDTH) continue;
+		if (game->wingman.active && rectsOverlap(weapon->x, weapon->y, 8, 8,
+			wingmanScreenX(game), game->wingman.screenY,
+			PLAYER_SPRITE_WIDTH, PLAYER_SPRITE_HEIGHT)) continue;
+		UBYTE conflict = 0;
+		for (UBYTE j = 0; j < 3; j++)
+			if (j != i && rocketPixelBobVisible(candidates[j], 0) &&
+				rectsOverlap(weapon->x, weapon->y, 8, 8,
+					candidates[j]->x, candidates[j]->y, 8, 8)) conflict = 1;
+		for (UBYTE j = 0; j < count; j++) {
+			WORD distance = weapon->y - selected[j]->y;
+			if (distance > -10 && distance < 10) conflict = 1;
+		}
+		if (conflict) continue;
+		UBYTE slot = count++;
+		while (slot && selected[slot - 1]->y > weapon->y) {
+			selected[slot] = selected[slot - 1];
+			slot--;
+		}
+		selected[slot] = weapon;
+	}
+	return count;
+}
+
+static void updateHardwareProjectileChain(UWORD* sprite, const GameState* game) {
+	UBYTE count = selectHardwareProjectileChain(game, hardwareProjectileChain);
+	if (count != hardwareProjectileChainCount) hardwareProjectileStats[3]++;
+	hardwareProjectileChainCount = count;
+	hardwareProjectileChainCounts[count]++;
+	hardwareProjectileWeapon = 0;
+	hardwareProjectileVisible = count != 0;
+	if (hardwareProjectilePayloadOwner != sprite) {
+		memset(hardwareProjectileChainValid, 0, sizeof(hardwareProjectileChainValid));
+		hardwareProjectilePayloadOwner = sprite;
+	}
+	for (UBYTE i = 0; i < count; i++) {
+		const WeaponState* weapon = hardwareProjectileChain[i];
+		UBYTE mono = weapon == &game->enemyMissile;
+		UBYTE tile = mono ? (weapon->dy < 0 ? 53 : (weapon->dy > 0 ? 54 : 55)) :
+			rocketTileForState(weapon);
+		UWORD key = tile | ((UWORD)mono << 8);
+		UWORD* entry = sprite + i * (2 + ROCKET_PIXEL_BOB_HEIGHT * 2);
+		if (!hardwareProjectileChainValid[i] || hardwareProjectileChainKeys[i] != key) {
+			buildProjectileHardwareSprite(entry, tile, mono, weapon->x, weapon->y);
+			hardwareProjectileChainKeys[i] = key;
+			hardwareProjectileChainValid[i] = 1;
+			hardwareProjectileStats[2]++;
+		} else {
+			setHardwareSpritePosition(entry, ROCKET_PIXEL_BOB_HEIGHT, weapon->x, weapon->y);
+		}
+		hardwareProjectileY = weapon->y; /* Sorted: wait for the final DMA use. */
+	}
+	/* Each next header replaces the previous image's two stop words. Only
+	 * the last entry terminates DMA. Also handles the empty/shortened list. */
+	sprite[count * (2 + ROCKET_PIXEL_BOB_HEIGHT * 2)] = 0;
+	sprite[count * (2 + ROCKET_PIXEL_BOB_HEIGHT * 2) + 1] = 0;
+	hardwareProjectileStats[0] += count;
+}
+#endif
+
+static void updateHardwarePlayerRocket(UWORD* sprite, const GameState* game) {
+	UBYTE activePalette = HAR_CRASH_DEBRIS_BOBS || !game->crashTimer;
+	if (activePalette != hardwareProjectilePaletteActive) {
+		const UWORD* palette = (const UWORD*)gamePalette;
+		for (UBYTE i = 0; i < 2; i++)
+			if (hardwareProjectilePaletteOperands[i])
+				*hardwareProjectilePaletteOperands[i] =
+					projectileSpritePaletteWord(palette, 25 + i, activePalette);
+		hardwareProjectilePaletteActive = activePalette;
+	}
+#if HAR_HARDWARE_PROJECTILE_CHAIN
+	updateHardwareProjectileChain(sprite, game);
+#else
+	UBYTE selected = hardwarePlayerRocketEligible(game);
+	if (selected != hardwareProjectileVisible) hardwareProjectileStats[3]++;
+	hardwareProjectileWeapon = selected ? &game->rocketShot : 0;
+	if (!selected) {
+		if (rocketPixelBobVisible(&game->rocketShot, game->crashTimer))
+			hardwareProjectileStats[1]++;
+		hideHardwareSprite(sprite);
+		hardwareProjectileVisible = 0;
+		return;
+	}
+	UBYTE tile = rocketTileForState(&game->rocketShot);
+	if (hardwareProjectilePayloadOwner != sprite || hardwareProjectilePayloadTile != tile) {
+		buildProjectileHardwareSprite(sprite, tile, 0, game->rocketShot.x, game->rocketShot.y);
+		hardwareProjectilePayloadOwner = sprite;
+		hardwareProjectilePayloadTile = tile;
+		hardwareProjectileStats[2]++;
+	} else {
+		setHardwareSpritePosition(sprite, ROCKET_PIXEL_BOB_HEIGHT,
+			game->rocketShot.x, game->rocketShot.y);
+	}
+	hardwareProjectileVisible = 1;
+	hardwareProjectileY = game->rocketShot.y;
+	hardwareProjectileStats[0]++;
+#endif
+}
+
+#if HAR_HEADLESS_CLASSIC_CONTRACT_TEST
+#if HAR_HARDWARE_PROJECTILE_CHAIN
+static UBYTE referenceHardwareProjectileChainMatches(void) {
+	static GameState fixture;
+	static UWORD guarded[ENEMY_MISSILE_SPRITE_WORDS + 4];
+	UWORD reference[20];
+	const WeaponState* selected[3];
+	memset(&fixture, 0, sizeof(fixture));
+	fixture.rocketShot.active = fixture.wingman.rocket.active = fixture.enemyMissile.active = 1;
+	fixture.rocketShot.x = 40;
+	fixture.wingman.rocket.x = 80;
+	fixture.enemyMissile.x = 120;
+	fixture.rocketShot.y = 90;
+	fixture.wingman.rocket.y = 40;
+	fixture.enemyMissile.y = 65;
+	if (selectHardwareProjectileChain(&fixture, selected) != 3 ||
+		selected[0] != &fixture.wingman.rocket || selected[1] != &fixture.enemyMissile ||
+		selected[2] != &fixture.rocketShot) return 0;
+	/* Same-height objects need another channel even when horizontally apart. */
+	fixture.enemyMissile.y = 49;
+	if (selectHardwareProjectileChain(&fixture, selected) != 2) return 0;
+	fixture.enemyMissile.y = 50;
+	if (selectHardwareProjectileChain(&fixture, selected) != 3) return 0;
+	for (UBYTE i = 0; i < ENEMY_MISSILE_SPRITE_WORDS + 4; i++) guarded[i] = 0xA55A;
+	UWORD* sprite = guarded + 2;
+	hardwareProjectilePayloadOwner = 0;
+	UBYTE matched = 1;
+	/* Reorder, shrink and regrow lists, retaining cached row data. */
+	for (UBYTE phase = 0; phase < 6; phase++) {
+		fixture.crashTimer = phase == 3;
+		fixture.wingman.rocket.active = phase != 2;
+		fixture.enemyMissile.y = phase == 1 ? 110 : 50;
+		fixture.enemyMissile.dy = phase == 5 ? -1 : 1;
+		updateHardwareProjectileChain(sprite, &fixture);
+		UBYTE count = selectHardwareProjectileChain(&fixture, selected);
+		if (hardwareProjectileChainCount != count || hardwareProjectileVisible != (count != 0)) matched = 0;
+		for (UBYTE i = 0; i < count; i++) {
+			const WeaponState* weapon = selected[i];
+			UBYTE mono = weapon == &fixture.enemyMissile;
+			UBYTE tile = mono ? (weapon->dy < 0 ? 53 : 54) : rocketTileForState(weapon);
+			buildProjectileHardwareSprite(reference, tile, mono, weapon->x, weapon->y);
+			for (UBYTE word = 0; word < 18; word++)
+				if (sprite[i * 18 + word] != reference[word]) matched = 0;
+			if (!hardwareProjectileChainContains(weapon)) matched = 0;
+		}
+		if (sprite[count * 18] || sprite[count * 18 + 1]) matched = 0;
+		if (count && hardwareProjectileY != selected[count - 1]->y) matched = 0;
+		if (guarded[0] != 0xA55A || guarded[1] != 0xA55A ||
+			guarded[ENEMY_MISSILE_SPRITE_WORDS + 2] != 0xA55A ||
+			guarded[ENEMY_MISSILE_SPRITE_WORDS + 3] != 0xA55A) matched = 0;
+	}
+	hardwareProjectileChainCount = 0;
+	hardwareProjectileVisible = 0;
+	hardwareProjectilePayloadOwner = 0;
+	return matched;
+}
+#endif
+static UBYTE referenceHardwareProjectileEligibilityMatches(void) {
+	static GameState fixture;
+	memset(&fixture, 0, sizeof(fixture));
+	fixture.rocketShot.active = 1;
+	fixture.rocketShot.x = 64;
+	fixture.rocketShot.y = 60;
+	if (!hardwarePlayerRocketEligible(&fixture)) return 0;
+	fixture.crashTimer = 1;
+	if (hardwarePlayerRocketEligible(&fixture)) return 0;
+	fixture.crashTimer = 0;
+	fixture.ejectState = 1;
+	if (hardwarePlayerRocketEligible(&fixture)) return 0;
+	fixture.ejectState = 0;
+	fixture.rocketShot.x = -1;
+	if (hardwarePlayerRocketEligible(&fixture)) return 0;
+	fixture.rocketShot.x = SCREEN_WIDTH - 7;
+	if (hardwarePlayerRocketEligible(&fixture)) return 0;
+	fixture.rocketShot.x = 64;
+	fixture.wingman.active = 1;
+	fixture.wingman.screenY = 60;
+	/* Put the formation in the drawable area before checking its overlap. */
+	fixture.playerX = 160;
+	fixture.rocketShot.x = wingmanScreenX(&fixture);
+	if (hardwarePlayerRocketEligible(&fixture)) return 0;
+	fixture.wingman.active = 0;
+	fixture.rocketShot.x = 64;
+	fixture.enemyMissile = fixture.rocketShot;
+	if (hardwarePlayerRocketEligible(&fixture)) return 0;
+	fixture.enemyMissile.x += 8;
+	if (!hardwarePlayerRocketEligible(&fixture)) return 0;
+	fixture.wingman.rocket = fixture.rocketShot;
+	if (hardwarePlayerRocketEligible(&fixture)) return 0;
+#if HAR_HARDWARE_PROJECTILE_CHAIN
+	if (!referenceHardwareProjectileChainMatches()) return 0;
+#endif
+	return 1;
+}
+#endif
+#endif
+
 static void updateEnemyMissileSprite(UWORD* enemyMissileSprite, const GameState* game) {
 	/* Sprint 15.63: the enemy heatseeker is a black playfield BOB. Keep its
 	 * former channel-4 allocation hidden so the established Copper/sprite
 	 * channel layout does not change in this visibility-only sprint. */
 	(void)game;
+#if HAR_HARDWARE_PLAYER_ROCKET
+	/* Channel 4 is committed by the late projectile handoff instead. */
+	(void)enemyMissileSprite;
+#else
 	hideHardwareSprite(enemyMissileSprite);
+#endif
 }
 
 static void drawStaticGameScene(UBYTE* bitmap) {
@@ -18756,6 +23185,15 @@ static void startGameSession(GameState* game,
 	UBYTE gameModeSetting,
 	UBYTE wingmanControl,
 	UBYTE preserveVisibleWorld) {
+#if HAR_HARDWARE_PLAYER_ROCKET
+	hardwareProjectileWeapon = 0;
+	hardwareProjectileVisible = 0;
+	hardwareProjectilePayloadOwner = 0;
+#if HAR_HARDWARE_PROJECTILE_CHAIN
+	hardwareProjectileChainCount = 0;
+#endif
+	hideHardwareSprite(enemyMissileSprite);
+#endif
 	UBYTE effectiveMission = missionNumber ? missionNumber : 1;
 	UWORD effectiveCampaignSeed = campaignSeed ? campaignSeed :
 		WORLD_SEED_FALLBACK;
@@ -18777,6 +23215,9 @@ static void startGameSession(GameState* game,
 		cpcLandRouteExtension);
 	initGameState(game, effectiveCampaignSeed, effectiveWorldSeed,
 		effectiveMission);
+	/* Prepare while the previous scene is still displayed. Commit the LFSR
+	 * state only when takeoff actually starts, preserving the sound sequence. */
+	prepareEngineBuffer(engineSpeedForSpeedLevel(game->speedLevel));
 	/* Select the actual CPC palette phase now, before buildGameHudCopper()
 	 * captures these colours. */
 	resetCityFade(game);
@@ -18787,6 +23228,10 @@ static void startGameSession(GameState* game,
 	game->levelDifficulty = levelDifficulty;
 	game->gameMode = gameModeSetting == GAME_MODE_CLASSIC ?
 		GAME_MODE_CLASSIC : GAME_MODE_ENHANCED;
+	/* The ring buffer is initialized below this point, so every resident
+	 * column is built under one immutable presentation mode. A later session
+	 * assigns this again only after the old world has been discarded. */
+	currentWorldPresentationMode = game->gameMode;
 	KPrintF("World seed campaign=%ld mission=%ld world=%ld skill=%ld mode=%ld\n",
 		(ULONG)game->campaignSeed, (ULONG)game->missionNumber,
 		(ULONG)game->worldSeed, (ULONG)game->levelDifficulty,
@@ -18841,6 +23286,10 @@ static void startGameSession(GameState* game,
 	resetRocketShotPixelBobFootprints();
 	resetAircraftFailureSmoke();
 	resetCarrierAmbienceVisuals();
+#if HAR_CRASH_DEBRIS_BOBS
+	memset(crashDebrisFootprints, 0, sizeof(crashDebrisFootprints));
+	crashDebrisVisible = 0;
+#endif
 	bombImpactBobFootprintValid = 0;
 	powerupBobFootprintValid = 0;
 	if (!preserveVisibleWorld)
@@ -19062,6 +23511,8 @@ int main(void) {
 	configureRuntimeLevelRoute(0, 0);
 
 	initRingWorldBuffer(worldBuffers[0], 0);
+	/* Sprite allocations start a new residency lifetime. */
+	memset(attachedSpriteResidents, 0, sizeof(attachedSpriteResidents));
 	buildPlayerSprite(playerSprite, playerAttachSprite, PLAYER_START_X, PLAYER_START_Y);
 	hideHardwareSprite(crashPart1Sprite);
 	hideHardwareSprite(enemyAttachSprite);
@@ -19154,6 +23605,24 @@ int main(void) {
 
 	while (programRunning) {
 		WaitVbl();
+#if HAR_CRASH_DEBRIS_BOBS
+		/* Restore before terrain mutations and the other BOB erases. */
+		if (inGameScene && !telemetryStatsPaused && !gamePaused)
+			eraseCrashDebrisFrame(worldBuffers[activeWorldBuffer]);
+#endif
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+		perfStageLast = perfReadRasterClock();
+#endif
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_INJECT_STALL
+		/* Measurement self-test: miss two fields without advancing the
+		 * software frameCounter. The next hardware sample must catch this. */
+		if (frameCounter == 450) {
+			for (UBYTE missed = 0; missed < 2; missed++) {
+				while (currentRasterY() == 311) { }
+				while (currentRasterY() != 311) { }
+			}
+		}
+#endif
 		menuTickerFinished = 0;
 		serviceModMusicToCurrentVbl();
 		updateSfx();
@@ -19190,6 +23659,9 @@ int main(void) {
 		else
 			memset(&input2, 0, sizeof(input2));
 
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+		perfStageMark(0);
+#endif
 		/* Attract mode samples real controls first so any player interaction can
 		 * reclaim the menu. Only then does it replace the controller with the
 		 * scripted recording. A completed crash advances solo <-> CPU Wingman;
@@ -19257,8 +23729,8 @@ int main(void) {
 #if HAR_HEADLESS_P2_PROJECTILE_RETIRE_TEST
 			static UBYTE headlessP2ProjectileRetireStage = 0;
 #endif
-			debugInfiniteLives = 1;
-			debugInfiniteFuel = 1;
+			debugInfiniteLives = !HAR_HEADLESS_DAMAGE_EXERCISE;
+			debugInfiniteFuel = !HAR_HEADLESS_DAMAGE_EXERCISE;
 #if HAR_HEADLESS_WEAPON_STRESS
 			debugInfiniteBombs = 1;
 			debugInfiniteRockets = 1;
@@ -19327,7 +23799,16 @@ int main(void) {
 				 * stream of fresh presses whenever their previous shot is free.
 				 * P2 also holds Up to leave the deck immediately and remain clear
 				 * of the terrain during the full-route renderer stress test. */
-				if ((frameCounter & 1) == 0) {
+				UBYTE stressFireAllowed = 1;
+#if HAR_HEADLESS_LANDING_EXERCISE
+				/* A landing run must leave its own carrier intact. Keep the
+				 * opening/final carrier legs quiet, with a full screen of lead
+				 * time for existing projectiles to leave before final approach.
+				 * The ordinary short weapon benchmark remains unchanged. */
+				stressFireAllowed = game.scrollX > 2 * SCREEN_WIDTH &&
+					game.scrollX < LANDING_APPROACH_SCROLL_X - SCREEN_WIDTH;
+#endif
+				if (stressFireAllowed && (frameCounter & 1) == 0) {
 					input.fire = 1;
 					input.bomb = 1;
 					input2.fire = 1;
@@ -19438,11 +23919,51 @@ int main(void) {
 				break;
 			}
 #endif
+#if HAR_HEADLESS_LANDING_EXERCISE
+			/* Use normal controls to land on the clear left pad, then observe
+			 * the complete carrier slide and next-mission takeoff preparation. */
+			if (game.landingState == LANDING_STATE_HOVER && !game.missionComplete) {
+				WORD padX = wingmanLandingDeckLeftX(&game) + WINGMAN_LANDING_ALTERNATE_DECK_OFFSET;
+				input.up = input.down = input.left = input.right = 0;
+				if (game.playerX < padX - 1) input.right = 1;
+				else if (game.playerX > padX + 1) input.left = 1;
+				else input.down = 1;
+			}
+			if (game.missionNumber > 1 && game.takeoffState == TAKEOFF_STATE_READY)
+				break;
+#endif
+#if HAR_HEADLESS_DAMAGE_EXERCISE
+			/* Inject damage through the real routine; failure descent, alarm,
+			 * smoke, collision and crash completion remain normal gameplay. */
+			if (inGameScene && game.takeoffState == TAKEOFF_STATE_AIRBORNE &&
+				frameCounter >= 350 && !(frameCounter & 7) &&
+				!game.crashTimer && !game.gameOver &&
+				game.aircraftFailureState == AIRCRAFT_FAILURE_NONE) {
+				UWORD before = game.armour;
+				applyPlayerFlakDamage(&game);
+				if (game.armour < before) {
+					if (!headlessDamageStats[DAMAGE_HITS]) {
+						headlessDamageStats[DAMAGE_FIRST_FRAME] = frameCounter;
+						headlessDamageStats[DAMAGE_ARMOUR_BEFORE] = before;
+					}
+					headlessDamageStats[DAMAGE_HITS]++;
+					headlessDamageStats[DAMAGE_ARMOUR_AFTER] = game.armour;
+					hudDirty = 1;
+				}
+			}
+			if (headlessDamageStats[DAMAGE_CRASH_FRAME] && !game.crashTimer &&
+				(game.gameOver || game.takeoffState == TAKEOFF_STATE_READY)) {
+				if (!headlessDamageStats[DAMAGE_TERMINAL_FRAME])
+					headlessDamageStats[DAMAGE_TERMINAL_FRAME] = frameCounter;
+				if (frameCounter - headlessDamageStats[DAMAGE_TERMINAL_FRAME] >= 50)
+					break;
+			}
+#endif
 			if (!headlessFinalCarrierFrame &&
 				(game.landingState == LANDING_STATE_HOVER ||
 				 game.scrollX >= LANDING_HOVER_SCROLL_X))
 				headlessFinalCarrierFrame = frameCounter;
-			if ((headlessFinalCarrierFrame &&
+			if ((!HAR_HEADLESS_LANDING_EXERCISE && headlessFinalCarrierFrame &&
 				 (UWORD)(frameCounter - headlessFinalCarrierFrame) >= 50) ||
 				frameCounter > HAR_HEADLESS_MAX_FRAMES)
 				break;
@@ -20179,6 +24700,9 @@ int main(void) {
 						UBYTE rescuedTargetCount = destroyedTargetCount;
 						UBYTE rescuedShipCellCount = destroyedShipCellCount;
 						UBYTE rescuedCraterCount = landCraterCount;
+#if HAR_CRATER_COLUMN_BOUND
+						UWORD rescuedCraterLastColumn = landCraterLastColumn;
+#endif
 						UWORD rescuedTargetColumns[GAME_DESTROYED_TARGET_MAX];
 						UWORD rescuedShipColumns[GAME_DESTROYED_SHIP_CELL_MAX];
 						UBYTE rescuedShipRows[GAME_DESTROYED_SHIP_CELL_MAX];
@@ -20222,6 +24746,9 @@ int main(void) {
 						destroyedTargetCount = rescuedTargetCount;
 						destroyedShipCellCount = rescuedShipCellCount;
 						landCraterCount = rescuedCraterCount;
+#if HAR_CRATER_COLUMN_BOUND
+						landCraterLastColumn = rescuedCraterLastColumn;
+#endif
 						memcpy(destroyedTargetColumns, rescuedTargetColumns,
 							sizeof(rescuedTargetColumns));
 						memcpy(destroyedShipCellColumns, rescuedShipColumns,
@@ -20232,6 +24759,10 @@ int main(void) {
 							sizeof(rescuedCraterColumns));
 						memcpy(landCraterRows, rescuedCraterRows,
 							sizeof(rescuedCraterRows));
+						/* Session setup may have queried the pristine world before
+						 * the rescued damage history was restored above. */
+						worldObjectsReset();
+						powerupBackgroundCacheDirty = 1;
 						initRingWorldBuffer(worldBuffers[0], 0);
 						drawHudValues(hudBuffer, &game, highScore, 0);
 						pendingGameScrollCopperUpdate = 1;
@@ -20545,7 +25076,15 @@ int main(void) {
 					updatePlayerFuel(&game))
 					hudDirty = 1;
 
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+				ULONG engineStageStart = perfReadRasterClock();
+				ULONG engineFieldStart = perfReadFieldClock();
+#endif
 				updateEngineSound(engineSpeedForSpeedLevel(game.speedLevel));
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+				perfStageLines[19] += (perfReadFieldClock() - engineFieldStart) & 0x00ffffffUL;
+				perfStageLines[11] += (perfReadRasterClock() - engineStageStart) & 0x00ffffffUL;
+#endif
 
 				if (game.scrollX != oldScrollX) {
 					pendingGameScrollCopperUpdate = 1;
@@ -20572,9 +25111,22 @@ int main(void) {
 						pendingCrashSpriteUpdate = 1;
 					}
 				}
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+			ULONG weaponsStageStart = perfReadRasterClock();
+#endif
 			if (updateWeapons(&game, scrollPixels, worldBuffers))
 				pendingCrashSpriteUpdate = 1;
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+			ULONG flakStageStart = perfReadRasterClock();
+			perfStageLines[26] += (flakStageStart - weaponsStageStart) & 0x00ffffffUL;
+#endif
 			trySpawnFlak(&game, worldBuffers);
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+			ULONG weaponsStageEnd = perfReadRasterClock();
+			perfStageLines[27] += (weaponsStageEnd - flakStageStart) & 0x00ffffffUL;
+			perfStageLines[12] += (weaponsStageEnd - weaponsStageStart) & 0x00ffffffUL;
+			ULONG enemyStageStart = perfReadRasterClock();
+#endif
 			telemetryTrackGameplayStage(&game);
 			updateCityFade(&game);
 			updateTargetLock(&game);
@@ -20595,14 +25147,32 @@ int main(void) {
 			 * functions reject the frame. Existing falling drops are untouched. */
 			trySpawnExtraAircraftBonus(&game);
 			trySpawnPowerup(&game);
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+			perfStageLines[13] += (perfReadRasterClock() - enemyStageStart) & 0x00ffffffUL;
+			ULONG wingmanStageStart = perfReadRasterClock();
+#endif
 				if (updateEnemyMissile(&game, scrollPixels))
 					pendingEnemyMissileSpriteUpdate = 1;
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+				ULONG wingmanSubStart = perfReadRasterClock();
+				perfStageLines[29] += (wingmanSubStart - wingmanStageStart) & 0x00ffffffUL;
+#endif
 				updateWingmanFormationRow(&game);
 				updateWingmanTakeoff(&game);
 				updateWingmanPlayer2Control(&game, worldBuffers, &input2,
 					&previousInput2, &hudDirty);
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+				ULONG wingmanSubNow = perfReadRasterClock();
+				perfStageLines[30] += (wingmanSubNow - wingmanSubStart) & 0x00ffffffUL;
+				wingmanSubStart = wingmanSubNow;
+#endif
 				updateWingmanPlayer2Bomb(&game, scrollPixels, worldBuffers,
 					&hudDirty);
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+				wingmanSubNow = perfReadRasterClock();
+				perfStageLines[33] += (wingmanSubNow - wingmanSubStart) & 0x00ffffffUL;
+				wingmanSubStart = wingmanSubNow;
+#endif
 				updateWingmanIntercept(&game);
 				updateWingmanBombingRun(&game, scrollPixels, worldBuffers,
 					&hudDirty);
@@ -20611,6 +25181,11 @@ int main(void) {
 				if (game.wingman.active ||
 					game.wingmanControl == WINGMAN_CONTROL_PLAYER2)
 					pendingWingmanSpriteUpdate = 1;
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+				wingmanSubNow = perfReadRasterClock();
+				perfStageLines[31] += (wingmanSubNow - wingmanSubStart) & 0x00ffffffUL;
+				wingmanSubStart = wingmanSubNow;
+#endif
 				{
 					UBYTE wingmanRocketHudDirty = 0;
 					UBYTE wingmanRocketEnemyDirty = 0;
@@ -20622,6 +25197,12 @@ int main(void) {
 						pendingEnemySpriteUpdate = 1;
 				}
 				UBYTE collisionHudDirty = 0;
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+				wingmanSubNow = perfReadRasterClock();
+				perfStageLines[32] += (wingmanSubNow - wingmanSubStart) & 0x00ffffffUL;
+				perfStageLines[14] += (wingmanSubNow - wingmanStageStart) & 0x00ffffffUL;
+				ULONG collisionStageStart = perfReadRasterClock();
+#endif
 				UBYTE collisionWeaponDirty = 0;
 				UBYTE collisionEnemyMissileDirty = 0;
 				UBYTE collisionWingmanDirty = 0;
@@ -20629,6 +25210,9 @@ int main(void) {
 					&collisionHudDirty, &collisionWeaponDirty,
 					&collisionEnemyMissileDirty, &collisionWingmanDirty))
 					pendingEnemySpriteUpdate = 1;
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+				perfStageLines[15] += (perfReadRasterClock() - collisionStageStart) & 0x00ffffffUL;
+#endif
 				if (collisionHudDirty) {
 					hudDirty = 1;
 #if HAR_DEBUG_PERF_LOG
@@ -20700,6 +25284,9 @@ int main(void) {
 			}
 		}
 		if (inGameScene && !telemetryStatsPaused && !gamePaused) {
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+			perfStageMark(1);
+#endif
 			if (pendingPlayerSpriteUpdate) {
 				updatePlayerSprite(playerSprite, playerAttachSprite, &game);
 				pendingPlayerSpriteUpdate = 0;
@@ -20726,6 +25313,7 @@ int main(void) {
 			 * redraw group. If a retained missile overlaps this frame's planned
 			 * stream columns, defer the safely-ahead stream work instead of making
 			 * the missile disappear during the active display. */
+			waitUntilBombRowsPassed(activeWorldBuffer, &game);
 			eraseBombPixelBobFootprint(worldBuffers[activeWorldBuffer],
 				activeWorldBuffer, bombShotFootprints);
 			eraseBombPixelBobFootprint(worldBuffers[activeWorldBuffer],
@@ -20747,6 +25335,7 @@ int main(void) {
 					worldBuffers[activeWorldBuffer], activeWorldBuffer);
 			UBYTE redrawCarrierGulls = carrierGullsNeedRedraw(&game);
 			UBYTE seaWaveUpdate = seaWavesUpdateKind(&game);
+			UBYTE seaWaveKeep = 0;
 			if (redrawCarrierGulls) {
 				eraseCarrierGulls(worldBuffers[activeWorldBuffer],
 					activeWorldBuffer);
@@ -20755,12 +25344,15 @@ int main(void) {
 				bobGullUnchangedSkips++;
 			}
 			if (seaWaveUpdate == SEA_WAVE_UPDATE_FULL) {
-				eraseSeaWaves(worldBuffers[activeWorldBuffer],
-					activeWorldBuffer);
+				seaWaveKeep = retainSeaWavesForRedraw(worldBuffers[activeWorldBuffer],
+					activeWorldBuffer, &game);
 				bobWaveRedraws++;
 			} else {
 				bobWaveUnchangedSkips++;
 			}
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+			perfStageMark(2);
+#endif
 			if (!deferRingWorldStream) {
 				serviceRingWorldStream(worldBuffers[0], &game);
 				/* Cheap when no VBlank elapsed; essential when a streamed
@@ -20773,20 +25365,38 @@ int main(void) {
 				ringStreamTouchedFirstColumn = -1;
 				ringStreamTouchedLastColumn = -1;
 			}
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+			perfStageMark(3);
+#endif
 			if (seaWaveUpdate == SEA_WAVE_UPDATE_FULL)
-				drawSeaWaves(worldBuffers[activeWorldBuffer], activeWorldBuffer,
-					&game);
+				drawSeaWavesFrom(worldBuffers[activeWorldBuffer], activeWorldBuffer,
+					&game, seaWaveKeep);
 			else if (seaWaveUpdate == SEA_WAVE_UPDATE_PHASE)
 				updateSeaWavePhasesInPlace(worldBuffers[activeWorldBuffer],
 					activeWorldBuffer);
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+			perfStageMark(4);
+#endif
 			if (redrawCarrierGulls)
 				drawCarrierGulls(worldBuffers[activeWorldBuffer],
 					activeWorldBuffer, &game);
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+			perfStageMark(6);
+#endif
 			updateBombImpactBob(worldBuffers[0], &game);
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+			perfStageMark(7);
+#endif
 			updatePowerupBob(worldBuffers[0], &game);
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+			perfStageMark(8);
+#endif
 			if (redrawFailureSmoke)
 				drawAircraftFailureSmoke(worldBuffers[activeWorldBuffer],
 					activeWorldBuffer);
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+			perfStageMark(9);
+#endif
 			drawBombPixelBob(worldBuffers[activeWorldBuffer],
 				activeWorldBuffer, &game.bombShot, bombShotFootprints,
 				game.scrollX);
@@ -20798,13 +25408,27 @@ int main(void) {
 			 * new silhouettes are composited, preserving correct overlap order.
 			 * Synchronise only when the raster has not passed these exact rows yet;
 			 * this prevents partial old/new rockets without a full-frame wait. */
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+			perfStageMark(10);
+#endif
+#if !(HAR_DEBUG_OMIT_PROJECTILE_BOBS & 1)
 			waitUntilRocketRowsPassed(activeWorldBuffer, &game);
+#endif
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+			perfStageMark(21);
+#endif
 			eraseRocketPixelBobFootprint(worldBuffers[activeWorldBuffer],
 				activeWorldBuffer, rocketShotFootprints);
 			eraseRocketPixelBobFootprint(worldBuffers[activeWorldBuffer],
 				activeWorldBuffer, wingmanRocketFootprints);
 			eraseRocketPixelBobFootprint(worldBuffers[activeWorldBuffer],
 				activeWorldBuffer, enemyMissileFootprints);
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+			perfStageMark(22);
+#endif
+#if HAR_HARDWARE_PLAYER_ROCKET
+			updateHardwarePlayerRocket(enemyMissileSprite, &game);
+#endif
 			drawRocketPixelBob(worldBuffers[activeWorldBuffer],
 				activeWorldBuffer, &game.rocketShot,
 				rocketShotFootprints, game.crashTimer != 0);
@@ -20813,11 +25437,18 @@ int main(void) {
 				wingmanRocketFootprints, game.crashTimer != 0);
 			drawEnemyMissilePixelBob(worldBuffers[activeWorldBuffer],
 				activeWorldBuffer, &game);
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+			perfStageMark(5);
+#endif
 			telemetryUpdate(&game, activeWorldBuffer);
 #if HAR_DEBUG_PERF_LOG
 			perfLogFrame(&game, activeWorldBuffer);
 #endif
 		}
+#if HAR_CRASH_DEBRIS_BOBS
+		/* Republish also when this frame entered pause after the early erase. */
+		if (inGameScene) drawCrashDebrisFrame(worldBuffers[activeWorldBuffer], &game);
+#endif
 	}
 
 	stopAllSfx();

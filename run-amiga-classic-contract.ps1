@@ -1,8 +1,9 @@
 #Requires -Version 5.1
 [CmdletBinding()]
 param(
-    [ValidateRange(15, 120)]
-    [int]$TimeoutSeconds = 45
+    [ValidateRange(15, 1200)]
+    [int]$TimeoutSeconds = 900,
+    [string]$ExtraCcFlags = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -37,11 +38,11 @@ try {
         Remove-Item -LiteralPath $Result -Force
     }
 
-    $flags = "-DHAR_HEADLESS_CLASSIC_CONTRACT_TEST=1 -DHAR_HIGHSCORE_DISK_IO=0"
+    $flags = "-DHAR_HEADLESS_CLASSIC_CONTRACT_TEST=1 -DHAR_HIGHSCORE_DISK_IO=0 $ExtraCcFlags"
     & $Make -C $AmigaDir -j4 "program=out/harrier_amiga" "EXTRA_CCFLAGS=$flags"
     if ($LASTEXITCODE -ne 0) { throw "Contract-bygg feilet: $LASTEXITCODE" }
 
-    $process = Start-Process -FilePath $WinUae -ArgumentList @("-f", $Config) -PassThru
+    $process = Start-Process -FilePath $WinUae -ArgumentList @("-f", $Config) -WindowStyle Hidden -PassThru
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     while (-not (Test-Path -LiteralPath $Result)) {
         if ([DateTime]::UtcNow -ge $deadline) {
@@ -55,6 +56,7 @@ try {
     }
 
     $contractResult = (Get-Content -LiteralPath $Result -Raw).Trim()
+    Write-Host "Classic contract result: $contractResult"
     if (-not $contractResult.StartsWith("PASS", [System.StringComparison]::Ordinal)) {
         throw "Classic contract feilet: $contractResult"
     }

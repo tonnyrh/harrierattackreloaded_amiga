@@ -54,8 +54,10 @@ $Root = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
 $AmigaDir = Join-Path $Root "amiga"
 $ExtensionRoot = Join-Path $env:USERPROFILE ".vscode\extensions"
 $AmigaSfxPipeline = Join-Path $Root "prepare-amiga-sfx.ps1"
+$LoadingPng = Join-Path $AmigaDir "assets\loading_screen.png"
 $LoadingBpl = Join-Path $AmigaDir "assets\loading_screen.bpl"
 $LoadingPal = Join-Path $AmigaDir "assets\loading_screen.pal"
+$LoadingScreenPacker = Join-Path $Root "tools\pack-loading-screen.py"
 $FontBin = Join-Path $AmigaDir "assets\font8x8.bin"
 $MenuTextHeader = Join-Path $AmigaDir "assets\harrier_menu_text.h"
 $GameTiles = Join-Path $AmigaDir "assets\game_tiles.bpl"
@@ -64,6 +66,7 @@ $GamePalette = Join-Path $AmigaDir "assets\game_palette.pal"
 $PromotedHeader = Join-Path $AmigaDir "assets\promoted_assets.h"
 $PromotedSpriteTiles = Join-Path $AmigaDir "assets\promoted_sprite_tiles.h"
 $WorkbenchIcon = Join-Path $AmigaDir "assets\workbench\harrier_amiga.exe.info"
+$EnhancedGraphicsPacker = Join-Path $Root "tools\pack-enhanced-graphics.py"
 
 if (-not (Test-Path -LiteralPath $AmigaDir)) {
     throw "Fant ikke Amiga-mappen: $AmigaDir"
@@ -108,8 +111,7 @@ if ($Target -eq "clean") {
 # are versioned under amiga/assets; the original CPC source and its extraction
 # pipeline deliberately live outside this repository.
 $RequiredAmigaAssets = @(
-    $LoadingBpl,
-    $LoadingPal,
+    $LoadingPng,
     $FontBin,
     $MenuTextHeader,
     $GameTiles,
@@ -123,6 +125,34 @@ foreach ($asset in $RequiredAmigaAssets) {
     if (-not (Test-Path -LiteralPath $asset -PathType Leaf)) {
         throw "Mangler versjonert Amiga-asset: $asset"
     }
+}
+
+if (-not (Test-Path -LiteralPath $LoadingScreenPacker -PathType Leaf)) {
+    throw "Mangler loading-screen-pakker: $LoadingScreenPacker"
+}
+
+# Enhanced PNG files are the editable source of truth. Validate their indexed
+# OCS palette, dimensions and transparency, then update only the compact
+# runtime banks when their bytes actually changed.
+if (-not (Test-Path -LiteralPath $EnhancedGraphicsPacker -PathType Leaf)) {
+    throw "Mangler Enhanced-grafikkpakker: $EnhancedGraphicsPacker"
+}
+$Python = Get-Command python.exe -ErrorAction SilentlyContinue
+$PythonArguments = @()
+if (-not $Python) {
+    $Python = Get-Command py.exe -ErrorAction SilentlyContinue
+    $PythonArguments = @("-3")
+}
+if (-not $Python) {
+    throw "Fant ikke Python 3. Kreves for a validere og pakke Enhanced-grafikk."
+}
+& $Python.Source @PythonArguments $LoadingScreenPacker $LoadingPng
+if ($LASTEXITCODE -ne 0) {
+    throw "Loading screen kunne ikke valideres eller pakkes."
+}
+& $Python.Source @PythonArguments $EnhancedGraphicsPacker
+if ($LASTEXITCODE -ne 0) {
+    throw "Enhanced-grafikk kunne ikke valideres eller pakkes."
 }
 
 if (Test-Path -LiteralPath $AmigaSfxPipeline) {

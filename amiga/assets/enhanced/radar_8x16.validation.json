@@ -1,0 +1,20 @@
+{
+  "valid": true,
+  "errors": [],
+  "corrections": [
+    "nearest-neighbor resize",
+    "indexed palette quantization",
+    "OCS 12-bit palette snap",
+    "border-connected background removal",
+    "visible-content crop",
+    "transparent index 0"
+  ],
+  "profile": "tile",
+  "width": 8,
+  "height": 16,
+  "colors": 16,
+  "transparent_index": 0,
+  "input_sha256": "dd0326978ad97bc5dbd8ab405bed96a5dc34e89758b498819d3df0b73d6bcb91",
+  "output_sha256": "e422e1b1f0923c2ea761b491ad6de22943d4a36e6e3f6a41e8a2b854f57b79c9",
+  "ilbm_sha256": null
+}

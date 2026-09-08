@@ -36,7 +36,8 @@ else
 endif
 
 EXTRA_CCFLAGS ?=
-CCFLAGS   = -g -MP -MMD -m68000 -O2 -nostdlib -Wextra -Wno-unused-function -Wno-volatile-register-var -fomit-frame-pointer -fno-tree-loop-distribution -fno-builtin-strlen -flto -fwhole-program -fno-exceptions -ffunction-sections -fdata-sections $(EXTRA_CCFLAGS)
+# Measured on the cycle-exact 68000: O3 materially reduces missed PAL fields.
+CCFLAGS   = -g -MP -MMD -m68000 -O3 -nostdlib -Wextra -Wno-unused-function -Wno-volatile-register-var -fomit-frame-pointer -fno-tree-loop-distribution -fno-builtin-strlen -flto -fwhole-program -fno-exceptions -ffunction-sections -fdata-sections $(EXTRA_CCFLAGS)
 CPPFLAGS  = $(CCFLAGS) -fno-rtti -fcoroutines -fno-use-cxa-atexit
 ASFLAGS   = -mcpu=68000 -g --register-prefix-optional -I$(SDKDIR)
 LDFLAGS   = -Wl,--emit-relocs,--gc-sections,-Ttext=0,-Map=$(OUT).map
@@ -60,10 +61,11 @@ $(loader_program).elf: $(loader_objects)
 	@$(CC) $(CCFLAGS) $(LDFLAGS) $(loader_objects) -o $@
 	@m68k-amiga-elf-objdump --disassemble --no-show-raw-ins --visualize-jumps -S $@ >$(loader_program).s
 
-$(OUT).exe: $(OUT).elf
+# Unrestricted code/data can use expansion RAM or fall back to chip RAM.
+# Keep explicitly chip-tagged DMA assets intact for both A500 and A1200.
+$(OUT).exe: $(OUT).elf Makefile
 	$(info Elf2Hunk $(program).exe)
-	@$(OBJCOPY) --rename-section .text=.text.MEMF_FAST --rename-section .rodata=.rodata.MEMF_FAST --rename-section .data=.data.MEMF_FAST --rename-section .bss=.bss.MEMF_FAST $(OUT).elf $(OUT).hunk.elf
-	@elf2hunk $(OUT).hunk.elf $(OUT).exe
+	@elf2hunk $(OUT).elf $(OUT).exe
 
 $(OUT).elf: $(objects)
 	$(info Linking $(program).elf)

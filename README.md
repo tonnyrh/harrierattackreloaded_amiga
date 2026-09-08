@@ -12,11 +12,17 @@ kept here.
 
 ## Project status
 
-**Sprint 15.97.1 is the first public-beta candidate.** The complete
+**Sprint 15.98.0 remains a public beta.** The complete
 mission loop is playable: carrier takeoff, generated sea/terrain/city route,
 air and ground combat, powerups, return flight, carrier landing and progression
 to the next mission. Solo, CPU Wingman and local Player 2 modes are available,
 along with the alternating attract demo.
+
+This beta adds an indexed graphics editor, compact Enhanced ground and city
+graphics, scrolling optimizations, synchronized bomb drawing, and slower
+Enhanced power-ups with varied fall speeds and gentle sideways drift.
+Performance measurements and remaining visual checks are recorded in
+[the rendering work log](amiga/SCROLL_RENDER_STRATEGY.md).
 
 The port includes the CPC-derived weapon, collision, scoring, difficulty and
 level rules; hardware-assisted smooth scrolling; OCS sprites and pixel BOBs;
@@ -61,6 +67,18 @@ configuration with F5.
 ```powershell
 .\amiga-build.ps1
 ```
+
+To reproduce the experimental sprite-multiplexing and crash-debris BOB
+configuration used in recent A500 playtests, build in a separate PowerShell
+session with:
+
+```powershell
+$env:EXTRA_CCFLAGS = '-DHAR_HARDWARE_PLAYER_ROCKET=1 -DHAR_HARDWARE_PROJECTILE_CHAIN=1 -DHAR_CRASH_DEBRIS_BOBS=1'
+.\amiga-build.ps1
+```
+
+These three options remain disabled in default builds while beta testing
+continues. The bomb and power-up changes are included in both configurations.
 
 Outputs are written under `amiga/out`:
 
@@ -110,3 +128,21 @@ and write intermediate data only under ignored `.tmp`:
 
 Only the final Amiga-format header, bitplane, palette or audio asset is imported
 into `amiga/assets`.
+
+`amiga/assets/loading_screen.png` is the indexed 320x200, 32-colour OCS master
+for the loading page. `amiga-build.ps1` validates it and regenerates the
+five-plane `loading_screen.bpl`, its 64-byte palette and the BMP preview through
+`tools/pack-loading-screen.py`. The runtime bitmap remains exactly 40,000 bytes.
+
+Enhanced-mode ground graphics have editable, indexed PNG masters. Open the
+palette-locked project editor with:
+
+```powershell
+.\edit-amiga-graphics.ps1
+```
+
+Left-drag paints, right-drag makes pixels transparent, and Save validates the
+fixed OCS palette and repacks the runtime bitplane banks. The ordinary Amiga
+build repeats this validation. See
+[`amiga/assets/enhanced/README.md`](amiga/assets/enhanced/README.md) for exact
+dimensions, external-editor use and the protected reset workflow.

@@ -1,6 +1,9 @@
 #Requires -Version 5.1
 [CmdletBinding()]
 param(
+    [ValidateSet('A500', 'A1200')]
+    [string]$Machine = 'A500',
+    [switch]$Visible,
     [int[]]$Skills = @(1, 3, 5),
     [ValidateRange(1, 15)]
     [int]$CruiseSpeed = 15,
@@ -43,9 +46,34 @@ foreach ($required in @($Make, $WinUae, $Config)) {
     }
 }
 
+# A cycle-exact A500 run can remain quiet for several minutes. Refuse to
+# launch a second emulator against the same writable DH1: directory; two
+# concurrent runs race on the CSV files and make a healthy run look hung.
+$existingWinUae = Get-Process -Name "winuae-gdb" -ErrorAction SilentlyContinue
+if ($existingWinUae) {
+    $ids = ($existingWinUae | ForEach-Object { $_.Id }) -join ", "
+    throw "WinUAE headless kjorer allerede (PID $ids). Vent til testen er ferdig eller avslutt den for en ny maaling."
+}
+
 $env:PATH = "$env:PATH;$Bin\opt\bin;$Bin"
 New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
 New-Item -ItemType Directory -Path $ResultDir -Force | Out-Null
+
+if ($Machine -eq 'A1200') {
+    # Stock PAL A1200: 68EC020, AGA, 2 MiB chip, no expansion RAM/JIT.
+    $rom = Join-Path $Root '.tools\Amiga\Kick\amiga-os-300-a1200.rom'
+    if (-not (Test-Path -LiteralPath $rom)) { throw "Missing A1200 ROM: $rom" }
+    $a1200Config = Get-Content -LiteralPath $Config | Where-Object {
+        $_ -notmatch '^(quickstart|kickstart_rom_file|chipmem_size|bogomem_size|fastmem_size)='
+    }
+    $Config = Join-Path $ResultDir 'stock-a1200.uae'
+    @('quickstart=a1200,0') + $a1200Config + @(
+        "kickstart_rom_file=$rom", 'chipset=aga', 'chipset_compatible=A1200',
+        'cpu_model=68020', 'cpu_24bit_addressing=true', 'cpu_compatible=true',
+        'cpu_speed=real', 'cpu_multiplier=4', 'cachesize=0', 'fpu_model=0',
+        'chipmem_size=4', 'fastmem_size=0', 'bogomem_size=0', 'z3mem_size=0'
+    ) | Set-Content -LiteralPath $Config -Encoding ASCII
+}
 
 function Invoke-Make {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
@@ -65,7 +93,7 @@ try {
             throw "Skill ma vare mellom 1 og 5: $Skill"
         }
 
-        Write-Host "Bygger og maaler Amiga skill $Skill, enemy ${EnemyPlaneRate}x (cycle-exact A500 + 512K)..."
+        Write-Host "Bygger og maaler Amiga skill $Skill, enemy ${EnemyPlaneRate}x (cycle-exact $Machine)..."
         Invoke-Make -Arguments @("-C", $AmigaDir, "clean")
         foreach ($name in @("perf_log.csv", "land_log.csv", "parity_log.csv", "enemy_plane_log.csv")) {
             $path = Join-Path $OutDir $name
@@ -95,8 +123,11 @@ try {
         }
         Invoke-Make -Arguments @("-C", $AmigaDir, "-j4", "program=out/harrier_amiga", "EXTRA_CCFLAGS=$flags")
 
-        $process = Start-Process -FilePath $WinUae -ArgumentList @("-f", $Config) -PassThru
+        $testWindowStyle = if ($Visible) { 'Normal' } else { 'Hidden' }
+        $process = Start-Process -FilePath $WinUae -ArgumentList @("-f", $Config) -WindowStyle $testWindowStyle -PassThru
+        Write-Host "WinUAE headless startet som PID $($process.Id). Venter pa fire CSV-resultater..."
         $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+        $nextProgress = [DateTime]::UtcNow.AddSeconds(10)
         # parity_log is written slightly before the optional diagnostic logs.
         # Waiting only for that first file raced the Amiga shutdown and could
         # kill WinUAE before enemy_plane_log/land_log had been closed.
@@ -112,6 +143,12 @@ try {
                 }
                 Start-Sleep -Milliseconds 500
                 $process.Refresh()
+                if ([DateTime]::UtcNow -ge $nextProgress) {
+                    $ready = @($expectedLogs | Where-Object { Test-Path -LiteralPath $_ }).Count
+                    $elapsed = [Math]::Round(([DateTime]::UtcNow - $process.StartTime.ToUniversalTime()).TotalSeconds)
+                    Write-Host "  PID $($process.Id): ${elapsed}s, $ready/4 resultatfiler klare"
+                    $nextProgress = [DateTime]::UtcNow.AddSeconds(10)
+                }
             }
         }
         finally {
@@ -128,7 +165,24 @@ try {
             }
             $stem = [System.IO.Path]::GetFileNameWithoutExtension($sourceName)
             $tagSuffix = if ($ResultTag) { "_${ResultTag}" } else { "" }
+            if ($Machine -ne 'A500') { $tagSuffix = "_${Machine}$tagSuffix" }
             Copy-Item -LiteralPath $source -Destination (Join-Path $ResultDir "${stem}_skill_${Skill}_speed_${CruiseSpeed}_wing_${WingmanControl}_seed_${SessionSeed}_enemy_${EnemyPlaneRate}x${tagSuffix}.csv") -Force
+        }
+        if ($ExtraCcFlags -match '(?:^|\s)-DHAR_HEADLESS_DAMAGE_EXERCISE=1(?:\s|$)') {
+            $damageLines = @(Get-Content -LiteralPath (Join-Path $OutDir 'perf_log.csv') |
+                Where-Object { $_.StartsWith('#damage_exercise,') })
+            if ($damageLines.Count -ne 1) { throw 'Skadetesten mangler ett entydig resultat.' }
+            $damageFields = $damageLines[0].Split(',')
+            if ($damageFields.Count -ne 9) { throw "Ugyldig skaderesultat: $($damageLines[0])" }
+            [uint32[]]$damage = $damageFields[1..8]
+            $classicDamage = $ExtraCcFlags -match '(?:^|\s)-DHAR_HEADLESS_GAME_MODE=0(?:\s|$)'
+            if ($damage[0] -eq 0 -or $damage[1] -eq 0 -or $damage[2] -eq 0 -or
+                $damage[3] -ne 0 -or $damage[4] -lt $damage[1] -or
+                $damage[5] -lt $damage[4] -or $damage[6] -le $damage[5] -or
+                (-not $classicDamage -and $damage[7] -eq 0)) {
+                throw "Skadetesten fullforte ikke skade, havari og avslutning: $($damageLines[0])"
+            }
+            Write-Host "Skadetest bestatt: $($damageLines[0])"
         }
         }
     }
