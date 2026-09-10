@@ -1842,3 +1842,34 @@ Log: `.tmp/powerup-drift-contract-v3.log`. Earlier focused attempts lacked
 runtime-route fixture initialization; the final test initializes that route.
 Visual feel and resulting pickup availability still require playtesting;
 the new gameplay intentionally changes Enhanced power-up timing.
+
+### Enemy planes follow the scenery (2026-09-10)
+
+Chris Perver's playtest clarified that intact enemy planes in the Amstrad
+game have no horizontal motion independent of the scenery. The Amiga port
+had subtracted another tile from targetWorldX at each logical update and
+interpolated worldX toward it, adding roughly one pixel per frame to their
+closing speed in the default profile. Removed that extra movement in both
+Classic and Enhanced. Screen X remains worldX minus scrollX; vertical motion,
+spawn admission and the firing-distance threshold remain in place.
+
+Retreat now uses an independent alternating logical-tick phase for the
+existing half-rate climb. The old world-column parity test would leave a
+plane at an even fixed world column unable to climb. Damage/broken-aircraft
+animation remains separate from intact flight. No global pace adjustment.
+
+Focused A500 contract: `PASS enemy-scenery-motion-and-retreat`, logged in
+`.tmp/enemy-scenery-contract.log`. It covers both modes, camera steps 0..3,
+even/odd anchors, descent, entry into firing range with an occupied missile
+slot, and completed retreat with a stationary camera. Earlier parity logs
+encode the old extra horizontal movement and are not an authoritative
+reference for this intentional correction. Manual visual testing remains
+necessary to assess the new approach timing.
+
+Full A500 heavy route `enemy_scenery_skill5` completed with exit 0. At speed
+15, scroll 1000..15000: 49 windows, mean window FPS 47.33, weakest 43,
+242 hitches, maximum field gap 2. Log: `.tmp/a500-enemy-scenery-skill5.log`.
+This does not show an obvious performance regression, but changed combat
+timing and the newer power-up motion prevent a controlled speedup claim
+against the earlier bomb-row-wait run. Manual build uses the same three
+sprite-chain/crash-BOB flags as Public Beta 2.

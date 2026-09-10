@@ -1550,6 +1550,7 @@ typedef struct GameState {
 	/* 0..7 fixed-point phase. Adding the selected 1x/2x/3x pixel rate
 	 * schedules one CPC 8-pixel decision whenever the accumulator crosses 8. */
 	UBYTE enemyPlaneLogicPhase;
+	UBYTE enemyPlaneRetreatPhase;
 	UBYTE crashTimer;
 	UBYTE crashEndsGame;
 	UBYTE aircraftFailureState;
@@ -18581,6 +18582,7 @@ static UBYTE spawnEnemyPlane(GameState* game, UWORD decisionColumn) {
 	game->enemyPlane.dx = -1;
 	game->enemyPlane.dy = 0;
 	game->enemyPlaneRetreating = 0;
+	game->enemyPlaneRetreatPhase = 0;
 	game->enemyPlaneDamageState = ENEMY_PLANE_DAMAGE_NORMAL;
 	game->enemyPlaneBrokenTimer = 0;
 	game->enemyPlaneLogicPhase =
@@ -18767,17 +18769,15 @@ static UBYTE updateEnemyPlane(GameState* game) {
 		return 1;
 	}
 
-	/* Keep CPC decisions in 8x8 character coordinates, but interpolate the
-	 * resulting target by the selected 1..3 physical Amiga pixels per frame.
-	 * The same fixed-point rate drives the decision cadence, so 2x/3x cannot
-	 * catch a stationary logical target and visibly pause before the next one. */
+	/* Chris confirmed that an intact plane scrolls with the scenery: its
+	 * world X stays fixed. Only vertical decisions are interpolated. Moving
+	 * targetWorldX as well used to add flight speed on top of camera motion. */
 	game->enemyPlaneLogicPhase = (UBYTE)(game->enemyPlaneLogicPhase +
 		HAR_ENEMY_PLANE_INTERPOLATION_PIXELS);
 	if (game->enemyPlaneLogicPhase >= GAME_TILE_WIDTH) {
 		game->enemyPlaneLogicPhase -= GAME_TILE_WIDTH;
 		logicalTick = 1;
-		game->enemyPlane.targetWorldX -= GAME_TILE_WIDTH;
-		LONG logicalWorldColumn = game->enemyPlane.targetWorldX >> 3;
+		LONG logicalWorldColumn = game->enemyPlane.worldX >> 3;
 
 		if (!game->enemyPlaneRetreating) {
 			WORD targetX = game->playerX;
@@ -18800,6 +18800,7 @@ static UBYTE updateEnemyPlane(GameState* game) {
 				telemetryLogGameEvent(TELEMETRY_GAME_EVENT_ENEMY_MISSILE, 1,
 					(UWORD)logicalWorldColumn, game, (UWORD)tileDistance);
 				game->enemyPlaneRetreating = 1;
+				game->enemyPlaneRetreatPhase = 0;
 				if (!game->enemyMissile.active)
 					launchEnemyMissile(game);
 			} else {
@@ -18822,8 +18823,9 @@ static UBYTE updateEnemyPlane(GameState* game) {
 					}
 				}
 			}
-		} else if (logicalWorldColumn & 1) {
-			/* CPC retreat climbs on odd columns only. */
+		} else if ((++game->enemyPlaneRetreatPhase & 1) != 0) {
+			/* Preserve the half-rate climb independently of world-column parity.
+			 * A stationary even world column must not prevent retreat forever. */
 			WORD candidateRow = (WORD)((game->enemyPlane.targetY >> 3) - 1);
 			if (candidateRow < 0) {
 #if HAR_DEBUG_ENEMY_PLANE_LOG
@@ -18850,16 +18852,6 @@ static UBYTE updateEnemyPlane(GameState* game) {
 		}
 	}
 
-	LONG worldDelta = game->enemyPlane.worldX - game->enemyPlane.targetWorldX;
-	if (worldDelta > 0) {
-		LONG step = worldDelta < HAR_ENEMY_PLANE_INTERPOLATION_PIXELS ?
-			worldDelta : HAR_ENEMY_PLANE_INTERPOLATION_PIXELS;
-		game->enemyPlane.worldX -= step;
-	} else if (worldDelta < 0) {
-		LONG step = -worldDelta < HAR_ENEMY_PLANE_INTERPOLATION_PIXELS ?
-			-worldDelta : HAR_ENEMY_PLANE_INTERPOLATION_PIXELS;
-		game->enemyPlane.worldX += step;
-	}
 	WORD verticalDelta = (WORD)(game->enemyPlane.targetY - game->enemyPlane.y);
 	if (verticalDelta > 0) {
 		WORD step = verticalDelta < HAR_ENEMY_PLANE_INTERPOLATION_PIXELS ?
@@ -20106,6 +20098,47 @@ static UBYTE referencePowerupTransitionMatches(void) {
 	return identical;
 }
 
+static UBYTE referenceEnemySceneryMotionMatches(void) {
+	static GameState fixture;
+	for (UBYTE mode = 0; mode < 2; mode++) {
+		for (UBYTE parity = 0; parity < 2; parity++) {
+			for (UBYTE speed = 0; speed <= 3; speed++) {
+				memset(&fixture, 0, sizeof(fixture));
+				fixture.gameMode = mode ? GAME_MODE_ENHANCED : GAME_MODE_CLASSIC;
+				fixture.levelDifficulty = 1;
+				fixture.playerY = 32;
+				fixture.scrollX = 96;
+				fixture.enemyPlane.active = 1;
+				LONG anchor = 400 + parity * 8;
+				fixture.enemyPlane.worldX = fixture.enemyPlane.targetWorldX = anchor;
+				/* Keep the missile slot occupied: range transition must still work. */
+				fixture.enemyMissile.active = 1;
+				for (UBYTE frame = 0; frame < 64; frame++) {
+					fixture.scrollX += speed;
+					updateEnemyPlane(&fixture);
+					if (!fixture.enemyPlane.active || fixture.enemyPlane.worldX != anchor ||
+						fixture.enemyPlane.x != anchor - fixture.scrollX)
+						return 0;
+				}
+				if (fixture.enemyPlane.y != 32) return 0;
+				/* Enter firing range on the next logical decision. */
+				fixture.scrollX = anchor - 64;
+				fixture.enemyPlaneLogicPhase = 8 - HAR_ENEMY_PLANE_INTERPOLATION_PIXELS;
+				updateEnemyPlane(&fixture);
+				if (!fixture.enemyPlaneRetreating || !fixture.enemyMissile.active)
+					return 0;
+				/* With the camera stopped, both even/odd anchors must climb away. */
+				for (UWORD frame = 0; frame < 160 && fixture.enemyPlane.active; frame++) {
+					updateEnemyPlane(&fixture);
+					if (fixture.enemyPlane.worldX != anchor) return 0;
+				}
+				if (fixture.enemyPlane.active) return 0;
+			}
+		}
+	}
+	return 1;
+}
+
 static UBYTE referencePowerupDriftMatches(void) {
 	for (UBYTE rate = 6; rate <= 9; rate++) {
 		for (BYTE direction = -1; direction <= 1; direction += 2) {
@@ -20526,6 +20559,14 @@ static int runClassicGameplayContractTest(void) {
 	writeClassicContractResult(powerupMatched ? "PASS powerup-drift-and-pixels" :
 		"FAIL powerup-drift-and-pixels");
 	return powerupMatched ? 0 : 1;
+#endif
+#if HAR_HEADLESS_ENEMY_SCENERY_TEST_ONLY
+	configureRuntimeLevelRoute(0, 0);
+	buildHarLevelObjectIndex();
+	UBYTE enemyMatched = referenceEnemySceneryMotionMatches();
+	writeClassicContractResult(enemyMatched ? "PASS enemy-scenery-motion-and-retreat" :
+		"FAIL enemy-scenery-motion-and-retreat");
+	return enemyMatched ? 0 : 1;
 #endif
 	/* Keep large test fixtures off the command stack so nested rendering
 	 * checks do not require an enlarged CLI stack. */
