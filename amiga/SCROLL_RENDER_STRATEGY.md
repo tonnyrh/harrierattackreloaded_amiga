@@ -1873,3 +1873,183 @@ This does not show an obvious performance regression, but changed combat
 timing and the newer power-up motion prevent a controlled speedup claim
 against the earlier bomb-row-wait run. Manual build uses the same three
 sprite-chain/crash-BOB flags as Public Beta 2.
+
+
+### Independent menu tempo (2026-09-11)
+
+The menu now separates Skill (1 Easiest through 5 Hardest) from Tempo
+(80%, 90%, 100%; default 100%). The extra row fits within the existing PAL
+menu at 14-pixel row spacing. Gameplay rules and collision coordinates
+remain integer simulation state in both Classic and Enhanced.
+
+Reduced tempo samples CIA-A's field clock after the existing WaitVbl raster
+synchronization. An integer accumulator schedules logical updates; short
+input edges from either player survive fields without an update. The
+renderer interpolates poses between logical updates and restores every
+changed coordinate before telemetry or the next update. Pause freezes the
+presentation phase and clears pending gameplay input. Mission rebases snap.
+Audio and menu handling retain display cadence. Overload debt is bounded,
+so the code never enters an unbounded catch-up loop or appends a fixed delay.
+
+On a stock 68000 the first general 32-bit interpolation implementation was
+unacceptable (28.80 mean window FPS in the heavy A500 route). Native word
+arithmetic improved this to 35.69, still too slow. The current implementation
+uses a 3300-byte integer lookup table initialized once, records only the
+previous pose, and saves/restores only coordinates that actually change.
+Profiling stage 50 records logic before presentation; stage 1 now isolates
+the tempo presentation setup. Stage timing requires the existing hitch/all
+frame capture flags when deferred performance logging is enabled.
+
+The 100% baseline retained the previous complete parity CSV and measured
+47.14 mean window FPS, weakest window 43, maximum gap 2 fields, at speed 15
+and scroll 1000..15000. Evidence: `.tmp/tempo-isolated-A500-100/`.
+The A500 configuration is cycle-exact PAL, 512 KiB Chip plus 512 KiB Slow,
+without Fast RAM. Hardware projectile chain and crash-debris BOB flags match
+Public Beta 2. This workload includes Player 2 and continuous weapon stress.
+
+Focused contract: `HAR_HEADLESS_TEMPO_TEST_ONLY=1`, invoked through
+`run-amiga-classic-contract.ps1 -ExtraCcFlags`. It verifies accumulator
+rates, bounded debt, short input edges, every signed interpolation delta
+-32..32 and alpha 0..99, pose restoration, teleports and menu row bounds.
+Manual visual testing remains necessary for perceived smoothness and feel.
+
+Final A500 90% heavy route (including landing and transition to mission 2):
+56 windows at speed 15 / scroll 1000..15000, mean window FPS 43.48, weakest
+33, maximum field gap 2. Evidence: `.tmp/tempo-isolated-A500-90-input/`.
+Across active gameplay it executed 5810 steps in 6881 observed PAL fields
+(42.22 steps/s versus the ideal 45). CPU overload still loses bounded work
+credit; selected tempo is a target, not a claim of exact pacing under load.
+Combat events differ from 100% because the automated pilot/fire input runs
+at display cadence, so these whole-route numbers do not isolate rendering
+cost. Radar cadence now follows logical steps; audio and purely cosmetic
+sea-wave animation remain on the display clock. Input copying occurs only
+when a deferred press actually needs overriding.
+
+Final A500 80% short smoke (1200 outer-loop frames, not the full route):
+6 cruise windows after scroll 1000, mean window FPS 45.83, weakest 37,
+maximum gap 2. It executed 855 logical steps in 1090 active PAL fields
+(39.22 steps/s versus ideal 40), with pause/resume exercised.
+Evidence: `.tmp/tempo-isolated-A500-80-input-short/`.
+
+Final stock A1200 90% short smoke (1200 outer-loop frames): 6 cruise
+windows after scroll 1000, all 50 FPS, maximum field gap 1. It executed
+930 steps in 1034 active PAL fields (44.97 steps/s versus ideal 45),
+including pause/resume. Configuration: 68020, 24-bit addressing, real
+speed, AGA, 2 MiB Chip, no Fast/Slow RAM, no JIT, A1200 Kickstart 3.0.
+Evidence: `.tmp/tempo-isolated-A1200-90-input-short/`. This is a short
+machine smoke, not proof of 50 FPS throughout the entire campaign.
+
+The expanded final focused contract passed in `.tmp/tempo-final-contract.log`.
+It includes simultaneous active weapons/crash pieces, exact whole-state
+restoration, enemy/world alignment, and a press that begins and ends on a
+non-simulation field. Normal input must avoid the temporary-override path.
+The interactive build restores Tempo 100% and excludes all headless/perf
+flags; the three Public Beta 2 projectile/debris flags remain enabled.
+
+
+## 2026-09-12: Skill/Tempo scoring and mode-specific records
+
+Awards now apply the starting Skill factor (1.00..1.20) and selected Tempo
+factor (1.00/1.05/1.10). Fractional points carry across awards and mission
+transitions. Arithmetic runs only when awarding points, not each frame.
+The unscaled mission tally retains the extra-aircraft threshold. Landing
+awards 2000 base points (CPC internal units converted to displayed points).
+
+Classic and Enhanced use independent version-2, checksummed A/B files with
+Skill/Tempo metadata and distinct mode signatures. Prior records remain a
+read-only Legacy archive; fixture tests verify their bytes are unchanged.
+The HUD follows the active game mode, independently of the archive view.
+
+Focused score contract passed in `.tmp/score-rules-contract-capture-v5.log`:
+all 15 multipliers, fractional accumulation, saturation, actual filesystem
+round trips, mode isolation, metadata, legacy decoding and corrupted newest
+slot fallback. Tests use a newly created scratch directory, not player saves.
+The full Classic gameplay contract passed in
+`.tmp/score-classic-full-contract.log` (fuel, movement, weapons and collision).
+Its emulation was accelerated during the run; this is functional evidence,
+not a new stock-machine FPS benchmark. Earlier tempo measurements above
+remain the performance evidence; scoring changes have not been benchmarked.
+
+Both Current and Legacy menu layouts were inspected together at native
+proportions in `.tmp/score-menu-combined.png`; all labels, metadata and
+multiplier text fit. Apparent missing glyphs in individual tool previews
+were not missing from the underlying image pixels.
+
+
+## 2026-09-12: Editable weapons and Missile Tank
+
+Enhanced now reads 13 8x8 projectile masters and two 4x3 bomb masters from a
+550-byte masked bank. Original black/yellow projectiles retain hardware
+multiplexing; other palette indices select four-plane BOB drawing from the
+same source. Sprite and shifted-shape caches include presentation mode.
+Unedited bombs retain the original specialised plot; changed bombs use the
+new colour-preserving masked path. No collision footprints were enlarged.
+The editor adds a scrollbar and successfully loads/previews all 28 masters.
+
+The separate 16x8 Missile Tank master starts as an exact Tank copy. Its
+selection bitset is generated after CPC target placement, without consuming
+the CPC random stream: a 15..20-tank countdown with minimum 42-column spacing.
+Enhanced consumes an exit crossing once; destroyed tanks, active enemy
+planes and occupied missile slots suppress the shot. Aircraft admission is
+blocked while the truck shot is active. The shared missile slot retains the
+existing weapon/aircraft collisions. Rise uses one screen pixel horizontally
+and vertically per two logical steps; at the lower aircraft's height it
+locks altitude and accelerates to 7 world pixels/step. Classic is unchanged.
+
+Validation:
+- `.tmp/editable-weapons-final-bomb-contract.log`: PASS all palette colours,
+  all eight shifts, end-of-buffer clipping, saved background bytes, untouched
+  fifth plane, bank-to-hardware/BOB equivalence and both bomb phases.
+- `.tmp/missile-tank-contract-v4.log`: PASS rarity/minimum spacing, Classic
+  exclusion, destroyed rear/front identity, aircraft/missile exclusion,
+  one-shot exit, lowest-aircraft selection, rise and fixed-height cruise.
+- Python isolated-master round trips: PASS edited indices retained exactly,
+  correct 550-byte bank, hardware-incompatible colours detected, Tank copy
+  independent. Tk loads and previews all 28 entries without saving them.
+- A500 full default autoplay weapon stress completed in
+  `.tmp/tempo-isolated-A500-100-editable-weapons-short/` (despite the directory
+  name, the default frame limit was used). 53 cruise windows: mean 44.55 FPS,
+  weakest 33, max field gap 3. This run preceded restoring the original bomb
+  fast path; it is completion evidence, not a claim of locked 50 FPS or a
+  controlled before/after comparison. New enemy behaviour changes workload.
+
+
+Missile Tank frequency adjustment after playtesting: the initial 15..20-tank
+wait restarted in every mission and made the enemy too rare. The first now
+appears after 4..6 tank encounters, then every 8..12. The 42-column minimum
+spacing and all firing/exclusion rules remain in effect; spacing may postpone
+an otherwise eligible tank. Placement remains independent of the CPC RNG.
+
+The updated focused emulator contract passed in
+`.tmp/missile-tank-frequency-contract.log`, including minimum spacing,
+exclusion, destruction and flight checks.
+
+
+Field Guide update: Enhanced lists Missile Tank with its current editable
+16x8 master enlarged 2x, base points and FIRES ON EXIT. Classic omits the row.
+The Enhanced ticker explains the launch and aircraft-exclusion rules. The
+six enemy rows and five powerups fit in 320x256; both modes were visually
+checked in `.tmp/field-guide-combined.png`. The updated user weapon art
+passed `.tmp/new-graphics-guide-contract.log`, including both hardware-
+compatible and full-colour BOB paths and the edited bomb phases.
+
+The new-art A500 smoke completed at the intended 1200-frame limit:
+`.tmp/new-art-guide-a500-smoke.log`. This checks startup/gameplay with the
+new ticker allocation and weapon colours, not full-campaign performance.
+
+
+## Public Beta 3 RC1 release gate
+
+Version `v0.9.0-beta.3-rc.1`, build label `BETA 3 RC1`.
+Latest saved PNG masters validated and runtime banks matched. Focused weapon
+contract passed: `.tmp/beta3rc1-weapon-contract.log`. Short 1200-frame machine
+smokes passed for A500 at 100% and stock A1200 at 90%:
+`.tmp/beta3rc1-a500-smoke.log` and `.tmp/beta3rc1-a1200-smoke.log`.
+The A1200 executed 930 logical steps over 1034 active PAL fields. These are
+short release smoke tests, not full-campaign performance guarantees.
+
+Normal interactive build passed in `.tmp/beta3rc1-release-build.log`, with
+only the three Public Beta projectile/debris flags enabled. Release source
+and graphics hashes were checked against the tested inputs before packaging.
+The package uses `package-amiga.ps1 -Version 0.9.0-beta.3-rc.1 -NoBuild` and
+contains ADF, HD ZIP and SHA-256 checksums; no ROMs or debug dumps.

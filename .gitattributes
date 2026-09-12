@@ -1,0 +1,2 @@
+# Generated headers are compared byte-for-byte by the graphics packer.
+amiga/assets/enhanced/*_graphics.h text eol=lf

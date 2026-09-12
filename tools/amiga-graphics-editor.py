@@ -150,8 +150,13 @@ class GraphicsEditor:
         body.add(editor, weight=4)
 
         ttk.Label(sidebar, text="Editable masters").pack(anchor="w")
-        self.asset_list = tk.Listbox(sidebar, exportselection=False, height=min(12, len(ASSETS)), width=32)
-        self.asset_list.pack(fill="x", pady=(5, 12))
+        asset_frame = ttk.Frame(sidebar)
+        asset_frame.pack(fill="x", pady=(5, 12))
+        self.asset_list = tk.Listbox(asset_frame, exportselection=False, height=min(12, len(ASSETS)), width=32)
+        self.asset_list.pack(side="left", fill="both", expand=True)
+        asset_scroll = ttk.Scrollbar(asset_frame, orient="vertical", command=self.asset_list.yview)
+        asset_scroll.pack(side="right", fill="y")
+        self.asset_list.configure(yscrollcommand=asset_scroll.set)
         for asset in ASSETS:
             self.asset_list.insert("end", f"{asset.label}  ({asset.width}x{asset.height})")
         self.asset_list.bind("<<ListboxSelect>>", self.select_asset)

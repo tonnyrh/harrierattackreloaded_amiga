@@ -1,44 +1,57 @@
-# Harrier Attack Reloaded Amiga â€” Public Beta 1
+# Harrier Attack Reloaded Amiga — Public Beta 3 RC1
 
-This is the first public beta of the standalone Amiga OCS port of **Harrier
-Attack Reloaded**. It targets a stock PAL Amiga 500 with a 68000 processor,
-512 KiB chip RAM and 512 KiB expansion RAM.
+Version **v0.9.0-beta.3-rc.1** is a public beta release candidate, not a final
+release. Target: PAL Amiga 500, 68000/OCS, 512 KiB Chip RAM plus 512 KiB
+expansion RAM, Kickstart 1.3. No ROMs or Amiga system software are included.
 
-## Downloads
+## Changes since Public Beta 2
 
-- **ADF** â€” for real Amigas, MiniMig and emulators.
-- **HD ZIP** â€” AmigaDOS executable, Workbench icon, loading bitmap and README
-  for hard-disk or Workbench installation.
-- **SHA256SUMS** â€” checksums for verifying both downloads.
+- Latest user-edited Enhanced weapon and Missile Tank graphics. Editor sizes
+  remain 8x8 for missiles, 4x3 for bombs and 16x8 for tanks.
+- Rare Missile Tanks: first after 4–6 tanks per mission, then every 8–12,
+  subject to spacing so two never share a screen. A survivor fires as it
+  exits left, unless an enemy aircraft/missile is already active. Its missile
+  rises, then locks the lower aircraft's height and accelerates forwards.
+  Enemy aircraft cannot spawn while this missile remains active.
+- Missile Tank added to the Enhanced Field Guide with the current artwork.
+- Separate Tempo setting: 80%, 90%, 100%. Clearer Skill 1–5 labels.
+- Score bonuses combine starting Skill and Tempo, up to x1.32. Landing now
+  awards 2000 base points. Power-up thresholds still use unscaled points.
+- Separate Classic/Enhanced score tables with Skill/Tempo metadata. Earlier
+  scores remain available in the read-only Legacy archive.
+- Enemy planes stay anchored to scrolling scenery, with vertical attack and
+  retreat behaviour.
 
-No Kickstart ROM or Amiga system software is included.
+## Downloads and installation
 
-## Beta status
+- **ADF:** bootable floppy image for compatible hardware/emulators.
+- **HD.zip:** AmigaDOS executable, Workbench icon, loading bitmap and README.
+  Keep these together; launch the executable or its Workbench icon.
+- **SHA256SUMS.txt:** SHA-256 checksums for the ADF and HD ZIP.
 
-The complete mission loop is playable: carrier takeoff, procedural sea,
-terrain and city routes, air and ground combat, powerups, return flight,
-carrier landing and progression to later missions. Solo, CPU Wingman and
-local Player 2 modes are included.
+Keep existing `harrier_scores*.dat` files when upgrading: they supply Legacy.
+The new mode-specific `harrier_classic2_*.dat` and `harrier_enhanced2_*.dat`
+files store current records. Do not overwrite or delete these score files
+when copying a new build. Saving requires writable media.
 
-Classic mode preserves the CPC gameplay contract. Enhanced mode retains that
-foundation while adding Amiga-oriented presentation and gameplay features,
-including smooth OCS scrolling, Paula audio, terrain radar, aircraft rescue
-and a graduated Copper sky.
+## Testing and beta limits
 
-This remains a beta. Reports from stock Amiga 500/500+, MiniMig and other
-compatible hardware are especially welcome. Please include hardware, memory,
-Kickstart version, mode, skill level and reproduction steps when reporting an
-issue.
+Focused emulator contracts cover score/disk persistence, weapon palette and
+BOB/sprite equivalence, and Missile Tank placement/exclusion/flight. Classic
+regression and tempo tests have also passed during development. Release
+checks passed for the current weapon art, plus 1200-frame smokes on A500
+at 100% Tempo and stock A1200 at 90%. Results are in the rendering work log.
 
-## Known beta notes
+PAL remains the qualified timing target. Dense scenes and additional coloured
+BOBs can miss 50 FPS on a stock A500; this is not a locked-50-FPS claim. Graphics
+using colours outside the hardware projectile palette retain their colours
+through BOB rendering. Real-hardware feedback, especially on pacing, coloured
+weapons and the Missile Tank attack, remains valuable. Include machine,
+memory, mode, Skill, Tempo and reproduction steps with reports.
 
-- PAL OCS is the primary target; NTSC timing has not been release-qualified.
-- Dense city sections remain the most demanding scenes on a stock Amiga 500
-  and are an important focus for real-hardware feedback.
-- ADF high-score persistence requires writable media. Read-only media remains
-  safe, but scores cannot be retained between sessions.
-- Many original joysticks have only one fire button. Keyboard controls remain
-  available for the second weapon.
+Downloads enable `HAR_HARDWARE_PLAYER_ROCKET=1`,
+`HAR_HARDWARE_PROJECTILE_CHAIN=1` and `HAR_CRASH_DEBRIS_BOBS=1`.
+Default source builds keep these optional flags off.
 
 ## Credits and appreciation
 

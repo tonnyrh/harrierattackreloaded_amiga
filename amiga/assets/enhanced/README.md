@@ -11,7 +11,7 @@ editor from the repository root:
 ```
 
 It locks dimensions, the 16-colour game palette and transparent pen 0. Saving
-automatically validates and packs the two runtime `.bpl` banks. A headless
+automatically validates and packs the runtime `.bpl` banks. A headless
 validation is also available:
 
 ```powershell
@@ -38,7 +38,7 @@ without `--force`. Normal editing uses the editor instead.
 The older 16x16/8x16 PNGs, banks and `generate-enhanced-*-assets.py` scripts
 are retained as design references; they are no longer loaded by the game or editor.
 
-The runtime overlay changes presentation only. The original procedural target
+The ground-art overlay preserves the original target footprints. The original procedural target
 IDs still own collision, destruction, smoke and score. The tank keeps its
 paired-column damage model; radar, launcher and gun keep their original
 single-column gameplay footprint. Classic mode never draws this asset bank.
@@ -129,3 +129,39 @@ rewriting the PNGs or `game_palette.pal`.
 
 Old editor processes keep their old code. Finish or preserve work in those
 windows and close them before relying on the new save-conflict protection.
+
+
+## Weapons and Missile Tank
+
+The editor includes player rocket/Maverick directions, enemy missile
+directions, Missile Tank rise/cruise, and both bomb phases. Rockets and
+missiles remain **8x8**; bombs remain **4x3**. The missile tank remains
+**16x8**, in its own PNG initially copied from `tank_16x8.png`.
+It never shares the editable master with the ordinary tank.
+
+`projectile_0_8x8.png` through `projectile_12_8x8.png` follow the named editor
+entries. The ordinary rocket and right-facing Maverick share entry 3;
+left and down-left Maverick use entries 2 and 1 respectively. They use the original left and down-left silhouettes and can be edited
+independently in Enhanced.
+`bomb_0_4x3.png` is launch; `bomb_1_4x3.png` is descent.
+
+`weapons_masked.bpl` contains 13 eight-row projectile images followed by
+2 three-row bomb images: **550 bytes**, five bytes per row (four planes and
+opacity). Bombs occupy the high four bits. `weapons_graphics.h` records which
+projectile masters contain only transparent, black (10) and yellow (6).
+These use the existing cheap multiplexed hardware sprites. Masters with
+other colours automatically use masked BOBs, preserving the same palette
+indices instead of silently recolouring the edit. Additional BOB work can
+cost more CPU than the default hardware-compatible artwork.
+
+The fixed 16-colour palette and lighting previews work as before. Atmosphere
+pens still vary with the game's raster/lighting effects; stable pens are
+preferable for weapons. Saving never quantises or changes pixel indices.
+Classic's original weapon graphics remain independent of these PNGs.
+
+Focused emulator checks:
+
+```powershell
+.\run-amiga-classic-contract.ps1 -ExtraCcFlags '-DHAR_HEADLESS_WEAPON_ART_TEST_ONLY=1'
+.\run-amiga-classic-contract.ps1 -ExtraCcFlags '-DHAR_HEADLESS_MISSILE_TANK_TEST_ONLY=1'
+```

@@ -14,7 +14,7 @@
 #include <stddef.h>
 #include <string.h>
 #include "assets/harrier_menu_text.h"
-#define HAR_BUILD_LABEL "SPRINT 15.98.0"
+#define HAR_BUILD_LABEL "BETA 3 RC1"
 #ifndef HAR_HARDWARE_PLAYER_ROCKET
 #define HAR_HARDWARE_PLAYER_ROCKET 0
 #endif
@@ -396,7 +396,7 @@ static ULONG headlessDamageStats[DAMAGE_FIELD_COUNT];
 #define LANDING_STATE_SLOWING 1
 #define LANDING_STATE_HOVER 2
 #define LANDING_COMPLETE_HOLD_FRAMES 100
-#define LANDING_SCORE_VALUE 200
+#define LANDING_SCORE_VALUE 2000
 /* CPC scrollrightfortakeoffloop scrolls the scenery while moving both landed
  * aircraft with the carrier. It does not slide Harrier by itself along a
  * stationary (or mirrored) deck. Move the final carrier from hover X=144 to
@@ -822,16 +822,18 @@ static ULONG headlessDamageStats[DAMAGE_FIELD_COUNT];
 /* Classic keeps CPC gameplay rules; Enhanced enables intentional Amiga
  * extensions such as three aircraft, failure/eject/rescue, Player 2 and the
  * terrain-relative accumulating radar. */
-#define MENU_ITEM_GAME_MODE 2
+#define MENU_ITEM_GAME_MODE 3
 /* Sprint 15.1: real Off/CPU/PLAYER 2 wingman control setting, replacing the
  * old static "Wingman: Off" status line in drawMenuRightSettings() (which
  * never did anything). */
-#define MENU_ITEM_WINGMAN 3
-#define MENU_ITEM_LOCK_HEIGHT 4
-#define MENU_ITEM_ROCKET_RANGE 5
-#define MENU_ITEM_CONTROLS 6
-#define MENU_ITEM_EXIT_DOS 7
-#define MENU_ITEM_COUNT 8
+#define MENU_ITEM_WINGMAN 4
+#define MENU_ITEM_LOCK_HEIGHT 5
+#define MENU_ITEM_ROCKET_RANGE 6
+#define MENU_ITEM_CONTROLS 7
+#define MENU_ITEM_SCORES 8
+#define MENU_ITEM_EXIT_DOS 9
+#define MENU_ITEM_TEMPO 2
+#define MENU_ITEM_COUNT 10
 #define MENU_CONTENT_X_OFFSET 0
 /* Menu review: "Input: Joystick/Keyboard" used to be a 4th selectable item
  * here, but ReadInput() always reads joystick/keyboard/mouse simultaneously
@@ -1474,6 +1476,9 @@ typedef struct GameState {
 	UBYTE gameMode;
 	ULONG score;
 	ULONG bonusScore;
+	ULONG missionBaseScore;
+	UWORD scoreFraction;
+	UBYTE scoreTempo;
 	ULONG missionStartScore;
 	UWORD fuel;
 	/* CPC timercountdown uses KL TIME's 300 Hz clock. Every 256 ticks it
@@ -1812,6 +1817,260 @@ static ULONG carrierIdleDecodeFadeIndex = 0;
 static LONG carrierIdleDecodePredictor = 0;
 static WORD carrierIdleDecodeStepIndex = 0;
 static UBYTE modPlaying = 0;
+#ifndef HAR_HEADLESS_TEMPO_PERCENT
+#define HAR_HEADLESS_TEMPO_PERCENT 100
+#endif
+#if HAR_HEADLESS_TEMPO_PERCENT != 80 && HAR_HEADLESS_TEMPO_PERCENT != 90 && HAR_HEADLESS_TEMPO_PERCENT != 100
+#error "Tempo must be 80, 90 or 100 percent"
+#endif
+static UBYTE menuTempoPercent = HAR_HEADLESS_TEMPO_PERCENT;
+static UWORD tempoCredit, tempoLogicFrame;
+#if HAR_DEBUG_PERF_LOG
+static ULONG tempoObservedFields, tempoExecutedSteps, tempoDeferredFrames;
+#endif
+static UBYTE tempoElapsedFields = 1, tempoClockValid, tempoPoseValid;
+static UBYTE tempoInputChanged, tempoPresentedValid, tempoHasPendingInput;
+static ULONG tempoLastField;
+static UWORD tempoPresentedScroll;
+static GameState tempoPreviousGame;
+static UBYTE tempoBlendTable[100][33];
+static UBYTE tempoBlendTableReady;
+typedef struct TempoUndo { void* address; LONG value; UBYTE word; } TempoUndo;
+/* At most 37 writes: 5 scalar + 27 weapon + enemy X + 2 Wingman + 2 pickup. */
+static TempoUndo tempoUndo[40];
+static UBYTE tempoUndoCount;
+static void tempoInitBlendTable(void) {
+	if (tempoBlendTableReady) return;
+	for (UWORD alpha = 0; alpha < 100; alpha++) {
+		UWORD remainder = 0; UBYTE value = 0;
+		for (UBYTE delta = 0; delta <= 32; delta++) {
+			tempoBlendTable[alpha][delta] = value;
+			remainder += alpha;
+			if (remainder >= 100) { remainder -= 100; value++; }
+		}
+	}
+	tempoBlendTableReady = 1;
+}
+static InputState tempoPendingInput, tempoSavedInput, tempoSavedPreviousInput;
+static Player2InputState tempoPendingInput2, tempoSavedInput2, tempoSavedPreviousInput2;
+
+/* CIA TOD counts PAL fields independently of game-loop work. We always
+ * finish a step before waiting for the next raster deadline in WaitVbl.
+ * Bound accumulated debt: never run an unbounded catch-up loop on A500. */
+static void tempoSampleField(UBYTE running) {
+	if (menuTempoPercent == 100) return;
+	ULONG now = (ULONG)ciaa->ciatodhi << 16;
+	now |= (ULONG)ciaa->ciatodmid << 8;
+	now |= ciaa->ciatodlow;
+	ULONG elapsed = tempoClockValid ? (now - tempoLastField) & 0xffffff : 1;
+	tempoLastField = now;
+	tempoClockValid = 1;
+	tempoElapsedFields = elapsed > 2 ? 2 : (elapsed ? (UBYTE)elapsed : 1);
+	if (!running) {
+		tempoHasPendingInput = 0;
+		/* Freeze interpolation through pause; discard only queued gameplay input. */
+		memset(&tempoPendingInput, 0, sizeof(tempoPendingInput));
+		memset(&tempoPendingInput2, 0, sizeof(tempoPendingInput2));
+	}
+}
+
+static UBYTE tempoAdvance(UWORD* credit, UBYTE percent, UBYTE fields) {
+	*credit += (UWORD)percent * fields;
+	if (*credit < 100) return 0;
+	*credit -= 100;
+	if (*credit > 99) *credit = 99;
+	return 1;
+}
+
+static UBYTE tempoLatchEdges(UBYTE* pending, const UBYTE* input,
+	const UBYTE* previous, UWORD count) {
+	UBYTE found = 0;
+	for (UWORD i = 0; i < count; i++)
+		if (input[i] && !previous[i]) { pending[i] = input[i]; found = 1; }
+	return found;
+}
+
+static void tempoApplyEdges(UBYTE* input, UBYTE* previous,
+	UBYTE* pending, UWORD count) {
+	for (UWORD i = 0; i < count; i++) {
+		if (pending[i]) { input[i] = pending[i]; previous[i] = 0; }
+		pending[i] = 0;
+	}
+}
+
+/* Capture the preceding logical pose, without copying unrelated scores and
+ * timers. Inactive objects only need their admission markers. */
+static void tempoCopyWeaponPose(WeaponState* to, const WeaponState* from) {
+	to->active = from->active; to->type = from->type;
+	if (!from->active) return;
+	to->x = from->x; to->y = from->y; to->worldX = from->worldX;
+}
+static void tempoCopyPose(GameState* to, const GameState* from) {
+	to->scrollX = from->scrollX;
+	to->playerX = from->playerX; to->playerY = from->playerY;
+	to->ejectX = from->ejectX; to->ejectY = from->ejectY;
+	to->missionNumber = from->missionNumber;
+	tempoCopyWeaponPose(&to->enemyPlane, &from->enemyPlane);
+	tempoCopyWeaponPose(&to->rocketShot, &from->rocketShot);
+	tempoCopyWeaponPose(&to->bombShot, &from->bombShot);
+	tempoCopyWeaponPose(&to->enemyMissile, &from->enemyMissile);
+	tempoCopyWeaponPose(&to->wingman.rocket, &from->wingman.rocket);
+	tempoCopyWeaponPose(&to->wingman.bomb, &from->wingman.bomb);
+	for (UBYTE i = 0; i < PLAYER_CRASH_PART_COUNT; i++)
+		tempoCopyWeaponPose(&to->crashPart[i], &from->crashPart[i]);
+	to->wingman.active = from->wingman.active; to->wingman.mode = from->wingman.mode;
+	to->wingman.screenY = from->wingman.screenY;
+	to->wingman.interceptScreenX = from->wingman.interceptScreenX;
+	to->powerup.active = from->powerup.active; to->powerup.type = from->powerup.type;
+	to->powerup.y = from->powerup.y; to->powerup.worldX = from->powerup.worldX;
+}
+
+static UBYTE tempoBeginStep(GameState* game, InputState* input,
+	InputState* previous, Player2InputState* input2, Player2InputState* previous2) {
+	if (menuTempoPercent == 100) return 1;
+	/* lastRawKey is a key code, not a boolean edge. UI controls are handled
+	 * at display cadence before this function and are never delayed. */
+#if HAR_DEBUG_PERF_LOG
+	tempoObservedFields += tempoElapsedFields;
+#endif
+	if (!tempoAdvance(&tempoCredit, menuTempoPercent, tempoElapsedFields)) {
+		tempoHasPendingInput |= tempoLatchEdges((UBYTE*)&tempoPendingInput,
+			(const UBYTE*)input, (const UBYTE*)previous, sizeof(InputState) - 1);
+		tempoHasPendingInput |= tempoLatchEdges((UBYTE*)&tempoPendingInput2,
+			(const UBYTE*)input2, (const UBYTE*)previous2, sizeof(Player2InputState));
+#if HAR_DEBUG_PERF_LOG
+		tempoDeferredFrames++;
+#endif
+		return 0;
+	}
+#if HAR_DEBUG_PERF_LOG
+	tempoExecutedSteps++;
+#endif
+	tempoLogicFrame++;
+	tempoCopyPose(&tempoPreviousGame, game);
+	tempoPoseValid = 1;
+	/* Ordinary steps can use the original physical input directly. Only a
+	 * press deferred by a display-only field needs a temporary override. */
+	if (!tempoHasPendingInput) return 1;
+	tempoHasPendingInput = 0;
+	tempoSavedInput = *input; tempoSavedPreviousInput = *previous;
+	tempoSavedInput2 = *input2; tempoSavedPreviousInput2 = *previous2;
+	tempoApplyEdges((UBYTE*)input, (UBYTE*)previous,
+		(UBYTE*)&tempoPendingInput, sizeof(InputState) - 1);
+	tempoApplyEdges((UBYTE*)input2, (UBYTE*)previous2,
+		(UBYTE*)&tempoPendingInput2, sizeof(Player2InputState));
+	tempoInputChanged = 1;
+	return 1;
+}
+
+static void tempoEndStep(InputState* input, InputState* previous,
+	Player2InputState* input2, Player2InputState* previous2) {
+	if (!tempoInputChanged) return;
+	*input = tempoSavedInput; *previous = tempoSavedPreviousInput;
+	*input2 = tempoSavedInput2; *previous2 = tempoSavedPreviousInput2;
+	tempoInputChanged = 0;
+}
+
+static LONG tempoBlend(LONG previous, LONG current, UWORD alpha) {
+	LONG delta = current - previous;
+	/* Session rebases, respawns and teleports must snap rather than smear. */
+	if (!delta || delta < -32 || delta > 32) return current;
+	if (!alpha) return previous;
+	/* Bounded integer lookup avoids multiply/divide in the display path. */
+	const UBYTE* row = tempoBlendTable[alpha];
+	return delta < 0 ? previous - row[-delta] : previous + row[delta];
+}
+
+static void tempoWriteWord(WORD* field, WORD value) {
+	if (value == *field) return;
+	TempoUndo* undo = &tempoUndo[tempoUndoCount++];
+	undo->address = field; undo->value = *field; undo->word = 1;
+	*field = value;
+}
+static void tempoSetWord(WORD* field, WORD previous) {
+	tempoWriteWord(field, (WORD)tempoBlend(previous, *field, tempoCredit));
+}
+static void tempoSetLong(LONG* field, LONG previous) {
+	LONG value = tempoBlend(previous, *field, tempoCredit);
+	if (value == *field) return;
+	TempoUndo* undo = &tempoUndo[tempoUndoCount++];
+	undo->address = field; undo->value = *field; undo->word = 0;
+	*field = value;
+}
+static void tempoBlendWeapon(WeaponState* current, const WeaponState* previous) {
+	if (!current->active || !previous->active || current->type != previous->type) return;
+	tempoSetWord(&current->x, previous->x);
+	tempoSetWord(&current->y, previous->y);
+	tempoSetLong(&current->worldX, previous->worldX);
+}
+
+/* Only the renderer sees interpolated positions. Physics/collisions and
+ * gameplay timers retain their exact integer state, restored after drawing. */
+static UBYTE tempoBeginRender(GameState* game) {
+	if (menuTempoPercent == 100 || !tempoPoseValid || game->gameOver ||
+		game->missionNumber != tempoPreviousGame.missionNumber) return 0;
+	tempoUndoCount = 0;
+	tempoWriteWord((WORD*)&game->scrollX, (WORD)tempoBlend(tempoPreviousGame.scrollX, game->scrollX, tempoCredit));
+	tempoSetWord((WORD*)&game->playerX, (WORD)tempoPreviousGame.playerX);
+	tempoSetWord((WORD*)&game->playerY, (WORD)tempoPreviousGame.playerY);
+	tempoSetWord((WORD*)&game->ejectX, (WORD)tempoPreviousGame.ejectX);
+	tempoSetWord((WORD*)&game->ejectY, (WORD)tempoPreviousGame.ejectY);
+	tempoBlendWeapon(&game->enemyPlane, &tempoPreviousGame.enemyPlane);
+	if (game->enemyPlane.active)
+		tempoWriteWord(&game->enemyPlane.x, (WORD)(game->enemyPlane.worldX - game->scrollX));
+
+	tempoBlendWeapon(&game->rocketShot, &tempoPreviousGame.rocketShot);
+	tempoBlendWeapon(&game->bombShot, &tempoPreviousGame.bombShot);
+	tempoBlendWeapon(&game->enemyMissile, &tempoPreviousGame.enemyMissile);
+	tempoBlendWeapon(&game->wingman.rocket, &tempoPreviousGame.wingman.rocket);
+	tempoBlendWeapon(&game->wingman.bomb, &tempoPreviousGame.wingman.bomb);
+	for (UBYTE i = 0; i < PLAYER_CRASH_PART_COUNT; i++)
+		tempoBlendWeapon(&game->crashPart[i], &tempoPreviousGame.crashPart[i]);
+	if (game->wingman.active && tempoPreviousGame.wingman.active &&
+		game->wingman.mode == tempoPreviousGame.wingman.mode) {
+		tempoSetWord((WORD*)&game->wingman.screenY, (WORD)tempoPreviousGame.wingman.screenY);
+		tempoSetWord((WORD*)&game->wingman.interceptScreenX, (WORD)tempoPreviousGame.wingman.interceptScreenX);
+	}
+	if (game->powerup.active && tempoPreviousGame.powerup.active &&
+		game->powerup.type == tempoPreviousGame.powerup.type) {
+		tempoSetWord((WORD*)&game->powerup.y, (WORD)tempoPreviousGame.powerup.y);
+		tempoSetLong(&game->powerup.worldX, tempoPreviousGame.powerup.worldX);
+	}
+	tempoPresentedScroll = game->scrollX;
+	tempoPresentedValid = 1;
+	return 1;
+}
+
+static void tempoEndRender(GameState* game) {
+	(void)game;
+	while (tempoUndoCount) {
+		TempoUndo* undo = &tempoUndo[--tempoUndoCount];
+		if (undo->word) *(WORD*)undo->address = (WORD)undo->value;
+		else *(LONG*)undo->address = undo->value;
+	}
+}
+
+/* Fixed session settings; award-time arithmetic only.
+ * Skill 1..5: 1.00..1.20; Tempo 80/90/100: 1.00/1.05/1.10. */
+static UWORD scoreMultiplierBasisPoints(UBYTE skill, UBYTE tempo) {
+	if (skill < 1) skill = 1;
+	if (skill > 5) skill = 5;
+	UWORD skillFactor = 100 + (skill - 1) * 5;
+	UWORD tempoFactor = tempo == 80 ? 100 : (tempo == 90 ? 105 : 110);
+	return skillFactor * tempoFactor;
+}
+static void awardGameScore(GameState* game, UWORD base) {
+	game->missionBaseScore += base;
+	ULONG scaled = (ULONG)base * scoreMultiplierBasisPoints(game->skillLevel,
+		game->scoreTempo) + game->scoreFraction;
+	ULONG points = scaled / 10000UL;
+	game->scoreFraction = (UWORD)(scaled % 10000UL);
+	if (game->bonusScore >= 999999UL || points >= 999999UL - game->bonusScore) {
+		game->bonusScore = 999999UL; game->scoreFraction = 0;
+	} else game->bonusScore += points;
+}
+static UBYTE menuLegacyScores = 0;
+
 /* CPC menu default is ON. This session setting is copied into GameState at
  * mission start so ordinary rockets can either follow the current Harrier Y
  * or retain their launch height. Maverick guidance is always independent. */
@@ -2162,7 +2421,7 @@ static ULONG perfLastTod = 0;
 static UBYTE perfTodStarted = 0;
 #if HAR_DEBUG_PERF_STAGES
 static ULONG perfStageLast = 0;
-#define PERF_STAGE_COUNT 50
+#define PERF_STAGE_COUNT 51
 static ULONG perfStageLines[PERF_STAGE_COUNT];
 static ULONG perfReadFieldClock(void) {
 	volatile struct CIA* cia = (volatile struct CIA*)0xbfe001;
@@ -2634,6 +2893,7 @@ static void startPlayerCrashWithSfx(GameState* game, WORD x, WORD y, UBYTE sfxId
 static void modRestoreChannelAfterSfx(UBYTE channel);
 
 #include "assets/enhanced/town_graphics.h"
+#include "assets/enhanced/weapons_graphics.h"
 
 #ifdef __INTELLISENSE__
 EMBED enhancedTownTiles[ENHANCED_TOWN_TILE_COUNT * GAME_TILE_BYTES] = { 0 };
@@ -2643,6 +2903,8 @@ EMBED gameTiles[] = { 0 };
 EMBED gameSceneMap[] = { 0 };
 EMBED gamePalette[] = { 0, 0 };
 EMBED enhancedTankTiles[80] = { 0 };
+EMBED enhancedMissileTankTiles[80] = { 0 };
+EMBED enhancedWeaponRows[550] = { 0 };
 EMBED enhancedGroundTargetTiles[120] = { 0 };
 #else
 EMBED enhancedTownTiles[] = {
@@ -2663,6 +2925,12 @@ EMBED gameSceneMap[] = {
 EMBED gamePalette[] = {
 	#embed "assets/game_palette.pal"
 };
+EMBED enhancedMissileTankTiles[] = {
+	#embed "assets/enhanced/missile_tank_16x8_masked.bpl"
+};
+EMBED enhancedWeaponRows[] = {
+	#embed "assets/enhanced/weapons_masked.bpl"
+};
 EMBED enhancedTankTiles[] = {
 	#embed "assets/enhanced/tank_16x8_masked.bpl"
 };
@@ -2674,6 +2942,8 @@ EMBED enhancedGroundTargetTiles[] = {
 typedef char EnhancedTownTilesSizeCheck[
 	(sizeof(enhancedTownTiles) == ENHANCED_TOWN_TILE_COUNT * GAME_TILE_BYTES &&
 	 GAME_TILE_COUNT + ENHANCED_TOWN_TILE_COUNT <= 256) ? 1 : -1];
+typedef char EnhancedWeaponBankSizeCheck[(sizeof(enhancedWeaponRows) == 550 &&
+	sizeof(enhancedMissileTankTiles) == 80) ? 1 : -1];
 typedef char EnhancedTankTilesMustBe80Bytes[
 	(sizeof(enhancedTankTiles) == 80) ? 1 : -1];
 typedef char EnhancedGroundTargetTilesMustBe120Bytes[
@@ -4335,6 +4605,18 @@ static void perfLogFlushToDisk(void) {
 		Write(file, (APTR)line, (LONG)(out - line));
 	}
 #endif
+	{
+		char line[96];
+		char* out = line;
+		static const char label[] = "#tempo";
+		for (UBYTE i = 0; i < sizeof(label) - 1; i++) *out++ = label[i];
+		*out++ = ','; out = appendUnsignedLong(out, menuTempoPercent);
+		*out++ = ','; out = appendUnsignedLong(out, tempoObservedFields);
+		*out++ = ','; out = appendUnsignedLong(out, tempoExecutedSteps);
+		*out++ = ','; out = appendUnsignedLong(out, tempoDeferredFrames);
+		*out++ = '\n';
+		Write(file, (APTR)line, (LONG)(out - line));
+	}
 	Close(file);
 }
 
@@ -6500,7 +6782,7 @@ static short menuItemY(short item) {
 	 * at y=114, so starting at y=124 leaves a visible separator rather than
 	 * making START GAME look like an eighth score-table row. */
 	static const short itemY[MENU_ITEM_COUNT] = {
-		124, 140, 156, 172, 188, 204, 220, 236
+		120, 133, 146, 159, 172, 185, 198, 211, 224, 237
 	};
 	return itemY[item];
 }
@@ -6517,8 +6799,21 @@ static void menuItemText(short item, short skillLevel, short gameModeSetting, sh
 			copyMenuText(text, HAR_TEXT_START_GAME);
 			break;
 		case MENU_ITEM_SKILL:
-			copyMenuText(text, "Skill level: 1");
-			text[13] = (char)('0' + skillLevel);
+			{
+				static const char* const labels[5] = {
+					"Skill 1: Easiest", "Skill 2: Easy", "Skill 3: Normal",
+					"Skill 4: Hard", "Skill 5: Hardest"
+				};
+				short index = skillLevel < 1 ? 0 : (skillLevel > 5 ? 4 : skillLevel - 1);
+				copyMenuText(text, labels[index]);
+			}
+			break;
+		case MENU_ITEM_SCORES:
+			copyMenuText(text, menuLegacyScores ? "Scores: Legacy" : "Scores: Current");
+			break;
+		case MENU_ITEM_TEMPO:
+			copyMenuText(text, menuTempoPercent == 80 ? "Tempo: 80%" :
+				(menuTempoPercent == 90 ? "Tempo: 90%" : "Tempo: 100%"));
 			break;
 		case MENU_ITEM_GAME_MODE:
 			copyMenuText(text, gameModeSetting == GAME_MODE_CLASSIC ?
@@ -6590,13 +6885,23 @@ static void drawMenuCursor(UBYTE* bitmap, short item, UBYTE visible) {
 /* Fixed control help, deliberately separated from blue selectable settings.
  * ReadInput() really does merge keyboard, joystick and mouse. CPC's L+Fire
  * Maverick chord is likewise a fixed action, not an on/off menu setting. */
-static void drawMenuRightSettings(UBYTE* bitmap) {
+static void drawMenuRightSettings(UBYTE* bitmap, UBYTE skill) {
 	drawTextStyled(bitmap, 192 + MENU_CONTENT_X_OFFSET, 124,
 		"CONTROL HELP", FONT_STYLE_CPC_GREEN);
 	drawText(bitmap, 192 + MENU_CONTENT_X_OFFSET, 148,
 		"INPUT: ALL", MENU_COLOR_WHITE);
 	drawText(bitmap, 192 + MENU_CONTENT_X_OFFSET, 164,
 		"MAV: L+FIRE", MENU_COLOR_WHITE);
+	fillRect(bitmap, 192, 184, 128, 28, MENU_COLOR_PANEL);
+	UWORD factor = scoreMultiplierBasisPoints(skill, menuTempoPercent);
+	char bonus[] = "SCORE x1.0000";
+	bonus[7] = '0' + factor / 10000;
+	bonus[9] = '0' + (factor / 1000) % 10;
+	bonus[10] = '0' + (factor / 100) % 10;
+	bonus[11] = '0' + (factor / 10) % 10;
+	bonus[12] = '0' + factor % 10;
+	drawText(bitmap, 192, 184, bonus, MENU_COLOR_WHITE);
+	drawText(bitmap, 192, 200, "SKILL + TEMPO", MENU_COLOR_WHITE);
 }
 
 #define CONTROL_MENU_ROW_COUNT 13
@@ -6791,12 +7096,12 @@ static UBYTE adjustControlOption(UBYTE player, UBYTE row, short direction,
 
 #define HIGH_SCORE_ENTRY_COUNT 7
 #define HIGH_SCORE_NAME_LENGTH 7
-#define HIGH_SCORE_SLOT_A_PATH "harrier_scores_a.dat"
-#define HIGH_SCORE_SLOT_B_PATH "harrier_scores_b.dat"
+#define HIGH_SCORE_SLOT_A_PATH (highScoreMode ? "harrier_enhanced2_a.dat" : "harrier_classic2_a.dat")
+#define HIGH_SCORE_SLOT_B_PATH (highScoreMode ? "harrier_enhanced2_b.dat" : "harrier_classic2_b.dat")
 #define HIGH_SCORE_LEGACY_PATH "harrier_scores.dat"
-#define HIGH_SCORE_FILE_VERSION 1
+#define HIGH_SCORE_FILE_VERSION 2
 #define HIGH_SCORE_FILE_HEADER_BYTES 12
-#define HIGH_SCORE_FILE_ENTRY_BYTES (HIGH_SCORE_NAME_LENGTH + 1 + 2 + 4)
+#define HIGH_SCORE_FILE_ENTRY_BYTES (HIGH_SCORE_NAME_LENGTH + 1 + 2 + 4 + 2)
 #define HIGH_SCORE_FILE_PAYLOAD_BYTES (HIGH_SCORE_ENTRY_COUNT * HIGH_SCORE_FILE_ENTRY_BYTES)
 #define HIGH_SCORE_FILE_BYTES (HIGH_SCORE_FILE_HEADER_BYTES + HIGH_SCORE_FILE_PAYLOAD_BYTES + 4)
 
@@ -6805,19 +7110,29 @@ typedef struct HighScoreEntry {
 	UBYTE level;
 	UWORD hits;
 	ULONG score;
+	UBYTE skill, tempo;
 } HighScoreEntry;
 
-static HighScoreEntry highScoreTable[HIGH_SCORE_ENTRY_COUNT];
-static ULONG highScoreSaveGeneration = 0;
-static UBYTE highScoreSaveNextSlot = 0;
-static UBYTE highScoreSaveDirty = 0;
+static HighScoreEntry highScoreTables[2][HIGH_SCORE_ENTRY_COUNT];
+static HighScoreEntry legacyHighScoreTable[HIGH_SCORE_ENTRY_COUNT];
+static UBYTE legacyHighScoresValid;
+static UBYTE highScoreMode = GAME_MODE_ENHANCED;
+static ULONG highScoreGenerations[2];
+static UBYTE highScoreNextSlots[2], highScoreDirty[2];
+#define highScoreTable highScoreTables[highScoreMode]
+#define highScoreSaveGeneration highScoreGenerations[highScoreMode]
+#define highScoreSaveNextSlot highScoreNextSlots[highScoreMode]
+#define highScoreSaveDirty highScoreDirty[highScoreMode]
+static void selectHighScoreMode(UBYTE mode) {
+	highScoreMode = mode == GAME_MODE_CLASSIC ? GAME_MODE_CLASSIC : GAME_MODE_ENHANCED;
+}
 
 /* Menu review: LEVEL/HITS previously always displayed as 0, and only row 0
  * ever showed a real score - the other 6 rows were permanently the same
  * placeholder names/100-point score. Defaults here match what a fresh
  * install looked like before (same names, same 100 placeholder score) so
  * nothing changes visually until a real run actually beats one. */
-static void resetHighScoreTableToDefaults(void) {
+static void resetSelectedHighScoreTableToDefaults(void) {
 	static const char* const defaultNames[HIGH_SCORE_ENTRY_COUNT] = {
 		"CPSOFT", "AMSOFT", "DURELL", "CPSOFT", "AMSOFT", "DURELL", "CPSOFT"
 	};
@@ -6826,7 +7141,14 @@ static void resetHighScoreTableToDefaults(void) {
 		highScoreTable[i].level = 0;
 		highScoreTable[i].hits = 0;
 		highScoreTable[i].score = 100;
+		highScoreTable[i].skill = highScoreTable[i].tempo = 0;
 	}
+}
+
+static void resetHighScoreTableToDefaults(void) {
+	UBYTE mode = highScoreMode;
+	for (UBYTE i = 0; i < 2; i++) { selectHighScoreMode(i); resetSelectedHighScoreTableToDefaults(); }
+	selectHighScoreMode(mode);
 }
 
 /* AmigaDOS pops a blocking "Please insert volume X in any drive" system
@@ -6895,7 +7217,10 @@ static UBYTE highScoreEntryIsSane(const HighScoreEntry* entry) {
 		if (c < 32 || c > 126)
 			return 0;
 	}
-	return terminated && entry->level <= 99 && entry->score <= 999999UL;
+	return terminated && entry->level <= 99 && entry->score <= 999999UL &&
+		((entry->skill == 0 && entry->tempo == 0) ||
+		 (entry->skill >= 1 && entry->skill <= 5 &&
+		  (entry->tempo == 80 || entry->tempo == 90 || entry->tempo == 100)));
 }
 
 static UBYTE highScoreTableIsSane(const HighScoreEntry* table) {
@@ -6916,14 +7241,15 @@ static UBYTE highScoreTablesEqual(const HighScoreEntry* left,
 				return 0;
 		}
 		if (left[i].level != right[i].level ||
-			left[i].hits != right[i].hits || left[i].score != right[i].score)
+			left[i].hits != right[i].hits || left[i].score != right[i].score ||
+			left[i].skill != right[i].skill || left[i].tempo != right[i].tempo)
 			return 0;
 	}
 	return 1;
 }
 
 static void encodeHighScoreFile(UBYTE* out, ULONG generation) {
-	out[0] = 'H'; out[1] = 'A'; out[2] = 'R'; out[3] = 'S';
+	out[0] = 'H'; out[1] = 'A'; out[2] = 'R'; out[3] = highScoreMode ? 'E' : 'C';
 	out[4] = HIGH_SCORE_FILE_VERSION;
 	out[5] = HIGH_SCORE_ENTRY_COUNT;
 	putHighScoreU16(out + 6, HIGH_SCORE_FILE_PAYLOAD_BYTES);
@@ -6934,6 +7260,7 @@ static void encodeHighScoreFile(UBYTE* out, ULONG generation) {
 		entryOut[7] = highScoreTable[i].level;
 		putHighScoreU16(entryOut + 8, highScoreTable[i].hits);
 		putHighScoreU32(entryOut + 10, highScoreTable[i].score);
+		entryOut[14] = highScoreTable[i].skill; entryOut[15] = highScoreTable[i].tempo;
 		entryOut += HIGH_SCORE_FILE_ENTRY_BYTES;
 	}
 	putHighScoreU32(out + HIGH_SCORE_FILE_BYTES - 4,
@@ -6942,7 +7269,7 @@ static void encodeHighScoreFile(UBYTE* out, ULONG generation) {
 
 static UBYTE decodeHighScoreFile(const UBYTE* in, HighScoreEntry* table,
 	ULONG* generation) {
-	if (in[0] != 'H' || in[1] != 'A' || in[2] != 'R' || in[3] != 'S' ||
+	if (in[0] != 'H' || in[1] != 'A' || in[2] != 'R' || in[3] != (highScoreMode ? 'E' : 'C') ||
 		in[4] != HIGH_SCORE_FILE_VERSION || in[5] != HIGH_SCORE_ENTRY_COUNT ||
 		getHighScoreU16(in + 6) != HIGH_SCORE_FILE_PAYLOAD_BYTES ||
 		getHighScoreU32(in + HIGH_SCORE_FILE_BYTES - 4) !=
@@ -6954,10 +7281,13 @@ static UBYTE decodeHighScoreFile(const UBYTE* in, HighScoreEntry* table,
 		table[i].level = entryIn[7];
 		table[i].hits = getHighScoreU16(entryIn + 8);
 		table[i].score = getHighScoreU32(entryIn + 10);
+		table[i].skill = entryIn[14]; table[i].tempo = entryIn[15];
 		entryIn += HIGH_SCORE_FILE_ENTRY_BYTES;
 	}
 	if (!highScoreTableIsSane(table))
 		return 0;
+	for (UBYTE i = 0; i < HIGH_SCORE_ENTRY_COUNT; i++)
+		if (table[i].level && !table[i].skill) return 0;
 	*generation = getHighScoreU32(in + 8);
 	return 1;
 }
@@ -7002,7 +7332,7 @@ static UBYTE generationIsNewer(ULONG candidate, ULONG reference) {
 /* Write only one slot, then read and validate it before accepting it. The
  * other slot remains a complete previous generation if the disk fills,
  * becomes write-protected, is removed, or loses power during this write. */
-static UBYTE flushHighScoreTable(void) {
+static UBYTE flushSelectedHighScoreTable(void) {
 	if (!highScoreSaveDirty)
 		return 1;
 	UBYTE changedDirectory;
@@ -7041,11 +7371,10 @@ static UBYTE flushHighScoreTable(void) {
 	return writtenOk;
 }
 
-/* Loaded exactly once before TakeSystem(). Both slots are independently
- * validated and the newest complete generation wins. A legacy raw table is
- * accepted only after strict sanity checks and migrated on the next save. */
-static void loadHighScoreTable(void) {
-	resetHighScoreTableToDefaults();
+/* Each mode has its own versioned A/B slots. Old scores are read into a
+ * separate archive and are never rewritten by this score system. */
+static void loadSelectedHighScoreTable(void) {
+	resetSelectedHighScoreTableToDefaults();
 	highScoreSaveGeneration = 0;
 	highScoreSaveNextSlot = 0;
 	highScoreSaveDirty = 0;
@@ -7066,46 +7395,98 @@ static void loadHighScoreTable(void) {
 			sizeof(highScoreTable));
 		highScoreSaveGeneration = useB ? generationB : generationA;
 		highScoreSaveNextSlot = useB ? 0 : 1;
-	} else {
-		BPTR legacy = Open((CONST_STRPTR)HIGH_SCORE_LEGACY_PATH, MODE_OLDFILE);
-		if (legacy) {
-			HighScoreEntry legacyTable[HIGH_SCORE_ENTRY_COUNT];
-			LONG bytesRead = Read(legacy, legacyTable, sizeof(legacyTable));
-			UBYTE extraByte;
-			LONG extraRead = bytesRead == (LONG)sizeof(legacyTable) ?
-				Read(legacy, &extraByte, 1) : -1;
-			Close(legacy);
-			if (bytesRead == (LONG)sizeof(legacyTable) && extraRead == 0 &&
-				highScoreTableIsSane(legacyTable)) {
-				memcpy(highScoreTable, legacyTable, sizeof(highScoreTable));
-				highScoreSaveDirty = 1;
-			}
-		}
 	}
 	leaveHighScoreDirectory(oldDirectory, changedDirectory);
 	restoreDosRequesters(oldWindowPtr);
 }
 
-static void drawMenuHighScore(UBYTE* bitmap) {
-	drawTextStyled(bitmap, 40 + MENU_CONTENT_X_OFFSET, 44, "NAME", FONT_STYLE_CPC_GREEN);
-	drawTextStyled(bitmap, 128 + MENU_CONTENT_X_OFFSET, 44, "LEVEL", FONT_STYLE_CPC_GREEN);
-	drawTextStyled(bitmap, 212 + MENU_CONTENT_X_OFFSET, 44, "HITS", FONT_STYLE_CPC_GREEN);
-	drawTextStyled(bitmap, 268 + MENU_CONTENT_X_OFFSET, 44, "SCORE", FONT_STYLE_CPC_GREEN);
+#define OLD_SCORE_ENTRY_BYTES 14
+#define OLD_SCORE_BYTES (12 + 7 * OLD_SCORE_ENTRY_BYTES + 4)
+static UBYTE decodeOldHighScores(const UBYTE* bytes, UWORD length,
+	HighScoreEntry* table, ULONG* generation) {
+	UWORD offset = 0;
+	*generation = 0;
+	if (length == OLD_SCORE_BYTES) {
+		if (bytes[0] != 'H' || bytes[1] != 'A' || bytes[2] != 'R' || bytes[3] != 'S' ||
+			bytes[4] != 1 || bytes[5] != 7 || getHighScoreU16(bytes + 6) != 98 ||
+			getHighScoreU32(bytes + length - 4) != highScoreChecksum(bytes, length - 4)) return 0;
+		offset = 12; *generation = getHighScoreU32(bytes + 8);
+	} else if (length != 98) return 0;
+	for (UBYTE i = 0; i < HIGH_SCORE_ENTRY_COUNT; i++) {
+		const UBYTE* entry = bytes + offset + i * OLD_SCORE_ENTRY_BYTES;
+		memcpy(table[i].name, entry, 7);
+		table[i].level = entry[7]; table[i].hits = getHighScoreU16(entry + 8);
+		table[i].score = getHighScoreU32(entry + 10);
+		table[i].skill = table[i].tempo = 0; /* Unknown in historical records. */
+	}
+	return highScoreTableIsSane(table);
+}
+static void loadLegacyHighScores(void) {
+	static const char* paths[] = { "harrier_scores_a.dat", "harrier_scores_b.dat", HIGH_SCORE_LEGACY_PATH };
+	HighScoreEntry candidate[HIGH_SCORE_ENTRY_COUNT];
+	ULONG newest = 0;
+	legacyHighScoresValid = 0;
+	for (UBYTE slot = 0; slot < 3; slot++) {
+		if (slot == 2 && legacyHighScoresValid) break;
+		UBYTE bytes[OLD_SCORE_BYTES + 1];
+		BPTR file = Open((CONST_STRPTR)paths[slot], MODE_OLDFILE);
+		if (!file) continue;
+		LONG length = Read(file, bytes, sizeof(bytes));
+		Close(file);
+		ULONG generation;
+		if ((length == (slot == 2 ? 98 : OLD_SCORE_BYTES)) &&
+			decodeOldHighScores(bytes, (UWORD)length, candidate, &generation) &&
+			(!legacyHighScoresValid || generationIsNewer(generation, newest))) {
+			memcpy(legacyHighScoreTable, candidate, sizeof(candidate));
+			newest = generation; legacyHighScoresValid = 1;
+		}
+	}
+}
+static void loadHighScoreTable(void) {
+	UBYTE mode = highScoreMode;
+	for (UBYTE i = 0; i < 2; i++) { selectHighScoreMode(i); loadSelectedHighScoreTable(); }
+	selectHighScoreMode(mode);
+	APTR oldWindow = suppressDosRequesters();
+	loadLegacyHighScores();
+	restoreDosRequesters(oldWindow);
+}
+static UBYTE flushHighScoreTable(void) {
+	UBYTE mode = highScoreMode, ok = 1;
+	for (UBYTE i = 0; i < 2; i++) {
+		selectHighScoreMode(i);
+		if (!flushSelectedHighScoreTable()) ok = 0;
+	}
+	selectHighScoreMode(mode);
+	return ok;
+}
 
-	/* Row pitch was exactly FONT_HEIGHT (8px), leaving zero blank scanline
-	 * between rows - the 8px-tall glyphs touched top-to-bottom with no gap.
-	 * Reported on real Amiga 600 hardware as descenders being overwritten by
-	 * the row below (not corrupted, just no separation) - fine on Amiga 1200
-	 * and in WinUAE, but real CRT/scandoubler scanline bleed makes a 0px gap
-	 * risky. 53+row*9 keeps the same start/end bounds as before (row 0 still
-	 * clears the y=44 header by 1px, the last row still clears itemY[0]=116
-	 * by 1px) while inserting a 1px blank line between every row. */
+static void drawMenuHighScore(UBYTE* bitmap) {
+	const HighScoreEntry* table = menuLegacyScores ? legacyHighScoreTable : highScoreTable;
+	fillRect(bitmap, 0, 44, SCREEN_WIDTH, 71, MENU_COLOR_PANEL);
+	drawTextStyled(bitmap, 16, 44, menuLegacyScores ? "LEGACY" :
+		(highScoreMode == GAME_MODE_CLASSIC ? "CLASSIC" : "ENHANCED"), FONT_STYLE_CPC_GREEN);
+	drawTextStyled(bitmap, 88, 44, "SK", FONT_STYLE_CPC_GREEN);
+	drawTextStyled(bitmap, 120, 44, "TMP", FONT_STYLE_CPC_GREEN);
+	drawTextStyled(bitmap, 160, 44, "LV", FONT_STYLE_CPC_GREEN);
+	drawTextStyled(bitmap, 192, 44, "HITS", FONT_STYLE_CPC_GREEN);
+	drawTextStyled(bitmap, 256, 44, "SCORE", FONT_STYLE_CPC_GREEN);
+	if (menuLegacyScores && !legacyHighScoresValid) {
+		drawTextCenteredStyled(bitmap, 71, "NO LEGACY SCORES", FONT_STYLE_CPC_GREEN);
+		return;
+	}
 	for (short row = 0; row < HIGH_SCORE_ENTRY_COUNT; row++) {
 		short y = (short)(53 + row * 9);
-		drawTextStyled(bitmap, 40 + MENU_CONTENT_X_OFFSET, y, highScoreTable[row].name, FONT_STYLE_CPC_GREEN);
-		drawUnsignedPaddedStyled(bitmap, 136 + MENU_CONTENT_X_OFFSET, y, highScoreTable[row].level, 2, FONT_STYLE_CPC_GREEN);
-		drawUnsignedPaddedStyled(bitmap, 212 + MENU_CONTENT_X_OFFSET, y, highScoreTable[row].hits, 5, FONT_STYLE_CPC_GREEN);
-		drawUnsignedPaddedStyled(bitmap, 268 + MENU_CONTENT_X_OFFSET, y, highScoreTable[row].score, 6, FONT_STYLE_CPC_GREEN);
+		drawTextStyled(bitmap, 16, y, table[row].name, FONT_STYLE_CPC_GREEN);
+		if (table[row].skill) {
+			drawUnsignedPaddedStyled(bitmap, 88, y, table[row].skill, 1, FONT_STYLE_CPC_GREEN);
+			drawUnsignedPaddedStyled(bitmap, 120, y, table[row].tempo, 3, FONT_STYLE_CPC_GREEN);
+		} else {
+			drawTextStyled(bitmap, 88, y, "-", FONT_STYLE_CPC_GREEN);
+			drawTextStyled(bitmap, 120, y, "---", FONT_STYLE_CPC_GREEN);
+		}
+		drawUnsignedPaddedStyled(bitmap, 160, y, table[row].level, 2, FONT_STYLE_CPC_GREEN);
+		drawUnsignedPaddedStyled(bitmap, 192, y, table[row].hits, 5, FONT_STYLE_CPC_GREEN);
+		drawUnsignedPaddedStyled(bitmap, 256, y, table[row].score, 6, FONT_STYLE_CPC_GREEN);
 	}
 }
 
@@ -7179,6 +7560,9 @@ static void initGameState(GameState* game, UWORD campaignSeed,
 	game->gameMode = GAME_MODE_ENHANCED;
 	game->score = 0;
 	game->bonusScore = 0;
+	game->missionBaseScore = 0;
+	game->scoreFraction = 0;
+	game->scoreTempo = menuTempoPercent;
 	game->missionStartScore = 0;
 	game->hitsCount = 0;
 	game->targetLock.active = 0;
@@ -7264,10 +7648,10 @@ static void setTakeoffDeckPosition(GameState* game) {
 static UBYTE updateHudValues(GameState* game) {
 	ULONG oldScore = game->score;
 
-	/* Real CPC only awards score via explosionnoise() (HarrierAttackSourceNew2...
-	 * asm:8250-8266), called exclusively on actual hits/kills - there is no
+	/* CPC combat awards score via explosionnoise() (HarrierAttackSourceNew2...
+	 * asm:8250-8266), called on actual hits/kills; landing has its own bonus. There is no
 	 * distance/survival term anywhere in its scoring. game->bonusScore
-	 * already accumulates only from hit events (see the *_SCORE_VALUE
+	 * accumulates explicit awards with the session multiplier (see the *_SCORE_VALUE
 	 * constants below); the previous `+ (scrollX >> 4)` term here awarded
 	 * points for sheer distance flown, which doesn't exist on the real
 	 * hardware and also meant the HUD redrew the score field constantly
@@ -7289,6 +7673,8 @@ static UBYTE highScoreTableQualifies(ULONG score) {
 
 static UBYTE updateHighScoreNamed(ULONG* highScore, const GameState* game,
 	const char* playerName) {
+	selectHighScoreMode(game->gameMode);
+	*highScore = highScoreTable[0].score;
 	UBYTE changed = 0;
 	if (game->score > *highScore) {
 		*highScore = game->score;
@@ -7308,6 +7694,8 @@ static UBYTE updateHighScoreNamed(ULONG* highScore, const GameState* game,
 		highScoreTable[lowestIndex].level = game->levelDifficulty;
 		highScoreTable[lowestIndex].hits = game->hitsCount;
 		highScoreTable[lowestIndex].score = game->score;
+		highScoreTable[lowestIndex].skill = game->skillLevel < 1 ? 1 : (game->skillLevel > 5 ? 5 : game->skillLevel);
+		highScoreTable[lowestIndex].tempo = game->scoreTempo == 80 || game->scoreTempo == 90 ? game->scoreTempo : 100;
 
 		/* Small fixed table, re-sorted once per game-end (not per frame) -
 		 * a plain selection sort is simplest and plenty fast enough here. */
@@ -7337,6 +7725,8 @@ static UBYTE updateHighScore(ULONG* highScore, const GameState* game) {
 }
 
 static UBYTE beginHighScoreNameEntry(ULONG* highScore, GameState* game) {
+	selectHighScoreMode(game->gameMode);
+	*highScore = highScoreTable[0].score;
 	if (game->score > *highScore)
 		*highScore = game->score;
 	if (!highScoreTableQualifies(game->score)) {
@@ -7918,6 +8308,8 @@ static void drawHudStatusPanel(UBYTE* hud, UBYTE outerColor) {
 }
 
 static void drawHudValues(UBYTE* hud, const GameState* game, ULONG highScore, UBYTE hudBufferIndex) {
+	highScore = highScoreTables[game->gameMode == GAME_MODE_CLASSIC ? 0 : 1][0].score;
+	if (game->score > highScore) highScore = game->score;
 #if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
 	ULONG hudFieldStart = perfReadFieldClock();
 	ULONG hudRasterStart = perfReadRasterClock();
@@ -8131,6 +8523,7 @@ static void drawHudBuffer(UBYTE* hud, const GameState* game, ULONG highScore, UB
 
 static void drawMenuScreen(UBYTE* bitmap, short selected, short skillLevel, short gameModeSetting, short wingmanControl, ULONG highScore) {
 	(void)highScore;
+	selectHighScoreMode((UBYTE)gameModeSetting);
 	/* Every entry to the menu is a fresh one-shot ticker pass.  Its text is
 	 * pre-rendered one full screen beyond the right edge, so the visible band
 	 * starts empty even when returning early from another page. */
@@ -8146,7 +8539,7 @@ static void drawMenuScreen(UBYTE* bitmap, short selected, short skillLevel, shor
 	drawMenuHighScore(bitmap);
 	serviceModMusicToCurrentVbl();
 	drawMenuItems(bitmap, selected, skillLevel, gameModeSetting, wingmanControl);
-	drawMenuRightSettings(bitmap);
+	drawMenuRightSettings(bitmap, (UBYTE)skillLevel);
 	serviceModMusicToCurrentVbl();
 	/* Deliberate Amiga menu direction: no preview HUD. The gameplay HUD uses
 	 * gamePalette and live state; duplicating it under menuPalette produced
@@ -8726,7 +9119,13 @@ static UBYTE adjustSelectedMenuOption(UBYTE* bitmap, short selected, short direc
 			*skillLevel = 5;
 		else if (*skillLevel > 5)
 			*skillLevel = 1;
+	} else if (selected == MENU_ITEM_TEMPO) {
+		short next = (short)menuTempoPercent + direction * 10;
+		menuTempoPercent = next < 80 ? 100 : (next > 100 ? 80 : (UBYTE)next);
+	} else if (selected == MENU_ITEM_SCORES) {
+		menuLegacyScores = !menuLegacyScores;
 	} else if (selected == MENU_ITEM_GAME_MODE) {
+		menuLegacyScores = 0;
 		*gameModeSetting = (*gameModeSetting == GAME_MODE_ENHANCED) ?
 			GAME_MODE_CLASSIC : GAME_MODE_ENHANCED;
 	} else if (selected == MENU_ITEM_WINGMAN) {
@@ -8752,6 +9151,14 @@ static UBYTE adjustSelectedMenuOption(UBYTE* bitmap, short selected, short direc
 	}
 
 	drawMenuItem(bitmap, selected, 1, *skillLevel, *gameModeSetting, *wingmanControl);
+	if (selected == MENU_ITEM_GAME_MODE || selected == MENU_ITEM_SCORES) {
+		selectHighScoreMode((UBYTE)*gameModeSetting);
+		drawMenuHighScore(bitmap);
+		drawMenuItem(bitmap, MENU_ITEM_SCORES, selected == MENU_ITEM_SCORES,
+			*skillLevel, *gameModeSetting, *wingmanControl);
+	}
+	if (selected == MENU_ITEM_SKILL || selected == MENU_ITEM_TEMPO)
+		drawMenuRightSettings(bitmap, (UBYTE)*skillLevel);
 	/* Changing mode may also have coerced the Wingman row. */
 	if (selected == MENU_ITEM_GAME_MODE)
 		drawMenuItem(bitmap, MENU_ITEM_WINGMAN, 0, *skillLevel,
@@ -9534,6 +9941,13 @@ static void buildSpriteFromRows(UWORD* sprite, UWORD height, WORD x, WORD y, con
 	sprite[3 + height * 2] = 0;
 }
 
+#define ENEMY_MISSILE_TRUCK_TYPE 128
+static UBYTE enemyMissileTileForState(const WeaponState* missile) {
+    if (missile->type == ENEMY_MISSILE_TRUCK_TYPE)
+        return missile->direction == 0 ? 98 : 56;
+    return missile->dy < 0 ? 53 : (missile->dy > 0 ? 54 : 55);
+}
+
 static UBYTE rocketTileForState(const WeaponState* rocket) {
 	if (rocket->type != ROCKET_SHOT_MAVERICK_GUIDED)
 		return 56;
@@ -9544,6 +9958,7 @@ static UBYTE rocketTileForState(const WeaponState* rocket) {
 		case MAVERICK_DIRECTION_DOWN_RIGHT: return 99;
 		case MAVERICK_DIRECTION_DOWN: return 100;
 		case MAVERICK_DIRECTION_DOWN_LEFT:
+            return currentWorldPresentationMode == GAME_MODE_ENHANCED ? 54 : 55;
 		case MAVERICK_DIRECTION_LEFT: return 55;
 		case MAVERICK_DIRECTION_UP_LEFT: return 53;
 		default: return 56;
@@ -10003,6 +10418,23 @@ static void drawFieldGuideDoubleTileIcon(UBYTE* bitmap, short x, short y,
 	}
 }
 
+/* Show the editable 16x8 master at 2x. Mask transparency separately;
+ * lift black to grey on the black guide panel so the silhouette is visible. */
+static void drawFieldGuideMissileTankIcon(UBYTE* bitmap, short x, short y) {
+    for (UBYTE sy = 0; sy < 8; sy++) {
+        for (UBYTE sx = 0; sx < 16; sx++) {
+            const UBYTE* row = enhancedMissileTankTiles + (sx >> 3) * 40 + sy * 5;
+            UBYTE bit = 0x80 >> (sx & 7);
+            if (!(row[4] & bit)) continue;
+            UBYTE pen = 0;
+            for (UBYTE p = 0; p < 4; p++) if (row[p] & bit) pen |= 1 << p;
+            UBYTE color = pen == GAME_COLOR_BLACK ? 8 : fieldGuideMenuColorForGameColor(pen);
+            fillRect(bitmap, x + sx * 2, y + sy * 2, 2, 2, color);
+        }
+        serviceModMusicToCurrentVbl();
+    }
+}
+
 /* The enemy plane's CPC "left"/"right" arrays are the left and right 8px
  * halves of one 16x8 ASIC sprite (each source row is padded to 16 bytes).
  * This is the same composition buildAttachedSpriteFromCpcPlusHalves() uses
@@ -10075,6 +10507,7 @@ typedef struct FieldGuideEntry {
 	UBYTE spriteHeight;
 } FieldGuideEntry;
 
+#define FIELD_GUIDE_MISSILE_TANK_ICON 4, 0, 0, 0, 0, 32, 16
 #define FIELD_GUIDE_TILE_ICON(tile) 0, tile, 0, 0, 0, 0, 0
 #define FIELD_GUIDE_DOUBLE_TILE_ICON(left, right) 3, left, right, 0, 0, 32, 16
 #define FIELD_GUIDE_HALVED_ICON(left, right, h) 1, 0, 0, left, right, 16, h
@@ -10083,6 +10516,8 @@ typedef struct FieldGuideEntry {
 static const FieldGuideEntry fieldGuideEnemies[] = {
 	{ "GROUND TARGET", GROUND_TARGET_SCORE_VALUE, "1 HIT",
 		FIELD_GUIDE_DOUBLE_TILE_ICON(45, 46) },
+    { "MISSILE TANK", GROUND_TARGET_SCORE_VALUE, "FIRES ON EXIT",
+        FIELD_GUIDE_MISSILE_TANK_ICON },
 	{ "ENEMY SHIP",     ENEMY_SHIP_SCORE_VALUE,    "1 HIT",
 		FIELD_GUIDE_GUNSHIP_ICON(harCpcGunshipLeftPixels,
 			harCpcGunshipRightPixels) },
@@ -10130,7 +10565,10 @@ static void drawFieldGuideScreen(UBYTE* bitmap, short gameMode) {
 	y += 12;
 	for (UBYTE i = 0; i < FIELD_GUIDE_ENEMY_COUNT; i++) {
 		const FieldGuideEntry* entry = &fieldGuideEnemies[i];
-		if (entry->isSprite == 1)
+        if (entry->isSprite == 4 && gameMode != GAME_MODE_ENHANCED) continue;
+        if (entry->isSprite == 4)
+            drawFieldGuideMissileTankIcon(bitmap, 8, y);
+		else if (entry->isSprite == 1)
 			drawFieldGuideHalvedSpriteIcon(bitmap, 16, y, entry->pixels,
 				entry->pixels2, entry->spriteHeight, 1);
 		else if (entry->isSprite == 2)
@@ -10402,6 +10840,7 @@ typedef struct CpcLandGameplayState {
 	UBYTE transition;
 } CpcLandGameplayState;
 static CpcLandGameplayState cpcLandGameplayTable[CPC_LAND_PROCEDURAL_MAX_LENGTH];
+static UBYTE missileTankColumns[(CPC_LAND_PROCEDURAL_MAX_LENGTH + 7) / 8];
 /* Cosmetic surface tile chosen after gameplay generation for each column,
  * stored directly instead of re-derived later by comparing
  * neighbouring columns' heights (landSurfaceTileForColumn()'s old approach)
@@ -10965,6 +11404,24 @@ static void resetCpcRandomSequence(UWORD worldSeed) {
 		 * this tick - see the CPC_R_COST_* comment above. */
 		rState = (UBYTE)((rState + rCost) & CPC_R_MASK);
 	}
+
+    /* Independent Enhanced overlay: first after 4..6 tanks, then every 8..12, with
+     * at least 42 columns between anchors (never two 16px tanks visible).
+     * Do not consume the CPC random stream or alter Classic target ids. */
+    memset(missileTankColumns, 0, sizeof(missileTankColumns));
+    UWORD truckRandom = (UWORD)(cpcActiveWorldSeed ^ 0x6d74U);
+    UBYTE tanksUntilTruck = 4 + truckRandom % 3;
+    LONG lastTruck = -GAME_MAP_WIDTH - 2;
+    for (UWORD i = 0; i < cpcLandProceduralLength; i++) {
+        if (cpcLandGameplayTable[i].target != CPC_LAND_TARGET_TANK_FRONT) continue;
+        if (tanksUntilTruck) tanksUntilTruck--;
+        if (!tanksUntilTruck && (LONG)i - lastTruck >= GAME_MAP_WIDTH + 2) {
+            missileTankColumns[i >> 3] |= 1 << (i & 7);
+            lastTruck = i;
+            truckRandom = (UWORD)(truckRandom * 109U + 89U);
+            tanksUntilTruck = 8 + truckRandom % 5;
+        }
+    }
 
 	/* Cosmetic pass runs only after every gameplay decision is complete.
 	 * Its seed and queries therefore cannot feed back into height, target
@@ -12406,9 +12863,8 @@ static UBYTE replenishPlayerFromFrigate(GameState* game) {
 		game->missionComplete = 1;
 		game->missionCompleteTimer = LANDING_COMPLETE_HOLD_FRAMES;
 		game->speedLevel = 0;
-		/* CPC landinghoverloop awards &00c8 (200) after both aircraft have
-		 * completed the landing sequence. */
-		game->bonusScore += LANDING_SCORE_VALUE;
+		/* CPC stores &00c8 = 200 internal units, displayed as 2000 points. */
+		awardGameScore(game, LANDING_SCORE_VALUE);
 		game->score = game->bonusScore;
 		telemetryLogGameEvent(TELEMETRY_GAME_EVENT_LANDING_COMPLETE, 0,
 			(UWORD)(((LONG)game->scrollX + game->playerX) >> 3), game,
@@ -12821,6 +13277,14 @@ static WORD levelObjectRowForColumnObject(const LevelObjectDef* object) {
 	return object->row;
 }
 
+static UBYTE isMissileTankColumn(LONG column) {
+    const LevelSegmentDef* segment = levelSegmentForWorldColumn(column);
+    if (!segment || segment->terrainKind != HAR_TERRAIN_CPC_RANDOM_LAND) return 0;
+    LONG local = column - segment->startColumn;
+    return local >= 0 && local < cpcLandProceduralLength &&
+        (missileTankColumns[local >> 3] & (1 << (local & 7)));
+}
+
 #define ENHANCED_TANK_TILES_WIDE 2
 #define ENHANCED_TANK_TILES_TALL 1
 
@@ -12868,7 +13332,8 @@ static void drawEnhancedGroundTargetColumnRowAt(UBYTE* bitmap,
 	const UBYTE* tileData;
 	ULONG tileIndex;
 	if (pairedTank) {
-		tileData = enhancedTankTiles;
+		tileData = isMissileTankColumn(anchorColumn) ?
+			enhancedMissileTankTiles : enhancedTankTiles;
 		tileIndex = (ULONG)compositeRow * ENHANCED_TANK_TILES_WIDE +
 			compositeColumn;
 	} else {
@@ -14980,9 +15445,63 @@ static void retireRocketPixelBobBeforeWorldMutation(UBYTE** worldBuffers,
 			footprints);
 }
 
+/* Editor bank order: player directions, enemy directions, then two 4x3 bombs.
+ * Mode participates in caches so returning to the menu cannot retain old art. */
+static BYTE enhancedProjectileIndex(UBYTE tile, UBYTE enemy) {
+    if (enemy) {
+        if (tile == 98) return 11;
+        if (tile == 56) return 12;
+        return tile >= 53 && tile <= 55 ? (BYTE)(8 + tile - 53) : -1;
+    }
+    if (tile >= 53 && tile <= 56) return (BYTE)(tile - 53);
+    if (tile >= 98 && tile <= 101) return (BYTE)(4 + tile - 98);
+    return -1;
+}
+static UBYTE projectileCanUseHardware(UBYTE tile, UBYTE enemy) {
+    BYTE index = enhancedProjectileIndex(tile, enemy);
+    return currentWorldPresentationMode != GAME_MODE_ENHANCED || index < 0 ||
+        enhancedProjectileHardwareCompatible[(UBYTE)index];
+}
+
+/* Same indexed source for coloured BOBs; reserve/save the existing footprint.
+ * Compatible black/yellow rockets retain their specialised cached fast path. */
+static UBYTE drawEnhancedWeaponRows(UBYTE* bitmap, UBYTE* saved, UWORD x,
+    WORD y, const UBYTE* source, UBYTE width, UBYTE height) {
+    UBYTE shift = x & 7;
+    UWORD byteX = x >> 3;
+    UBYTE count = shift + width > 8 ? 2 : 1;
+    if (byteX + count > GAME_WORLD_ROW_BYTES) count = GAME_WORLD_ROW_BYTES - byteX;
+    UBYTE* dest = bitmap + y * SCREEN_PLANES * GAME_WORLD_ROW_BYTES + byteX;
+    for (UBYTE row = 0; row < height; row++) {
+        UWORD mask = ((UWORD)source[4] << 8) >> shift;
+        for (UBYTE plane = 0; plane < GAME_WORLD_DISPLAY_PLANES; plane++) {
+            UWORD bits = ((UWORD)source[plane] << 8) >> shift;
+            for (UBYTE byte = 0; byte < count; byte++) {
+                UBYTE m = byte ? (UBYTE)mask : (UBYTE)(mask >> 8);
+                UBYTE b = byte ? (UBYTE)bits : (UBYTE)(bits >> 8);
+                UBYTE* target = dest + plane * GAME_WORLD_ROW_BYTES + byte;
+                saved[plane * 2 + byte] = *target;
+                *target = (*target & ~m) | (b & m);
+            }
+        }
+        dest += SCREEN_PLANES * GAME_WORLD_ROW_BYTES;
+        saved += GAME_WORLD_DISPLAY_PLANES * 2;
+        source += 5;
+    }
+    return count;
+}
+
 static void rocketRowMasks(UBYTE tileId, UBYTE row, UBYTE bitOffset,
 	UBYTE monochromeBlack, UWORD* mask, UWORD* planes) {
 	UBYTE opaque = 0, black = 0;
+    BYTE enhanced = enhancedProjectileIndex(tileId, monochromeBlack);
+    if (currentWorldPresentationMode == GAME_MODE_ENHANCED && enhanced >= 0) {
+        const UBYTE* src = enhancedWeaponRows + (UWORD)enhanced * 40 + row * 5;
+        *mask = ((UWORD)src[4] << 8) >> bitOffset;
+        for (UBYTE plane = 0; plane < 4; plane++)
+            planes[plane] = ((UWORD)src[plane] << 8) >> bitOffset;
+        return;
+    }
 	if (tileId < GAME_TILE_COUNT) {
 		const UBYTE* src = gameTiles + tileId * GAME_TILE_BYTES + row * GAME_TILE_PLANES;
 		opaque = src[0] | src[1] | src[2] | src[3] | src[4];
@@ -15023,7 +15542,8 @@ static const RocketRowShape* rocketRowShape(UBYTE tileId, UBYTE bitOffset,
 	UBYTE monochromeBlack) {
 	/* Source tiles are immutable. The same shifted shape is shared by the
 	 * primary and seam placements, and often by consecutive shots. */
-	UWORD key = ((UWORD)tileId << 4) | (bitOffset << 1) | !!monochromeBlack;
+	UWORD key = ((UWORD)tileId << 4) | (bitOffset << 1) | !!monochromeBlack |
+        (currentWorldPresentationMode == GAME_MODE_ENHANCED ? 0x8000U : 0);
 #if HAR_ROCKET_FULL_SHAPE_CACHE
 	/* Dedicated slots for every gameplay silhouette and shift prevent P1,
 	 * P2 and enemy missiles from evicting each other's immutable masks.
@@ -15060,6 +15580,15 @@ static const RocketRowShape* rocketRowShape(UBYTE tileId, UBYTE bitOffset,
 static void drawRocketShotPixelBobPlacement(UBYTE* bitmap,
 	RocketShotFootprint* footprint, UBYTE placement, UWORD bufferPixelX,
 	WORD screenY, UBYTE tileId, UBYTE monochromeBlack) {
+    BYTE enhanced = enhancedProjectileIndex(tileId, monochromeBlack);
+    if (currentWorldPresentationMode == GAME_MODE_ENHANCED && enhanced >= 0 &&
+        !enhancedProjectileHardwareCompatible[(UBYTE)enhanced]) {
+        footprint->byteX[placement] = bufferPixelX >> 3;
+        footprint->byteCount[placement] = drawEnhancedWeaponRows(bitmap,
+            &footprint->background[placement][0][0][0], bufferPixelX, screenY,
+            enhancedWeaponRows + (UWORD)enhanced * 40, 8, 8);
+        return;
+    }
 	UBYTE bitOffset = (UBYTE)(bufferPixelX & 7);
 	UWORD byteX = bufferPixelX >> 3;
 	UBYTE byteCount = bitOffset ? 2 : 1;
@@ -15195,7 +15724,7 @@ static void drawEnemyMissilePixelBob(UBYTE* bitmap, UBYTE bufferIndex,
 	footprint->placementCount = 1;
 	footprint->y = missile->y;
 	footprint->worldX = missile->worldX;
-	UBYTE tileId = missile->dy < 0 ? 53 : (missile->dy > 0 ? 54 : 55);
+	UBYTE tileId = enemyMissileTileForState(missile);
 	drawRocketShotPixelBobPlacement(bitmap, footprint, 0, primaryPixelX,
 		missile->y, tileId, 1);
 	if (primaryPixelX <
@@ -15212,6 +15741,13 @@ static void drawEnemyMissilePixelBob(UBYTE* bitmap, UBYTE bufferIndex,
 static void drawBombShotPixelBobPlacement(UBYTE* bitmap,
 	BombShotFootprint* footprint, UBYTE placement, UWORD bufferPixelX,
 	WORD screenY, UBYTE phase) {
+    if (currentWorldPresentationMode == GAME_MODE_ENHANCED && !enhancedBombOriginal[phase & 1]) {
+        footprint->byteX[placement] = bufferPixelX >> 3;
+        footprint->byteCount[placement] = drawEnhancedWeaponRows(bitmap,
+            &footprint->background[placement][0][0][0], bufferPixelX, screenY,
+            enhancedWeaponRows + 520 + (phase & 1) * 15, 4, 3);
+        return;
+    }
 	/* Exact trimmed silhouettes from CPC tiles 40/41:
 	 * launched = three black pixels diagonally forward/down;
 	 * descending = three black pixels vertically aligned.
@@ -16406,7 +16942,7 @@ static void updateWingmanPlayer2Bomb(GameState* game, UBYTE scrollPixels,
 
 	if (cell.id == HAR_OBJ_GROUND_TARGET) {
 		LONG targetAnchorColumn = groundTargetAnchorColumn(worldColumn);
-		game->bonusScore += GROUND_TARGET_SCORE_VALUE;
+		awardGameScore(game, GROUND_TARGET_SCORE_VALUE);
 		game->hitsCount++;
 		updateHudValues(game);
 		markTargetDestroyedAtColumn(targetAnchorColumn);
@@ -16419,7 +16955,7 @@ static void updateWingmanPlayer2Bomb(GameState* game, UBYTE scrollPixels,
 		*hudDirty = 1;
 	} else if (cell.id == HAR_OBJ_ENEMY_SHIP) {
 		UBYTE shipChanged = damageEnemyShipAtColumnRow(worldColumn, tileY);
-		game->bonusScore += ENEMY_SHIP_SCORE_VALUE;
+		awardGameScore(game, ENEMY_SHIP_SCORE_VALUE);
 		game->hitsCount++;
 		updateHudValues(game);
 		dirtyRedrawWorldColumn(worldBuffers, worldColumn);
@@ -16435,7 +16971,7 @@ static void updateWingmanPlayer2Bomb(GameState* game, UBYTE scrollPixels,
 		if (markLandCraterAtColumnRow(worldColumn, tileY))
 			bobCompositorErase(worldBuffers[0], worldColumn, tileY, 1);
 	} else if (cell.id == HAR_OBJ_TOWN_BLOCK) {
-		game->bonusScore += TOWN_BLOCK_SCORE_VALUE;
+		awardGameScore(game, TOWN_BLOCK_SCORE_VALUE);
 		game->hitsCount++;
 		updateHudValues(game);
 		addCpcTownHitSmokeAtColumnRow(worldColumn, tileY);
@@ -16825,7 +17361,7 @@ static UBYTE updateWeapons(GameState* game, UBYTE scrollPixels, UBYTE** worldBuf
 			retireRocketPixelBobBeforeWorldMutation(worldBuffers,
 				rocketShotFootprints);
 			if (rocketCell.id == HAR_OBJ_GROUND_TARGET) {
-				game->bonusScore += GROUND_TARGET_SCORE_VALUE;
+				awardGameScore(game, GROUND_TARGET_SCORE_VALUE);
 				game->hitsCount++;
 				updateHudValues(game);
 			}
@@ -16858,7 +17394,7 @@ static UBYTE updateWeapons(GameState* game, UBYTE scrollPixels, UBYTE** worldBuf
 			}
 			if (rocketCell.id == HAR_OBJ_ENEMY_SHIP) {
 				UBYTE shipChanged = damageEnemyShipAtColumnRow(rocketWorldColumn, rocketTileY);
-				game->bonusScore += ENEMY_SHIP_SCORE_VALUE;
+				awardGameScore(game, ENEMY_SHIP_SCORE_VALUE);
 				game->hitsCount++;
 				updateHudValues(game);
 				dirtyRedrawWorldColumn(worldBuffers, rocketWorldColumn);
@@ -16882,7 +17418,7 @@ static UBYTE updateWeapons(GameState* game, UBYTE scrollPixels, UBYTE** worldBuf
 				 * addCpcTownHitSmokeAtColumnRow() two-tile pattern. Menu review:
 				 * single-tile redraw
 				 * instead of the whole column. */
-				game->bonusScore += TOWN_BLOCK_SCORE_VALUE;
+				awardGameScore(game, TOWN_BLOCK_SCORE_VALUE);
 				game->hitsCount++;
 				updateHudValues(game);
 				addCpcTownHitSmokeAtColumnRow(rocketWorldColumn, rocketTileY);
@@ -16976,7 +17512,7 @@ static UBYTE updateWeapons(GameState* game, UBYTE scrollPixels, UBYTE** worldBuf
 			retireBombPixelBobBeforeWorldMutation(worldBuffers,
 				bombShotFootprints);
 			if (bombCell.id == HAR_OBJ_GROUND_TARGET) {
-				game->bonusScore += GROUND_TARGET_SCORE_VALUE;
+				awardGameScore(game, GROUND_TARGET_SCORE_VALUE);
 				game->hitsCount++;
 				updateHudValues(game);
 			}
@@ -17010,7 +17546,7 @@ static UBYTE updateWeapons(GameState* game, UBYTE scrollPixels, UBYTE** worldBuf
 			}
 			if (bombCell.id == HAR_OBJ_ENEMY_SHIP) {
 				UBYTE shipChanged = damageEnemyShipAtColumnRow(bombWorldColumn, bombTileY);
-				game->bonusScore += ENEMY_SHIP_SCORE_VALUE;
+				awardGameScore(game, ENEMY_SHIP_SCORE_VALUE);
 				game->hitsCount++;
 				updateHudValues(game);
 				dirtyRedrawWorldColumn(worldBuffers, bombWorldColumn);
@@ -17032,7 +17568,7 @@ static UBYTE updateWeapons(GameState* game, UBYTE scrollPixels, UBYTE** worldBuf
 				 * building cell becomes smoke 52, plus smoke 51 one row
 				 * above only when that cell is sky. Facades now live in the
 				 * tile base, so only the changed smoke cells need repainting. */
-				game->bonusScore += TOWN_BLOCK_SCORE_VALUE;
+				awardGameScore(game, TOWN_BLOCK_SCORE_VALUE);
 				game->hitsCount++;
 				updateHudValues(game);
 				addCpcTownHitSmokeAtColumnRow(bombWorldColumn, bombTileY);
@@ -17988,7 +18524,7 @@ static void trySpawnExtraAircraftBonus(GameState* game) {
 	if (game->scrollX < POWERUP_EXTRA_AIRCRAFT_SCROLL_X ||
 		game->scrollX >= LANDING_APPROACH_SCROLL_X)
 		return;
-	if (game->bonusScore - game->missionStartScore <
+	if (game->missionBaseScore <
 		POWERUP_EXTRA_AIRCRAFT_SCORE)
 		return;
 
@@ -18413,13 +18949,15 @@ static WORD radarSurfacePixelYForWorldColumn(LONG worldColumn) {
 }
 
 static void updateRadarDetection(GameState* game, UBYTE eligible) {
-	/* Detection is intentionally a 12.5 Hz gameplay system. Surface probing
+	/* Detection advances every fourth logical step (12.5 Hz at full PAL
+	 * tempo); display-only interpolation fields cannot advance it. Surface probing
 	 * used to run at 50 Hz even though the result could only affect detection
 	 * every fourth frame; over towns that meant up to 45 procedural-object
 	 * queries whose result was immediately discarded. Keep the last sampled
 	 * clearance between ticks and do the expensive work only when state can
 	 * actually change. */
-	if (frameCounter & (RADAR_DETECTION_TICK_FRAMES - 1)) {
+	if ((menuTempoPercent == 100 ? frameCounter : tempoLogicFrame) &
+		(RADAR_DETECTION_TICK_FRAMES - 1)) {
 		if (telemetryEnabled)
 			telemetryRadarLevel = game->radarDetection;
 		return;
@@ -18561,6 +19099,8 @@ static void launchEnemyMissile(GameState* game);
 static UBYTE enemyRespawnFramesForSkill(UBYTE skillLevel);
 
 static UBYTE spawnEnemyPlane(GameState* game, UWORD decisionColumn) {
+    if (game->enemyMissile.active && game->enemyMissile.type == ENEMY_MISSILE_TRUCK_TYPE)
+        return 0;
 	LONG spawnWorldX = (LONG)game->scrollX + ENEMY_CPC_SPAWN_SCREEN_X;
 	LONG spawnWorldColumn = spawnWorldX >> 3;
 	/* currtime is the same evolving CPC random state used by terrain. The
@@ -18893,6 +19433,7 @@ static void launchEnemyMissile(GameState* game) {
 	if (!game->enemyPlane.active || game->enemyMissile.active)
 		return;
 
+	game->enemyMissile.type = 0;
 	game->enemyMissile.active = 1;
 	game->enemyMissileFromShip = 0;
 	if (game->enemyMissileTarget != ENEMY_TARGET_WINGMAN ||
@@ -18911,6 +19452,7 @@ static void launchEnemyShipMissile(GameState* game, UWORD triggerColumn) {
 	if (game->enemyMissile.active)
 		return;
 
+	game->enemyMissile.type = 0;
 	game->enemyMissile.active = 1;
 	game->enemyMissileFromShip = 1;
 	game->enemyMissileTarget = ENEMY_TARGET_PLAYER;
@@ -18982,7 +19524,7 @@ static UBYTE hitEnemyPlane(GameState* game, UBYTE awardScore) {
 	game->enemyPlaneBrokenTimer = 0;
 	game->enemyPlaneRetreating = 0;
 	if (awardScore) {
-		game->bonusScore += ENEMY_SCORE_VALUE;
+		awardGameScore(game, ENEMY_SCORE_VALUE);
 		game->hitsCount++;
 		updateHudValues(game);
 	}
@@ -19335,7 +19877,7 @@ static void updateWingmanBombingRun(GameState* game, UBYTE scrollPixels,
 		addCpcHitSmokeAtColumnRow(targetColumn, targetRow);
 		dirtyRedrawGroundTarget(worldBuffers, targetColumn);
 		clearTargetLockWithTelemetry(game, HAR_OBJ_GROUND_TARGET);
-		game->bonusScore += GROUND_TARGET_SCORE_VALUE;
+		awardGameScore(game, GROUND_TARGET_SCORE_VALUE);
 		game->hitsCount++;
 		updateHudValues(game);
 		*hudDirty = 1;
@@ -19451,6 +19993,58 @@ static void updateWingmanLanding(GameState* game) {
 	}
 }
 
+static UBYTE tryLaunchMissileTank(GameState* game, UBYTE scrollPixels) {
+    if (game->gameMode != GAME_MODE_ENHANCED || !scrollPixels ||
+        game->scrollX < 16 || game->gameOver || game->crashTimer ||
+        game->ejectState || game->takeoffState != TAKEOFF_STATE_AIRBORNE ||
+        game->landingState != LANDING_STATE_NONE) return 0;
+    LONG exitColumn = ((LONG)game->scrollX - 16) >> 3;
+    LONG previous = ((LONG)game->scrollX - scrollPixels - 16) >> 3;
+    if (exitColumn == previous || !isMissileTankColumn(exitColumn) ||
+        isTargetDestroyedAtColumn(exitColumn) || game->enemyPlane.active ||
+        game->enemyMissile.active) return 0;
+    WeaponState* shot = &game->enemyMissile;
+    memset(shot, 0, sizeof(*shot));
+    shot->active = 1; shot->type = ENEMY_MISSILE_TRUCK_TYPE;
+    shot->worldX = game->scrollX; shot->x = 0;
+    shot->y = terrainSurfacePixelYForWorldColumn(exitColumn) - 16;
+    shot->dy = -1;
+    game->enemyMissileFromShip = 0;
+    game->enemyMissileTarget = ENEMY_TARGET_PLAYER;
+    playSfxAt(SFX_FIRE, 0);
+    return 1;
+}
+
+static void advanceMissileTankShot(GameState* game, UBYTE scrollPixels) {
+    WeaponState* shot = &game->enemyMissile;
+    shot->timer++;
+    if (!shot->direction) {
+        WORD targetY = game->playerY;
+        if (game->wingman.active && game->wingman.screenY > targetY) {
+            targetY = game->wingman.screenY;
+            game->enemyMissileTarget = ENEMY_TARGET_WINGMAN;
+        } else game->enemyMissileTarget = ENEMY_TARGET_PLAYER;
+        targetY += (PLAYER_SPRITE_HEIGHT - ENEMY_MISSILE_SPRITE_HEIGHT) / 2;
+        /* Slow visible rise from the left edge, one pixel every two steps.
+         * Camera compensation is explicit; worldX remains authoritative. */
+        UBYTE step = shot->timer & 1;
+        shot->worldX += scrollPixels + step;
+        shot->dy = -step;
+        if (shot->y > targetY) shot->y -= step;
+        if (shot->y <= targetY) {
+            shot->direction = 1; shot->targetY = shot->y;
+            shot->dx = scrollPixels + 1; shot->timer = 0; shot->dy = 0;
+        }
+    } else {
+        /* Maximum camera motion is 4px/step plus at most 2px of player
+         * lateral motion. Cruise at 7px/step in world coordinates. */
+        if (!(shot->timer & 3) && shot->dx < GAME_SCROLL_SPEED_MAX_PIXELS + PLAYER_MOVE_SPEED_PIXELS + 1) shot->dx++;
+        shot->worldX += shot->dx;
+        shot->y = shot->targetY; shot->dy = 0;
+    }
+    shot->x = (WORD)(shot->worldX - game->scrollX);
+}
+
 static UBYTE updateEnemyMissile(GameState* game, UBYTE scrollPixels) {
 	UBYTE changed = 0;
 	(void)scrollPixels;
@@ -19459,6 +20053,9 @@ static UBYTE updateEnemyMissile(GameState* game, UBYTE scrollPixels) {
 		changed = 1;
 
 	if (game->enemyMissile.active) {
+        if (game->enemyMissile.type == ENEMY_MISSILE_TRUCK_TYPE) {
+            advanceMissileTankShot(game, scrollPixels);
+        } else {
 		/* CPC heatseekposition re-reads the selected aircraft each update, but
 		 * only changes missile height while it remains at least five character
 		 * cells ahead.  Inside that cutoff (or after passing the target) it
@@ -19496,7 +20093,9 @@ static UBYTE updateEnemyMissile(GameState* game, UBYTE scrollPixels) {
 			(LONG)game->scrollX);
 		game->enemyMissile.y += game->enemyMissile.dy;
 		game->enemyMissile.timer++;
-		if (game->enemyMissile.x < -ENEMY_MISSILE_SPRITE_WIDTH ||
+        }
+		if ((game->enemyMissile.type == ENEMY_MISSILE_TRUCK_TYPE && game->enemyMissile.x >= SCREEN_WIDTH) ||
+            game->enemyMissile.x < -ENEMY_MISSILE_SPRITE_WIDTH ||
 			game->enemyMissile.y < 0 ||
 			game->enemyMissile.y > HUD_TOP - ENEMY_MISSILE_SPRITE_HEIGHT) {
 			game->enemyMissile.active = 0;
@@ -20098,6 +20697,402 @@ static UBYTE referencePowerupTransitionMatches(void) {
 	return identical;
 }
 
+static UBYTE missileTankTestFailure;
+static UBYTE referenceMissileTankRulesMatch(void) {
+    static GameState game;
+    UWORD selected = 0;
+    cpcLandSkillLevel = 5;
+    cpcLandRouteExtension = CPC_LAND_MAX_EXTENSION;
+    cpcLandProceduralLength = CPC_LAND_PROCEDURAL_MAX_LENGTH;
+    resetCpcRandomSequence(0x1234);
+    resetDestroyedTargets();
+    LONG last = -GAME_MAP_WIDTH - 2;
+    UWORD since = 0;
+    for (UWORD i = 0; i < cpcLandProceduralLength; i++) {
+        if (cpcLandGameplayTable[i].target == CPC_LAND_TARGET_TANK_FRONT) since++;
+        if (!(missileTankColumns[i >> 3] & (1 << (i & 7)))) continue;
+        if (cpcLandGameplayTable[i].target != CPC_LAND_TARGET_TANK_FRONT ||
+            since < (selected ? 8 : 4) || (LONG)i - last < GAME_MAP_WIDTH + 2) { missileTankTestFailure = 1; return 0x00; }
+        if (!selected) selected = i;
+        since = 0; last = i;
+    }
+    if (!selected) { missileTankTestFailure = 2; return 0x00; }
+    LONG column = CPC_LAND_PROCEDURAL_WORLD_START + selected;
+    if (!isMissileTankColumn(column)) { missileTankTestFailure = 3; return 0x00; }
+    memset(&game, 0, sizeof(game));
+    game.gameMode = GAME_MODE_ENHANCED;
+    game.takeoffState = TAKEOFF_STATE_AIRBORNE;
+    game.playerY = 20; game.wingman.active = 1; game.wingman.screenY = 50;
+    game.scrollX = column * 8 + 16;
+    game.enemyPlane.active = 1;
+    if (tryLaunchMissileTank(&game, 1)) { missileTankTestFailure = 4; return 0x00; }
+    game.enemyPlane.active = 0;
+    game.enemyMissile.active = 1;
+    if (tryLaunchMissileTank(&game, 1)) { missileTankTestFailure = 5; return 0x00; }
+    game.enemyMissile.active = 0;
+    game.gameMode = GAME_MODE_CLASSIC;
+    if (tryLaunchMissileTank(&game, 1)) { missileTankTestFailure = 6; return 0x00; }
+    game.gameMode = GAME_MODE_ENHANCED;
+    markTargetDestroyedAtColumn(column + 1);
+    if (tryLaunchMissileTank(&game, 1)) { missileTankTestFailure = 7; return 0x00; }
+    resetDestroyedTargets();
+    if (!tryLaunchMissileTank(&game, 1) || !game.enemyMissile.active ||
+        game.enemyMissile.type != ENEMY_MISSILE_TRUCK_TYPE || game.enemyMissile.x != 0) { missileTankTestFailure = 8; return 0x00; }
+    if (spawnEnemyPlane(&game, column) || game.enemyPlane.active) { missileTankTestFailure = 9; return 0x00; }
+    if (enemyMissileTileForState(&game.enemyMissile) != 98) { missileTankTestFailure = 10; return 0x00; }
+    UWORD steps = 0;
+    while (!game.enemyMissile.direction && steps++ < 512) {
+        WORD previousY = game.enemyMissile.y;
+        game.scrollX += 4;
+        advanceMissileTankShot(&game, 4);
+        if (game.enemyMissile.y > previousY || previousY - game.enemyMissile.y > 1) { missileTankTestFailure = 11; return 0x00; }
+    }
+    WORD target = 50 + (PLAYER_SPRITE_HEIGHT - ENEMY_MISSILE_SPRITE_HEIGHT) / 2;
+    if (!game.enemyMissile.direction || game.enemyMissile.y != target ||
+        game.enemyMissileTarget != ENEMY_TARGET_WINGMAN ||
+        enemyMissileTileForState(&game.enemyMissile) != 56) { missileTankTestFailure = 12; return 0x00; }
+    game.wingman.screenY = 80; game.playerY = 90;
+    for (UBYTE i = 0; i < 24; i++) {
+        game.scrollX += 4;
+        advanceMissileTankShot(&game, 4);
+        if (game.enemyMissile.y != target) { missileTankTestFailure = 13; return 0x00; }
+    }
+    if (game.enemyMissile.dx != GAME_SCROLL_SPEED_MAX_PIXELS + PLAYER_MOVE_SPEED_PIXELS + 1) { missileTankTestFailure = 14; return 0x00; }
+    /* A suppressed/used exit is not queued for a later pixel. */
+    game.enemyMissile.active = 0;
+    game.scrollX = column * 8 + 17;
+    if (tryLaunchMissileTank(&game, 1)) { missileTankTestFailure = 15; return 0x00; }
+    return 1;
+}
+
+/* Test independently coloured masks at every shift, including the final
+ * byte of the ring buffer. Check the untouched fifth plane and saved bytes. */
+static UBYTE referenceEditableWeaponArtMatches(void) {
+    enum { bytes = 10 * SCREEN_PLANES * GAME_WORLD_ROW_BYTES };
+    UBYTE* actual = AllocMem(bytes * 2, MEMF_PUBLIC);
+    if (!actual) return 0;
+    UBYTE* expected = actual + bytes;
+    UBYTE source[40], saved[8 * 4 * 2];
+    UBYTE ok = 1, oldMode = currentWorldPresentationMode;
+    for (UBYTE narrow = 0; narrow < 2 && ok; narrow++) {
+        UBYTE width = narrow ? 4 : 8, height = narrow ? 3 : 8;
+        memset(source, 0, sizeof(source));
+        for (UBYTE y = 0; y < height; y++)
+            for (UBYTE x = 0; x < width; x++) {
+                UBYTE pen = (y * width + x) & 15;
+                for (UBYTE p = 0; p < 4; p++)
+                    if (pen & (1 << p)) source[y * 5 + p] |= 0x80 >> x;
+                if (pen) source[y * 5 + 4] |= 0x80 >> x;
+            }
+        for (UBYTE edge = 0; edge < 2 && ok; edge++)
+            for (UBYTE shift = 0; shift < 8 && ok; shift++) {
+                UWORD x0 = (edge ? (GAME_WORLD_ROW_BYTES - 1) * 8 : 16) + shift;
+                for (UWORD i = 0; i < bytes; i++) actual[i] = expected[i] = (UBYTE)(i * 13 + 7);
+                memset(saved, 0x55, sizeof(saved));
+                UBYTE count = drawEnhancedWeaponRows(actual, saved, x0, 1, source, width, height);
+                for (UBYTE y = 0; y < height; y++)
+                    for (UBYTE x = 0; x < width; x++) {
+                        UBYTE pen = (y * width + x) & 15;
+                        UWORD px = x0 + x;
+                        if (!pen || px >= GAME_WORLD_ROW_BYTES * 8) continue;
+                        UBYTE mask = 0x80 >> (px & 7);
+                        for (UBYTE p = 0; p < 4; p++) {
+                            UBYTE* target = expected + ((y + 1) * SCREEN_PLANES + p) * GAME_WORLD_ROW_BYTES + (px >> 3);
+                            *target = (*target & ~mask) | ((pen & (1 << p)) ? mask : 0);
+                        }
+                    }
+                if (!referenceBuffersEqual(actual, expected, bytes)) ok = 0;
+                for (UBYTE y = 0; y < height; y++)
+                    for (UBYTE p = 0; p < 4; p++)
+                        for (UBYTE b = 0; b < count; b++) {
+                            UWORD offset = ((y + 1) * SCREEN_PLANES + p) * GAME_WORLD_ROW_BYTES + (x0 >> 3) + b;
+                            if (saved[y * 8 + p * 2 + b] != (UBYTE)(offset * 13 + 7)) ok = 0;
+                        }
+            }
+    }
+    static const UBYTE tiles[13] = {53,54,55,56,98,99,100,101,53,54,55,98,56};
+    currentWorldPresentationMode = GAME_MODE_ENHANCED;
+    for (UBYTE i = 0; i < 13 && ok; i++) {
+        UWORD sprite[20];
+        if (projectileCanUseHardware(tiles[i], i >= 8)) {
+            buildProjectileHardwareSprite(sprite, tiles[i], i >= 8, 17, 19);
+            for (UBYTE y = 0; y < 8; y++)
+                for (UBYTE x = 0; x < 8; x++) {
+                    const UBYTE* row = enhancedWeaponRows + i * 40 + y * 5;
+                    UBYTE pen = 0;
+                    for (UBYTE p = 0; p < 4; p++) pen |= ((row[p] >> (7 - x)) & 1) << p;
+                    UBYTE hw = ((sprite[2 + y * 2] >> (15 - x)) & 1) |
+                        (((sprite[3 + y * 2] >> (15 - x)) & 1) << 1);
+                    if (hw != (pen == 10 ? 1 : (pen == 6 ? 2 : 0))) ok = 0;
+                }
+        }
+        for (UBYTE shift = 0; shift < 8 && ok; shift++) {
+            RocketShotFootprint footprint;
+            memset(&footprint, 0, sizeof(footprint));
+            memset(actual, 0x55, bytes); memset(expected, 0x55, bytes);
+            drawRocketShotPixelBobPlacement(actual, &footprint, 0, 16 + shift, 1, tiles[i], i >= 8);
+            drawEnhancedWeaponRows(expected, saved, 16 + shift, 1, enhancedWeaponRows + i * 40, 8, 8);
+            if (!referenceBuffersEqual(actual, expected, bytes)) ok = 0;
+        }
+    }
+    for (UBYTE phase = 0; phase < 2 && ok; phase++)
+        for (UBYTE shift = 0; shift < 8 && ok; shift++) {
+            BombShotFootprint footprint;
+            memset(&footprint, 0, sizeof(footprint));
+            memset(actual, 0x55, bytes); memset(expected, 0x55, bytes);
+            drawBombShotPixelBobPlacement(actual, &footprint, 0, 16 + shift, 1, phase);
+            drawEnhancedWeaponRows(expected, saved, 16 + shift, 1, enhancedWeaponRows + 520 + phase * 15, 4, 3);
+            if (!referenceBuffersEqual(actual, expected, bytes)) ok = 0;
+        }
+    currentWorldPresentationMode = oldMode;
+    FreeMem(actual, bytes * 2);
+    return ok;
+}
+
+static UBYTE referenceScoreRulesInDirectory(void) {
+	static GameState game, batched;
+	if (LANDING_SCORE_VALUE != 2000) return 0;
+	for (UBYTE skill = 1; skill <= 5; skill++) {
+		for (UBYTE tempo = 80; tempo <= 100; tempo += 10) {
+			memset(&game, 0, sizeof(game)); game.skillLevel = skill; game.scoreTempo = tempo;
+			batched = game;
+			for (UBYTE i = 0; i < 100; i++) awardGameScore(&game, 10);
+			awardGameScore(&batched, 1000);
+			ULONG expected = 1000UL * (100 + (skill - 1) * 5) * (100 + (tempo - 80) / 2);
+			if (game.bonusScore != expected / 10000 || game.scoreFraction != expected % 10000 ||
+				game.bonusScore != batched.bonusScore || game.scoreFraction != batched.scoreFraction ||
+				game.missionBaseScore != 1000) return 0;
+		}
+	}
+	game.bonusScore = 999998; awardGameScore(&game, 2000);
+	if (game.bonusScore != 999999 || game.scoreFraction) return 0;
+
+	/* Produce an actual old-format save. Archive import must never seed v2. */
+	UBYTE old[OLD_SCORE_BYTES]; memset(old, 0, sizeof(old));
+	old[0]='H'; old[1]='A'; old[2]='R'; old[3]='S'; old[4]=1; old[5]=7;
+	putHighScoreU16(old + 6, 98); putHighScoreU32(old + 8, 42);
+	for (UBYTE i = 0; i < 7; i++) {
+		UBYTE* entry = old + 12 + i * 14;
+		memcpy(entry, "PLAYER", 7); entry[7] = 3;
+		putHighScoreU16(entry + 8, 12); putHighScoreU32(entry + 10, 1000 - i);
+	}
+	putHighScoreU32(old + sizeof(old) - 4, highScoreChecksum(old, sizeof(old) - 4));
+	HighScoreEntry decoded[HIGH_SCORE_ENTRY_COUNT]; ULONG generation;
+	if (!decodeOldHighScores(old + 12, 98, decoded, &generation) || decoded[0].score != 1000) return 0;
+	BPTR file = Open((CONST_STRPTR)"harrier_scores_a.dat", MODE_NEWFILE);
+	if (!file) return 0;
+	LONG length = Write(file, old, sizeof(old)); Close(file);
+	if (length != sizeof(old)) return 0;
+	loadHighScoreTable();
+	if (!legacyHighScoresValid || legacyHighScoreTable[0].score != 1000 ||
+		highScoreTables[0][0].score != 100 || highScoreTables[1][0].score != 100) return 0;
+
+	memset(&game, 0, sizeof(game)); game.skillLevel = 4; game.scoreTempo = 90;
+	game.levelDifficulty = 5; game.hitsCount = 27; game.score = 500;
+	game.gameMode = GAME_MODE_CLASSIC;
+	ULONG high = 0;
+	updateHighScoreNamed(&high, &game, "CLASS");
+	game.gameMode = GAME_MODE_ENHANCED; game.score = 900;
+	updateHighScoreNamed(&high, &game, "ENH");
+	if (highScoreTables[0][0].score != 500 || highScoreTables[1][0].score != 900 ||
+		highScoreTables[0][0].skill != 4 || highScoreTables[0][0].tempo != 90) return 0;
+	if (!flushHighScoreTable()) return 0;
+
+	UBYTE encoded[HIGH_SCORE_FILE_BYTES];
+	selectHighScoreMode(GAME_MODE_CLASSIC); encodeHighScoreFile(encoded, 9);
+	if (!decodeHighScoreFile(encoded, decoded, &generation) || generation != 9 ||
+		!highScoreTablesEqual(decoded, highScoreTable)) return 0;
+	selectHighScoreMode(GAME_MODE_ENHANCED);
+	if (decodeHighScoreFile(encoded, decoded, &generation)) return 0;
+	selectHighScoreMode(GAME_MODE_CLASSIC);
+	encoded[20] ^= 1;
+	if (decodeHighScoreFile(encoded, decoded, &generation)) return 0;
+	game.gameMode = GAME_MODE_CLASSIC; game.score = 600;
+	updateHighScoreNamed(&high, &game, "SECOND");
+	if (!flushHighScoreTable()) return 0;
+	loadHighScoreTable();
+	if (highScoreTables[0][0].score != 600 || highScoreTables[1][0].score != 900 ||
+		highScoreTables[0][0].skill != 4 || highScoreTables[0][0].tempo != 90) return 0;
+	/* A torn newest slot must fall back to that mode's preceding generation. */
+	selectHighScoreMode(GAME_MODE_CLASSIC);
+	file = Open((CONST_STRPTR)HIGH_SCORE_SLOT_B_PATH, MODE_NEWFILE);
+	if (!file) return 0;
+	Write(file, old, 1); Close(file);
+	loadHighScoreTable();
+	if (highScoreTables[0][0].score != 500 || highScoreTables[1][0].score != 900) return 0;
+	UBYTE original[OLD_SCORE_BYTES];
+	file = Open((CONST_STRPTR)"harrier_scores_a.dat", MODE_OLDFILE);
+	if (!file) return 0;
+	length = Read(file, original, sizeof(original)); Close(file);
+	if (length != sizeof(original) || !referenceBuffersEqual(old, original, sizeof(old))) return 0;
+	/* Qualification always selects the running mode, not the last viewed list. */
+	selectHighScoreMode(GAME_MODE_ENHANCED);
+	game.gameMode = GAME_MODE_CLASSIC; game.score = 501;
+	if (!beginHighScoreNameEntry(&high, &game) || highScoreMode != GAME_MODE_CLASSIC) return 0;
+	return 1;
+}
+static UBYTE referenceScoreRulesMatch(void) {
+	/* Never touch player files: require a newly created, empty directory. */
+	BPTR directory = CreateDir((CONST_STRPTR)"score_contract_tmp");
+	if (!directory) return 0;
+	BPTR previous = CurrentDir(directory);
+	UBYTE matched = referenceScoreRulesInDirectory();
+	static const char* files[] = { "harrier_scores_a.dat", "harrier_scores_b.dat", "harrier_scores.dat",
+		"harrier_classic2_a.dat", "harrier_classic2_b.dat", "harrier_enhanced2_a.dat", "harrier_enhanced2_b.dat" };
+	for (UBYTE i = 0; i < 7; i++) DeleteFile((CONST_STRPTR)files[i]);
+	CurrentDir(previous); UnLock(directory);
+	DeleteFile((CONST_STRPTR)"score_contract_tmp");
+	/* Export the real menu drawing for pixel/layout inspection. */
+	UBYTE* captures = AllocMem(2 * SCREEN_BITMAP_BYTES, MEMF_PUBLIC | MEMF_CLEAR);
+	if (!captures) return 0;
+	for (UBYTE view = 0; view < 2; view++) {
+		UBYTE* bitmap = captures + view * SCREEN_BITMAP_BYTES;
+		menuLegacyScores = view; selectHighScoreMode(GAME_MODE_CLASSIC);
+		drawTextCenteredStyled(bitmap, 28, HAR_TEXT_TITLE, FONT_STYLE_CPC_GREEN);
+		drawMenuHighScore(bitmap);
+		drawMenuItems(bitmap, MENU_ITEM_START, 4, GAME_MODE_CLASSIC, 0);
+		drawMenuRightSettings(bitmap, 4);
+	}
+	for (UBYTE view = 0; view < 2; view++) {
+		UBYTE* bitmap = captures + view * SCREEN_BITMAP_BYTES;
+		BPTR capture = Open((CONST_STRPTR)(view ? "score_menu_legacy.bpl" : "score_menu_current.bpl"), MODE_NEWFILE);
+		if (capture) {
+			if (Write(capture, bitmap, SCREEN_BITMAP_BYTES) != SCREEN_BITMAP_BYTES) matched = 0;
+			Close(capture);
+		}
+		else matched = 0;
+	}
+	menuLegacyScores = 0;
+	FreeMem(captures, 2 * SCREEN_BITMAP_BYTES);
+	return matched;
+}
+
+static UBYTE referenceTempoMatches(void) {
+	tempoInitBlendTable();
+	UBYTE savedPercent = menuTempoPercent;
+	for (UBYTE percent = 80; percent <= 100; percent += 10) {
+		UWORD credit = 0, steps = 0;
+		for (UWORD frame = 0; frame < 1000; frame++)
+			steps += tempoAdvance(&credit, percent, 1);
+		if (steps != percent * 10 || credit != 0) return 0;
+		/* Missed deadlines cannot build an unbounded work backlog. */
+		for (UBYTE frame = 0; frame < 40; frame++) {
+			tempoAdvance(&credit, percent, 2);
+			if (credit > 99) return 0;
+		}
+		char text[24];
+		menuTempoPercent = percent;
+		menuItemText(MENU_ITEM_TEMPO, 1, GAME_MODE_ENHANCED, 0, text);
+		if (strlen(text) > 16) return 0;
+	}
+	/* A brief press entirely on a non-simulation field must be delivered once. */
+	UBYTE pending = 0, current = 1, previous = 0;
+	tempoLatchEdges(&pending, &current, &previous, 1);
+	current = 0; previous = 1;
+	tempoApplyEdges(&current, &previous, &pending, 1);
+	if (!current || previous || pending) return 0;
+	static GameState sample;
+	memset(&sample, 0, sizeof(sample));
+	sample.missionNumber = 1;
+	sample.scrollX = 100; sample.playerY = 40;
+	tempoPreviousGame = sample;
+	sample.scrollX = 103; sample.playerY = 42;
+	sample.score = 123456; sample.fuel = 777; sample.wingman.rocket.timer = 17;
+	static GameState expected;
+	expected = sample;
+	tempoPoseValid = 1; tempoCredit = 50; menuTempoPercent = 80;
+	if (!tempoBeginRender(&sample) || sample.scrollX != 101 || sample.playerY != 41) return 0;
+	tempoEndRender(&sample);
+	if (!referenceBuffersEqual((const UBYTE*)&sample, (const UBYTE*)&expected, sizeof(sample))) return 0;
+	/* Exercise every mutable coordinate, including the enemy's second X
+	 * adjustment, then require a byte-for-byte restoration of all gameplay. */
+	WeaponState* weapons[] = { &sample.enemyPlane, &sample.rocketShot,
+		&sample.bombShot, &sample.enemyMissile, &sample.wingman.rocket,
+		&sample.wingman.bomb, &sample.crashPart[0], &sample.crashPart[1], &sample.crashPart[2] };
+	for (UBYTE i = 0; i < 9; i++) {
+		weapons[i]->active = 1; weapons[i]->type = 1;
+		weapons[i]->x = 80; weapons[i]->y = 40; weapons[i]->worldX = 180;
+	}
+	sample.wingman.active = sample.powerup.active = 1;
+	tempoCopyPose(&tempoPreviousGame, &sample);
+	for (UBYTE i = 0; i < 9; i++) {
+		weapons[i]->x += 3; weapons[i]->y += 2; weapons[i]->worldX += 3;
+	}
+	sample.scrollX += 3; sample.playerX += 3; sample.playerY += 2;
+	sample.ejectX += 3; sample.ejectY += 2;
+	sample.wingman.screenY += 2; sample.wingman.interceptScreenX += 3;
+	sample.powerup.y += 2; sample.powerup.worldX += 3;
+	expected = sample;
+	if (!tempoBeginRender(&sample) || tempoUndoCount < 30 || tempoUndoCount > 40 ||
+		sample.enemyPlane.x != sample.enemyPlane.worldX - sample.scrollX) return 0;
+	tempoEndRender(&sample);
+	if (!referenceBuffersEqual((const UBYTE*)&sample, (const UBYTE*)&expected, sizeof(sample))) return 0;
+	menuTempoPercent = 100;
+	if (tempoBeginRender(&sample)) return 0;
+	if (tempoBlend(100, 0, 50) != 0) return 0;
+	for (WORD delta = -32; delta <= 32; delta++)
+		for (UWORD alpha = 0; alpha < 100; alpha++)
+			if (tempoBlend(100, 100 + delta, alpha) != 100 + (delta * (LONG)alpha) / 100)
+				return 0;
+	for (UBYTE item = 1; item < MENU_ITEM_COUNT; item++)
+		if (menuItemY(item) - menuItemY(item - 1) < 10) return 0;
+	if (menuItemY(MENU_ITEM_COUNT - 1) + 8 > SCREEN_HEIGHT) return 0;
+	InputState keys = {0}, oldKeys = {0};
+	Player2InputState keys2 = {0}, oldKeys2 = {0};
+	memset(&tempoPendingInput, 0, sizeof(tempoPendingInput));
+	memset(&tempoPendingInput2, 0, sizeof(tempoPendingInput2));
+	tempoHasPendingInput = tempoInputChanged = 0;
+	tempoCredit = 0; tempoElapsedFields = 1; menuTempoPercent = 80;
+	keys.bomb = 1;
+	if (tempoBeginStep(&sample, &keys, &oldKeys, &keys2, &oldKeys2)) return 0;
+	keys.bomb = 0; oldKeys.bomb = 1;
+	if (!tempoBeginStep(&sample, &keys, &oldKeys, &keys2, &oldKeys2) ||
+		!keys.bomb || oldKeys.bomb) return 0;
+	tempoEndStep(&keys, &oldKeys, &keys2, &oldKeys2);
+	if (keys.bomb || !oldKeys.bomb || tempoHasPendingInput || tempoInputChanged) return 0;
+	oldKeys.bomb = 0; keys.up = 1;
+	if (!tempoBeginStep(&sample, &keys, &oldKeys, &keys2, &oldKeys2) ||
+		!keys.up || tempoInputChanged) return 0;
+	menuTempoPercent = savedPercent;
+	tempoPoseValid = tempoPresentedValid = 0;
+	tempoCredit = 0;
+	return 1;
+}
+
+static UBYTE referenceDifficultyProgressionMatches(void) {
+	static GameState fixture;
+	static const UBYTE expectedFlak[2][5] = { {23, 21, 19, 17, 15}, {23, 21, 19, 16, 14} };
+	static const UBYTE expectedRadar[5] = {18, 16, 14, 12, 10};
+	static const UBYTE expectedBombs[5] = {60, 75, 90, 105, 120};
+	static const UBYTE expectedRockets[5] = {30, 30, 45, 45, 60};
+	for (UBYTE mode = 0; mode < 2; mode++) {
+		memset(&fixture, 0, sizeof(fixture));
+		fixture.gameMode = mode ? GAME_MODE_ENHANCED : GAME_MODE_CLASSIC;
+		for (UBYTE skill = 1; skill <= 5; skill++) {
+			char label[24];
+			menuItemText(MENU_ITEM_SKILL, skill, fixture.gameMode, 0, label);
+			if (label[6] != '0' + skill || strlen(label) > 16) return 0;
+			fixture.levelDifficulty = cpcDifficultyForMission(skill, 1);
+			if (fixture.levelDifficulty != skill || cpcLandMinimumRow(skill) != 12 - skill)
+				return 0;
+			if (flakDamageThresholdForGame(&fixture) != expectedFlak[mode][skill - 1])
+				return 0;
+			if (mode && enhancedRadarClearanceThreshold(&fixture) != expectedRadar[skill - 1])
+				return 0;
+			UBYTE bombs, rockets;
+			ammoForSkill(skill, &bombs, &rockets);
+			if (bombs != expectedBombs[skill - 1] || rockets != expectedRockets[skill - 1])
+				return 0;
+			for (UBYTE mission = 1; mission <= 6; mission++) {
+				UBYTE expected = skill + mission - 1;
+				if (expected > 5) expected = 5;
+				if (cpcDifficultyForMission(skill, mission) != expected) return 0;
+			}
+		}
+	}
+	return 1;
+}
+
 static UBYTE referenceEnemySceneryMotionMatches(void) {
 	static GameState fixture;
 	for (UBYTE mode = 0; mode < 2; mode++) {
@@ -20559,6 +21554,62 @@ static int runClassicGameplayContractTest(void) {
 	writeClassicContractResult(powerupMatched ? "PASS powerup-drift-and-pixels" :
 		"FAIL powerup-drift-and-pixels");
 	return powerupMatched ? 0 : 1;
+#endif
+#if HAR_HEADLESS_MISSILE_TANK_TEST_ONLY
+    UBYTE tankMatched = referenceMissileTankRulesMatch();
+    if (tankMatched) writeClassicContractResult("PASS missile-tank-spacing-exclusion-destruction-and-flight");
+    else {
+        char reason[48] = "FAIL missile-tank check ";
+        char* end = reason + strlen(reason);
+        *end++ = '0' + missileTankTestFailure / 10;
+        *end++ = '0' + missileTankTestFailure % 10;
+        *end = 0; writeClassicContractResult(reason);
+    }
+    return tankMatched ? 0 : 1;
+#endif
+#if HAR_HEADLESS_WEAPON_ART_TEST_ONLY
+    UBYTE artMatched = referenceEditableWeaponArtMatches();
+#if HAR_HEADLESS_GUIDE_CAPTURE
+    UBYTE* guideImages = AllocMem(2 * SCREEN_BITMAP_BYTES, MEMF_PUBLIC);
+    menuTickerBitmap = AllocMem(MENU_TICKER_BITMAP_BYTES, MEMF_PUBLIC);
+    if (!guideImages || !menuTickerBitmap) artMatched = 0;
+    else {
+        drawFieldGuideScreen(guideImages, GAME_MODE_CLASSIC);
+        drawFieldGuideScreen(guideImages + SCREEN_BITMAP_BYTES, GAME_MODE_ENHANCED);
+        for (UBYTE view = 0; view < 2; view++) {
+            BPTR file = Open((CONST_STRPTR)(view ? "field_guide_legacy.bpl" : "field_guide_current.bpl"), MODE_NEWFILE);
+            if (!file) artMatched = 0;
+            else {
+                if (Write(file, guideImages + view * SCREEN_BITMAP_BYTES, SCREEN_BITMAP_BYTES) != SCREEN_BITMAP_BYTES) artMatched = 0;
+                Close(file);
+            }
+        }
+    }
+    if (guideImages) FreeMem(guideImages, 2 * SCREEN_BITMAP_BYTES);
+    if (menuTickerBitmap) FreeMem(menuTickerBitmap, MENU_TICKER_BITMAP_BYTES);
+    menuTickerBitmap = 0;
+#endif
+    writeClassicContractResult(artMatched ? "PASS editable-weapon-colours-shifts-hardware-and-bobs" :
+        "FAIL editable-weapon-colours-shifts-hardware-and-bobs");
+    return artMatched ? 0 : 1;
+#endif
+#if HAR_HEADLESS_SCORE_TEST_ONLY
+	UBYTE scoreMatched = referenceScoreRulesMatch();
+	writeClassicContractResult(scoreMatched ? "PASS score-multipliers-mode-tables-and-legacy" :
+		"FAIL score-multipliers-mode-tables-and-legacy");
+	return scoreMatched ? 0 : 1;
+#endif
+#if HAR_HEADLESS_TEMPO_TEST_ONLY
+	UBYTE tempoMatched = referenceTempoMatches();
+	writeClassicContractResult(tempoMatched ? "PASS tempo-clock-input-and-interpolation" :
+		"FAIL tempo-clock-input-and-interpolation");
+	return tempoMatched ? 0 : 1;
+#endif
+#if HAR_HEADLESS_DIFFICULTY_TEST_ONLY
+	UBYTE difficultyMatched = referenceDifficultyProgressionMatches();
+	writeClassicContractResult(difficultyMatched ? "PASS difficulty-1-through-5" :
+		"FAIL difficulty-1-through-5");
+	return difficultyMatched ? 0 : 1;
 #endif
 #if HAR_HEADLESS_ENEMY_SCENERY_TEST_ONLY
 	configureRuntimeLevelRoute(0, 0);
@@ -22745,7 +23796,7 @@ static UBYTE updateGameCollisions(GameState* game, UBYTE** worldBuffers,
 		game->rocketShot.active = 0;
 		game->enemyMissile.active = 0;
 		game->enemyMissileFromShip = 0;
-		game->bonusScore += ENEMY_MISSILE_SCORE_VALUE;
+		awardGameScore(game, ENEMY_MISSILE_SCORE_VALUE);
 		game->hitsCount++;
 		updateHudValues(game);
 		startImpact(game, game->enemyMissile.x, game->enemyMissile.y);
@@ -22760,7 +23811,7 @@ static UBYTE updateGameCollisions(GameState* game, UBYTE** worldBuffers,
 		game->bombShot.active = 0;
 		game->enemyMissile.active = 0;
 		game->enemyMissileFromShip = 0;
-		game->bonusScore += ENEMY_MISSILE_SCORE_VALUE;
+		awardGameScore(game, ENEMY_MISSILE_SCORE_VALUE);
 		game->hitsCount++;
 		updateHudValues(game);
 		startImpact(game, game->enemyMissile.x, game->enemyMissile.y);
@@ -22955,6 +24006,7 @@ static void updateEnemySprite(UWORD* enemySprite, UWORD* enemyAttachSprite,
 #if HAR_HARDWARE_PLAYER_ROCKET
 static UBYTE hardwarePlayerRocketEligible(const GameState* game) {
 	const WeaponState* rocket = &game->rocketShot;
+    if (!projectileCanUseHardware(rocketTileForState(rocket), 0)) return 0;
 	if (game->gameOver || game->ejectState ||
 		!rocketPixelBobVisible(rocket, game->crashTimer) ||
 		rocket->x < 0 || rocket->x + ROCKET_PIXEL_BOB_WIDTH > SCREEN_WIDTH)
@@ -22985,6 +24037,9 @@ static UBYTE selectHardwareProjectileChain(const GameState* game,
 	UBYTE count = 0;
 	for (UBYTE i = 0; i < 3; i++) {
 		const WeaponState* weapon = candidates[i];
+        UBYTE enemy = i == 2;
+        UBYTE tile = enemy ? enemyMissileTileForState(weapon) : rocketTileForState(weapon);
+        if (!projectileCanUseHardware(tile, enemy)) continue;
 		if (!rocketPixelBobVisible(weapon, 0) || weapon->x < 0 ||
 			weapon->x + ROCKET_PIXEL_BOB_WIDTH > SCREEN_WIDTH) continue;
 		if (game->wingman.active && rectsOverlap(weapon->x, weapon->y, 8, 8,
@@ -23024,9 +24079,10 @@ static void updateHardwareProjectileChain(UWORD* sprite, const GameState* game) 
 	for (UBYTE i = 0; i < count; i++) {
 		const WeaponState* weapon = hardwareProjectileChain[i];
 		UBYTE mono = weapon == &game->enemyMissile;
-		UBYTE tile = mono ? (weapon->dy < 0 ? 53 : (weapon->dy > 0 ? 54 : 55)) :
+		UBYTE tile = mono ? enemyMissileTileForState(weapon) :
 			rocketTileForState(weapon);
-		UWORD key = tile | ((UWORD)mono << 8);
+		UWORD key = tile | ((UWORD)mono << 8) |
+            (currentWorldPresentationMode == GAME_MODE_ENHANCED ? 0x8000U : 0);
 		UWORD* entry = sprite + i * (2 + ROCKET_PIXEL_BOB_HEIGHT * 2);
 		if (!hardwareProjectileChainValid[i] || hardwareProjectileChainKeys[i] != key) {
 			buildProjectileHardwareSprite(entry, tile, mono, weapon->x, weapon->y);
@@ -23047,6 +24103,11 @@ static void updateHardwareProjectileChain(UWORD* sprite, const GameState* game) 
 #endif
 
 static void updateHardwarePlayerRocket(UWORD* sprite, const GameState* game) {
+    static UBYTE payloadMode = 255;
+    if (payloadMode != game->gameMode) {
+        hardwareProjectilePayloadOwner = 0;
+        payloadMode = game->gameMode;
+    }
 	UBYTE activePalette = HAR_CRASH_DEBRIS_BOBS || !game->crashTimer;
 	if (activePalette != hardwareProjectilePaletteActive) {
 		const UWORD* palette = (const UWORD*)gamePalette;
@@ -23256,6 +24317,13 @@ static void startGameSession(GameState* game,
 		cpcLandRouteExtension);
 	initGameState(game, effectiveCampaignSeed, effectiveWorldSeed,
 		effectiveMission);
+	tempoInitBlendTable();
+	tempoLogicFrame = frameCounter;
+	tempoHasPendingInput = 0;
+	tempoCredit = 0;
+	tempoPoseValid = tempoPresentedValid = tempoClockValid = 0;
+	memset(&tempoPendingInput, 0, sizeof(tempoPendingInput));
+	memset(&tempoPendingInput2, 0, sizeof(tempoPendingInput2));
 	/* Prepare while the previous scene is still displayed. Commit the LFSR
 	 * state only when takeoff actually starts, preserving the sound sequence. */
 	prepareEngineBuffer(engineSpeedForSpeedLevel(game->speedLevel));
@@ -23272,6 +24340,7 @@ static void startGameSession(GameState* game,
 	/* The ring buffer is initialized below this point, so every resident
 	 * column is built under one immutable presentation mode. A later session
 	 * assigns this again only after the old world has been discarded. */
+	selectHighScoreMode(game->gameMode);
 	currentWorldPresentationMode = game->gameMode;
 	KPrintF("World seed campaign=%ld mission=%ld world=%ld skill=%ld mode=%ld\n",
 		(ULONG)game->campaignSeed, (ULONG)game->missionNumber,
@@ -23646,6 +24715,7 @@ int main(void) {
 
 	while (programRunning) {
 		WaitVbl();
+		tempoSampleField(inGameScene && !gamePaused && !telemetryStatsPaused && !game.gameOver);
 #if HAR_CRASH_DEBRIS_BOBS
 		/* Restore before terrain mutations and the other BOB erases. */
 		if (inGameScene && !telemetryStatsPaused && !gamePaused)
@@ -23685,7 +24755,10 @@ int main(void) {
 			menuTickerFinished = updateMenuTicker();
 		if (inGameScene && !telemetryStatsPaused && !gamePaused) {
 			if (pendingGameScrollCopperUpdate) {
+				UWORD logicalScroll = game.scrollX;
+				if (menuTempoPercent != 100 && tempoPresentedValid) game.scrollX = tempoPresentedScroll;
 				updateGameScrollCopper(worldBuffers[activeWorldBuffer], &game);
+				game.scrollX = logicalScroll;
 				pendingGameScrollCopperUpdate = 0;
 			}
 		}
@@ -24637,6 +25710,8 @@ int main(void) {
 				drawTelemetryStatsScreen(screenBuffer, &game);
 				buildDisplayCopper(copper, screenBuffer, menuPalette, nullSprite);
 				custom->copjmp1 = 0x7fff;
+			} else if (!game.gameOver && !tempoBeginStep(&game, &input, &previousInput, &input2, &previousInput2)) {
+				/* Render an intermediate pose; gameplay remains unchanged this field. */
 			} else if (!game.gameOver) {
 				if (game.takeoffState == TAKEOFF_STATE_ROLLING_IN) {
 					if (game.scrollX > TAKEOFF_SCROLL_STEP_PIXELS)
@@ -24727,6 +25802,8 @@ int main(void) {
 						 * state is restored before rebuilding the ring buffer. */
 						ULONG rescuedScore = game.score;
 						ULONG rescuedBonusScore = game.bonusScore;
+						ULONG rescuedBaseScore = game.missionBaseScore;
+						UWORD rescuedFraction = game.scoreFraction;
 						ULONG rescuedMissionStartScore = game.missionStartScore;
 						UWORD rescuedHits = game.hitsCount;
 						UBYTE rescuedLives = game.lives;
@@ -24773,6 +25850,8 @@ int main(void) {
 							game.wingmanControl, 0);
 						game.score = rescuedScore;
 						game.bonusScore = rescuedBonusScore;
+						game.missionBaseScore = rescuedBaseScore;
+						game.scoreFraction = rescuedFraction;
 						game.missionStartScore = rescuedMissionStartScore;
 						game.hitsCount = rescuedHits;
 						game.lives = rescuedLives;
@@ -24909,6 +25988,7 @@ int main(void) {
 								worldBuffers[activeWorldBuffer], &game);
 
 						ULONG nextBonusScore = game.bonusScore;
+						UWORD nextScoreFraction = game.scoreFraction;
 						UWORD nextHitsCount = game.hitsCount;
 						UBYTE nextLives = game.lives;
 						UBYTE nextGameMode = game.gameMode;
@@ -24940,6 +26020,7 @@ int main(void) {
 							nextCampaignSeed, nextMissionNumber, nextSkill, nextGameMode, nextWingmanControl,
 							preservedLandingWorld);
 						game.bonusScore = nextBonusScore;
+						game.scoreFraction = nextScoreFraction;
 						game.score = nextBonusScore;
 						game.missionStartScore = nextBonusScore;
 						game.extraAircraftBonusSpawned = 0;
@@ -25176,6 +26257,8 @@ int main(void) {
 				{
 					UBYTE radarVisualBeforeEnemyUpdate =
 						radarHudLampVisualForGame(&game);
+					if (tryLaunchMissileTank(&game, scrollPixels))
+                        pendingEnemyMissileSpriteUpdate = 1;
 					if (updateEnemyPlane(&game))
 						pendingEnemySpriteUpdate = 1;
 					if (game.gameMode == GAME_MODE_ENHANCED &&
@@ -25323,6 +26406,15 @@ int main(void) {
 					gameCancelArmed = 0;
 				}
 			}
+		}
+		tempoEndStep(&input, &previousInput, &input2, &previousInput2);
+#if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
+		perfStageMark(50); /* Logic before tempo presentation. */
+#endif
+		if (inGameScene && !telemetryStatsPaused && tempoBeginRender(&game)) {
+			pendingGameScrollCopperUpdate = 1;
+			pendingPlayerSpriteUpdate = pendingEnemySpriteUpdate = 1;
+			pendingCrashSpriteUpdate = pendingEnemyMissileSpriteUpdate = pendingWingmanSpriteUpdate = 1;
 		}
 		if (inGameScene && !telemetryStatsPaused && !gamePaused) {
 #if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
@@ -25481,15 +26573,18 @@ int main(void) {
 #if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
 			perfStageMark(5);
 #endif
-			telemetryUpdate(&game, activeWorldBuffer);
-#if HAR_DEBUG_PERF_LOG
-			perfLogFrame(&game, activeWorldBuffer);
-#endif
 		}
 #if HAR_CRASH_DEBRIS_BOBS
 		/* Republish also when this frame entered pause after the early erase. */
 		if (inGameScene) drawCrashDebrisFrame(worldBuffers[activeWorldBuffer], &game);
 #endif
+		tempoEndRender(&game);
+		if (inGameScene && !telemetryStatsPaused && !gamePaused) {
+			telemetryUpdate(&game, activeWorldBuffer);
+#if HAR_DEBUG_PERF_LOG
+			perfLogFrame(&game, activeWorldBuffer);
+#endif
+		}
 	}
 
 	stopAllSfx();
@@ -25502,7 +26597,7 @@ int main(void) {
 	/* Filesystem access is now safe and happens only on this one-way path. A
 	 * failed/read-only save leaves the built-in table intact and cannot block
 	 * returning to DOS. */
-	if (HAR_HIGHSCORE_DISK_IO && !flushHighScoreTable() && highScoreSaveDirty)
+	if (HAR_HIGHSCORE_DISK_IO && !flushHighScoreTable())
 		KPrintF("High-score save skipped: media unavailable or read-only\n");
 #if HAR_DEBUG_PERF_LOG
 	perfLogFlushToDisk();
