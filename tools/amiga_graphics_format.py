@@ -79,7 +79,13 @@ PROJECTILE_ASSETS = tuple(
 )
 BOMB_ASSETS = tuple(AssetSpec(f"bomb_{i}", label, f"bomb_{i}_4x3.png", 4, 3)
                     for i, label in enumerate(("Bomb launch", "Bomb falling")))
-ASSETS = GROUND_ASSETS + (MISSILE_TANK,) + PROJECTILE_ASSETS + BOMB_ASSETS + TOWN_ASSETS
+ENCOUNTER_ASSETS = (
+    AssetSpec("silo_closed", "Missile Silo closed", "silo_closed_16x8.png", 16, 8),
+    AssetSpec("silo_open", "Missile Silo open", "silo_open_16x8.png", 16, 8),
+    AssetSpec("helicopter_0", "Helicopter rotor A", "helicopter_0_16x8.png", 16, 8),
+    AssetSpec("helicopter_1", "Helicopter rotor B", "helicopter_1_16x8.png", 16, 8),
+)
+ASSETS = GROUND_ASSETS + (MISSILE_TANK,) + ENCOUNTER_ASSETS + PROJECTILE_ASSETS + BOMB_ASSETS + TOWN_ASSETS
 
 
 def pixel_is_editable(spec: AssetSpec, x: int, y: int) -> bool:
@@ -253,7 +259,19 @@ def build_runtime_banks() -> dict[Path, bytes]:
         + ", ".join(map(str, compatible[:13])) + "};\n"
         + "static const UBYTE enhancedBombOriginal[2] = {"
         + ", ".join(map(str, original_bombs)) + "};\n").encode("ascii")
+    helicopter_shifted = bytearray()
+    for key in ("helicopter_0", "helicopter_1"):
+        im = images[key]
+        for shift in range(8):
+            for y in range(8):
+                pens = [im.getpixel((x, y)) for x in range(16)]
+                masks = [sum(1 << (23 - shift - x) for x, pen in enumerate(pens) if pen)]
+                masks += [sum(1 << (23 - shift - x) for x, pen in enumerate(pens) if pen & (1 << plane)) for plane in range(4)]
+                for bits in masks:
+                    helicopter_shifted.extend(bits.to_bytes(3, "big"))
     return {
+        ASSET_DIR / "helicopter_shifted.bpl": bytes(helicopter_shifted),
+        ASSET_DIR / "encounters_masked.bpl": b"".join(encode_tiles(images[spec.key], ((0, 0), (8, 0))) for spec in ENCOUNTER_ASSETS),
         ASSET_DIR / "missile_tank_16x8_masked.bpl": encode_tiles(images["missile_tank"], ((0, 0), (8, 0))),
         ASSET_DIR / "weapons_masked.bpl": bytes(weapons),
         ASSET_DIR / "weapons_graphics.h": weapon_header,

@@ -44,7 +44,10 @@ try {
 
     $process = Start-Process -FilePath $WinUae -ArgumentList @("-f", $Config) -WindowStyle Hidden -PassThru
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
-    while (-not (Test-Path -LiteralPath $Result)) {
+    # DOS creates the file before its first Write completes. Wait for data,
+    # otherwise Get-Content -Raw can return null and abort a valid short test.
+    while (-not (Test-Path -LiteralPath $Result) -or
+        (Get-Item -LiteralPath $Result).Length -eq 0) {
         if ([DateTime]::UtcNow -ge $deadline) {
             throw "Classic contract ga ikke resultat innen $TimeoutSeconds sekunder."
         }
