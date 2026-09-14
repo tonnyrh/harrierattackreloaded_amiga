@@ -112,6 +112,41 @@ static __attribute__((noinline, optimize("Os"))) WORD helicopterTerrainY(GameSta
     return game->helicopterTerrainTarget;
 }
 
+static __attribute__((noinline, optimize("Os"))) void updateHelicopterBullets(GameState* game) {
+    for (UBYTE i = 0; i < HELICOPTER_BULLET_MAX; i++) {
+        HelicopterBullet* b = &game->helicopterBullets[i];
+        if (!b->active) continue;
+        WORD sx = b->subX + b->vx16, sy = b->subY + b->vy16;
+        b->worldX += sx >> 4; b->y += sy >> 4;
+        b->subX = sx & 15; b->subY = sy & 15;
+        WORD x = (WORD)(b->worldX - game->scrollX);
+        if (++b->age >= 90 || x < 0 || x >= SCREEN_WIDTH || b->y < 0 ||
+            b->y >= GAME_WORLD_HEIGHT || b->y >= terrainSurfacePixelYForWorldColumn(b->worldX >> 3))
+            b->active = 0;
+    }
+}
+
+static __attribute__((noinline, optimize("Os"))) void fireHelicopterBullet(GameState* game, UBYTE shot) {
+#if HAR_HEADLESS_AUTOPLAY && HAR_HEADLESS_OMIT_HELI_BULLETS
+    (void)game; (void)shot; return;
+#endif
+    static const BYTE spread[HELICOPTER_BULLET_MAX] = {-5, 5};
+    for (UBYTE i = 0; i < HELICOPTER_BULLET_MAX; i++) {
+        HelicopterBullet* b = &game->helicopterBullets[i];
+        if (b->active) continue;
+        WORD dx = game->playerX + 8 - game->helicopter.x;
+        WORD dy = game->playerY + 4 + spread[shot] - (game->helicopter.y + 6);
+        WORD major = dx < 0 ? -dx : dx, ay = dy < 0 ? -dy : dy;
+        if (ay > major) major = ay;
+        if (!major) return;
+        memset(b, 0, sizeof(*b)); b->active = 1;
+        b->worldX = game->helicopter.worldX; b->y = game->helicopter.y + 6;
+        b->vx16 = (dx * 24) / major; b->vy16 = (dy * 24) / major;
+        ENCOUNTER_STAT(2);
+        return;
+    }
+}
+
 static __attribute__((noinline, optimize("Os"))) void updateHelicopter(GameState* game, UBYTE scrollPixels, UBYTE* bitmap) {
     WeaponState* heli = &game->helicopter;
     WeaponState* smoke = &game->helicopterSmoke;
@@ -159,20 +194,12 @@ static __attribute__((noinline, optimize("Os"))) void updateHelicopter(GameState
         WORD dy = targetY - heli->y;
         heli->y += encounterClampVelocity(dy);
         heli->x = (WORD)(heli->worldX - game->scrollX);
-        /* Fixed simulation cadence, sparse shots, and no firing behind player. */
-        if (!(game->helicopterAge % 65) && heli->x > game->playerX + 16 &&
-            heli->x > 0 && heli->x < SCREEN_WIDTH) {
-            LONG column = ((LONG)game->scrollX + game->playerX + 32) >> 3;
-            WORD row = (game->playerY + 4) >> 3;
-            ObjectCell cell;
-            if (aircraftObjectCell(column, row, &cell) &&
-                (cell.id == HAR_OBJ_SKY || cell.id == HAR_OBJ_CLOUD) &&
-                addRuntimeFlak(column, row, 57)) {
-                ENCOUNTER_STAT(2);
-                bobCompositorErase(bitmap, column, row, 1);
-                playSfxAt(SFX_FLAK_GUN_1, heli->x);
-            }
-        }
+        /* Two aimed points per burst, a strict two-slot cap and no
+         * object-map flak edits. Aim once; do not home after firing. */
+        UBYTE burst = game->helicopterAge % 90;
+        if ((burst == 0 || burst == 4) &&
+            heli->x > game->playerX + 16 && heli->x > 0 && heli->x < SCREEN_WIDTH)
+            fireHelicopterBullet(game, burst >> 2);
         UBYTE pulse = game->helicopterHits ? 10 : 7;
         if (!(game->helicopterAge % pulse) && heli->x >= 0 && heli->x < SCREEN_WIDTH)
             playSfxAtTuned(SFX_HELICOPTER, heli->x, 24, game->helicopterHits ? 560 : 443);
@@ -199,6 +226,7 @@ static __attribute__((noinline, optimize("Os"))) void updateEnhancedEncounters(G
 #if HAR_DEBUG_PERF_LOG
     UWORD begin = currentRasterY();
 #endif
+    updateHelicopterBullets(game);
     updateMissileSilo(game, scrollPixels, bitmap);
     updateHelicopter(game, scrollPixels, bitmap);
     game->encounterPlayerX = game->playerX; game->encounterPlayerY = game->playerY;
@@ -215,6 +243,18 @@ static __attribute__((noinline, optimize("Os"))) void updateEnhancedEncounters(G
 static __attribute__((noinline, optimize("Os"))) void collideEnhancedEncounters(GameState* game, UBYTE** buffers,
     UBYTE* hudDirty, UBYTE* weaponDirty, UBYTE* wingDirty) {
     if (game->gameMode != GAME_MODE_ENHANCED || game->gameOver || game->crashTimer) return;
+    for (UBYTE i = 0; i < HELICOPTER_BULLET_MAX; i++) {
+        HelicopterBullet* b = &game->helicopterBullets[i];
+        if (!b->active) continue;
+        WORD x = (WORD)(b->worldX - game->scrollX);
+        if (game->respawnSafeTimer == 0 && rectsOverlap(x, b->y, 1, 1,
+            game->playerX, game->playerY, PLAYER_SPRITE_WIDTH, PLAYER_SPRITE_HEIGHT)) {
+            b->active = 0; applyPlayerFlakDamage(game); *hudDirty = 1;
+        } else if (game->wingman.active && rectsOverlap(x, b->y, 1, 1,
+            wingmanScreenX(game), game->wingman.screenY, PLAYER_SPRITE_WIDTH, PLAYER_SPRITE_HEIGHT)) {
+            b->active = 0; /* Wingman shares the original flak immunity. */
+        }
+    }
     WeaponState* missile = &game->siloMissile;
     WeaponState* heli = &game->helicopter;
     WeaponState* rockets[2] = { &game->rocketShot, &game->wingman.rocket };

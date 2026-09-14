@@ -2,11 +2,11 @@
 
 These changes are local development work after Public Beta 3 RC1; they are not a new published release.
 
-- Landing mode enters at speed level 3 or below, remains active at 4, and retracts at 5. Actual carrier approach also engages it. The yellow L cockpit lamp and existing landing-gear artwork indicate the state. Fuel drains at three times the ordinary rate, measured in simulation steps; pause and tempo interpolation do not consume extra fuel. Completed landing/refuelling retains the existing rules.
+- Landing mode enters at speed level 2 or below, remains active at 3, and retracts at 4. Actual carrier approach also engages it. The yellow L cockpit lamp and existing landing-gear artwork indicate the state. Fuel drains at three times the ordinary rate, measured in simulation steps; pause and tempo interpolation do not consume extra fuel. Completed landing/refuelling retains the existing rules.
 - Hover uses the existing Paula engine loop at a lower pitch and slightly higher volume. No full sample regeneration or extra voice is required on a mode transition.
 - Missile Tank climb changes from two to three vertical pixels per four simulation steps. Horizontal drift and cruise speed are unchanged.
 - Missile Silo occupies the same 16x8 target footprint. It has separate closed/open indexed masters. Its placement stream is independent of the original terrain RNG and never replaces a Missile Tank. Silos use the same 8-12-tank recurrence, with a 42-column gap between anchors. Each intact silo can fire once. Its separate vertical missile slot is independent of enemy planes and their missiles. The launch predicts current aircraft motion; the missile accelerates without tracking after launch.
-- Helicopters appear from mission 2 over procedural land, one at a time. They follow terrain with forward clearance, stay ahead for 500 simulation steps plus 100 per subsequent mission (capped at 1500), and then stop advancing in world space. They stop 40 pixels before a town. A flak burst can appear 32 pixels ahead of the Harrier every 65 steps, only while the helicopter remains ahead.
+- Helicopters appear from mission 2 over procedural land, one at a time. They follow terrain with forward clearance, stay ahead for 500 simulation steps plus 100 per subsequent mission (capped at 1500), and then stop advancing in world space. They stop 40 pixels before a town. They fire two small aimed bullets with slight vertical spread per 90-step burst, only while ahead of the Harrier. At most two bullets can be active. Each is a single light pixel and disappears on terrain contact or after 90 steps. Harrier takes ordinary flak damage; Wingman keeps its existing flak immunity.
 - The first missile hit produces sparse cosmetic smoke (one short puff per 100 steps) and a slower rotor pulse. A second missile hit stops the rotor/audio and starts an accelerating fall. The rotor uses a precomputed 256-byte pulse at ambient priority, below gameplay effects. No procedural synthesis runs in the game loop.
 - Helicopter and silo artwork starts at 16x8 and is editable in the existing graphics editor. These are provisional pixel-art masters for further art direction; all existing user-edited PNGs remain authoritative.
 - Wingman formation clamps its final horizontal step to the pixel-aligned target instead of overshooting on an eight-pixel grid.
@@ -50,3 +50,35 @@ Enhanced Harrier armour now loses exactly one third of full health per ordinary 
 When the E lamp is lit in Enhanced, hold the player's rocket and bomb buttons together for 12 simulation steps (0.24 seconds at 100% tempo) to eject. Releasing either button or cancelling resets the hold. Pause/interpolation cannot advance the counter. The existing E key and its control binding remain available.
 
 Validation: `run-amiga-classic-contract.ps1 -ExtraCcFlags '-DHAR_HEADLESS_MISSILE_DAMAGE_EJECT_TEST_ONLY=1'` checks damage, fractional exhaustion, flak interaction, health reset, respawn protection, silo consumption, Wingman destruction and the gated eject hold.
+
+
+## A500 hardware feedback adjustments
+
+- Wingman's complete hardware-sprite data is prepared in CPU memory. Its 72-byte image/control block is copied to Chip RAM at vertical blank, before the gameplay Copper list starts. The display never reads the staging buffer. This removes live sprite-data writes during the active display; confirmation on the reporting A500 is still required.
+- The reported machine is an A500 with Kickstart 1.2 and 512 KB expansion. Validation uses OCS and 512 KB Chip plus 512 KB Slow RAM.
+- Missile Tank shots now test the terrain across their swept horizontal footprint and produce the existing impact effect on contact.
+- Helicopter runtime graphics are mirrored to face right, preserving the indexed editing masters. Both the normal and preshifted banks use the same mirrored pixels.
+- Machine-gun bullets use fixed-point motion, a strict two-slot pool and masked single-bit background restoration. No per-frame allocation or additional audio channel is used. They are included in tempo interpolation and ring-stream overlap protection.
+
+
+Validation of the hardware-feedback build (`BETA 3 DEV2`):
+
+- A500, OCS, Kickstart 1.2, 512 KB Chip + 512 KB Slow, mission 2/skill 3, automatic Wingman, maximum cruise, normal weapon load: 46-50 FPS in sampled gameplay intervals. One silo, one helicopter and eleven machine-gun rounds were exercised. The two-round cap was selected after comparing three rounds and no rounds on the same route. The no-round baseline measured 46-50 FPS; the three-round version had one 37-FPS interval.
+- A1200, 2 MB Chip, no Fast RAM, 90% tempo: all ordinary sampled gameplay intervals were 50 FPS. The scripted pause is excluded. Nine machine-gun rounds were exercised.
+- Zero late Copper camera commits on both machines. Maximum observed commit line was 4 on the A500 and 1 on the A1200, including the new Wingman publication.
+- The encounter contract covers the staging/publish boundary, both Wingman artwork states, hidden sprites, bullet cap/spread/terrain expiry, Tank missile terrain impact, exact BOB/pixel restoration, and tempo interpolation with live bullets. Physical A500 confirmation of the original Wingman symptom remains outstanding.
+
+
+## Fuel supply and route reserve
+
+Fuel uses a fixed turquoise HUD pen; Armour stays yellow. Both retain their red critical warning. The fuel colour is set only below the world/HUD split and cannot follow mission palette changes.
+
+Enhanced has occasional 8x8 F depots, editable as `Fuel depot F (+20%)`. They replace single-cell ground targets, never Missile Tanks or Silos. The first is eligible after 96-127 procedural-land columns; later depots are at least 192-255 columns apart, depending on seed and available targets. Player rockets/bombs and Wingman bombs grant exactly 20% of full fuel capacity on destruction, capped at full. Destruction persistence prevents repeated collection; depleted/failed aircraft cannot be rescued after failure has started. Existing ship servicing still fills the tank completely. No parachute fuel drop was added.
+
+The route grows by 256 columns per effective difficulty (menu skill plus completed missions, capped at 5). Enhanced difficulty 3/4/5 now has 10/20/30% greater fuel endurance: approximately 210/229/248 seconds of normal flight at 100% tempo, versus 191 seconds at difficulty 1/2. L mode still consumes three times as much. Classic remains exactly 9558 simulation steps per full tank. Fuel runs on logical steps, so changing tempo or pausing cannot disadvantage fuel relative to distance.
+
+The fuel contract exercises the actual terrain generator for 16 seeds at each of all five effective difficulties. It budgets the entire scroll distance at throttle 5 or higher (3 pixels/step), another 10 seconds for departure/acceleration, and 30 seconds at triple consumption for landing, with at least 10% remaining and no depot collection. This establishes a conservative fuel-feasible route, not a guarantee for unlimited hovering, slow flight or repeated approaches. All later missions share the capped route-length bound.
+
+Run: `run-amiga-classic-contract.ps1 -ExtraCcFlags '-DHAR_HEADLESS_FUEL_SUPPLY_TEST_ONLY=1'`.
+
+Validation (`BETA 3 DEV3`): the fuel contract passed all 80 generated routes, exact 20% refill arithmetic, saturation, repeated-destruction protection and Classic duration. A500/Kickstart 1.2, OCS, 512 KB Chip + 512 KB Slow RAM, normal load with Wingman at 100% tempo completed at 46-50 FPS in sampled gameplay intervals, matching the preceding build. Zero late Copper commits, maximum line 4. Existing ground-target bank cells were verified byte-for-byte unchanged; the depot adds one 40-byte masked cell and a 198-byte placement bitset. No new sprite channel, BOB or audio synthesis is required.

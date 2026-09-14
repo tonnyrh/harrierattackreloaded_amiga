@@ -1,7 +1,7 @@
-HARRIER ATTACK RELOADED - AMIGA PUBLIC BETA 3 RC1
+HARRIER ATTACK RELOADED - AMIGA PUBLIC BETA 4
 ===========================================
 
-Version: v0.9.0-beta.3-rc.1 (prerelease)
+Version: v0.9.0-beta.4 (prerelease)
 
 Thank you for trying this unofficial, non-commercial Amiga port.
 
@@ -40,13 +40,24 @@ Classic mode preserves the CPC gameplay contract. Enhanced mode keeps that
 foundation while adding Amiga presentation and gameplay extensions such as
 smooth scrolling, terrain radar and aircraft rescue.
 
-BETA 3 RC1
+BETA 4
 ----------
 
-New Enhanced weapon art and a rare Missile Tank, also shown in the Field
-Guide. Destroy the tank before it exits left or it can fire from behind.
-The missile rises, then accelerates at the lower aircraft's locked height.
-Enemy planes cannot spawn while this missile is active.
+Enhanced adds Missile Silos and terrain-following helicopters from mission 2.
+Helicopters take two missile hits and fire small machine-gun rounds. Missile
+Tank shots climb faster and explode on terrain contact.
+
+At very low throttle, L mode deploys landing gear and uses triple fuel.
+Destroy an F depot for 20% fuel. Longer routes carry a larger fuel reserve.
+Fuel is turquoise; Armour is yellow. Parachutes do not supply fuel.
+
+Ordinary missiles remove one third of Harrier armour; tank missiles remove
+one half. Wingman is destroyed by one missile. Hold rocket and bomb together
+when the E lamp lights to eject; the E key remains available.
+
+Wingman sprite updates now publish at vertical blank to address the reported
+A500 corruption. Please confirm this on real hardware, especially Kickstart
+1.2 with 512 KiB expansion. Busy scenes can still drop below 50 FPS.
 
 Skill runs from 1 (Easiest) to 5 (Hardest). Tempo is independently selectable
 at 80%, 90% or 100%. Higher Skill and Tempo give higher score multipliers.

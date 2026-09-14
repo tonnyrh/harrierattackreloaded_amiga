@@ -1,3 +1,38 @@
+/* Single pixels save/restore their own bit, never a whole neighbour byte. */
+static __attribute__((noinline, optimize("Os"))) void eraseHelicopterBullets(UBYTE* bitmap, UBYTE index) {
+    for (UBYTE n = HELICOPTER_BULLET_MAX; n; n--) {
+        BulletFootprint* fp = &bulletFootprints[n - 1][index];
+        if (!fp->valid) continue;
+        for (UBYTE copy = 0; copy < fp->count; copy++) {
+            UBYTE* dest = bitmap + (ULONG)fp->y * SCREEN_PLANES * GAME_WORLD_ROW_BYTES + fp->byteX[copy];
+            for (UBYTE plane = 0; plane < 4; plane++, dest += GAME_WORLD_ROW_BYTES)
+                *dest = (*dest & ~fp->mask) | fp->old[copy][plane];
+        }
+        fp->valid = 0;
+    }
+}
+
+static __attribute__((noinline, optimize("Os"))) void drawHelicopterBullets(UBYTE* bitmap, UBYTE index, const GameState* game) {
+    for (UBYTE i = 0; i < HELICOPTER_BULLET_MAX; i++) {
+        const HelicopterBullet* b = &game->helicopterBullets[i];
+        WORD sx = (WORD)(b->worldX - game->scrollX);
+        if (!b->active || sx < 0 || sx >= SCREEN_WIDTH || b->y < 0 || b->y >= GAME_WORLD_HEIGHT) continue;
+        UWORD x = GAME_WORLD_BUFFER_MARGIN_PIXELS + (UWORD)b->worldX % (UWORD)(GAME_WORLD_SCROLL_PAGE_BYTES * 8);
+        BulletFootprint* fp = &bulletFootprints[i][index];
+        fp->valid = 1; fp->y = b->y; fp->worldX = b->worldX; fp->mask = 0x80 >> (x & 7);
+        fp->count = x < (GAME_WORLD_BUFFER_MARGIN_TILES + GAME_FETCH_BYTES) * 8 ? 2 : 1;
+        for (UBYTE copy = 0; copy < fp->count; copy++) {
+            fp->byteX[copy] = (x >> 3) + (copy ? GAME_WORLD_SCROLL_PAGE_BYTES : 0);
+            UBYTE* dest = bitmap + (ULONG)b->y * SCREEN_PLANES * GAME_WORLD_ROW_BYTES + fp->byteX[copy];
+            for (UBYTE plane = 0; plane < 4; plane++, dest += GAME_WORLD_ROW_BYTES) {
+                fp->old[copy][plane] = *dest & fp->mask;
+                /* Stable light grey pen 2, independent of the scene palette. */
+                *dest = (*dest & ~fp->mask) | (plane == 1 ? fp->mask : 0);
+            }
+        }
+    }
+}
+
 static __attribute__((noinline, optimize("O2"))) void eraseHelicopter(UBYTE* bitmap, UBYTE index) {
     HelicopterFootprint* fp = &helicopterFootprints[index];
     if (!fp->valid) return;
@@ -96,6 +131,9 @@ static __attribute__((noinline, optimize("Os"))) void retireEncounterBobs(UBYTE*
      * group. Finish its displayed rows before restoring the saved bytes. */
     if (bufferIndex >= GAME_WORLD_BUFFER_COUNT) return;
     WORD lastY = -1;
+    for (UBYTE i = 0; i < HELICOPTER_BULLET_MAX; i++)
+        if (bulletFootprints[i][bufferIndex].valid && bulletFootprints[i][bufferIndex].y > lastY)
+            lastY = bulletFootprints[i][bufferIndex].y;
     for (UBYTE i = 0; i < 2; i++)
         if (encounterFootprints[i][bufferIndex].valid && encounterFootprints[i][bufferIndex].y > lastY)
             lastY = encounterFootprints[i][bufferIndex].y;
@@ -107,6 +145,7 @@ static __attribute__((noinline, optimize("Os"))) void retireEncounterBobs(UBYTE*
         while (currentRasterY() <= target) { }
     }
 #endif
+    eraseHelicopterBullets(bitmap, bufferIndex);
     /* Reverse composition order is required when the halves share a byte. */
     eraseRocketPixelBobFootprint(bitmap, bufferIndex, encounterFootprints[1]);
     eraseHelicopter(bitmap, bufferIndex);
@@ -115,6 +154,13 @@ static __attribute__((noinline, optimize("Os"))) void retireEncounterBobs(UBYTE*
 
 static __attribute__((noinline, optimize("Os"))) void retireEncounterRegion(UBYTE* bitmap, UBYTE index, LONG x, WORD y, UWORD w, UWORD h) {
     if (index >= GAME_WORLD_BUFFER_COUNT) return;
+    for (UBYTE i = 0; i < HELICOPTER_BULLET_MAX; i++) {
+        const BulletFootprint* fp = &bulletFootprints[i][index];
+        if (fp->valid && y <= fp->y && y + h > fp->y &&
+            (x >> 3) <= (fp->worldX >> 3) && ((x + w - 1) >> 3) >= (fp->worldX >> 3)) {
+            retireEncounterBobs(bitmap, index); return;
+        }
+    }
     const HelicopterFootprint* heli = &helicopterFootprints[index];
     if (heli->valid && y < heli->y + 8 && y + h > heli->y &&
         (x >> 3) <= ((heli->worldX + 15) >> 3) && ((x + w - 1) >> 3) >= (heli->worldX >> 3)) {
@@ -167,6 +213,7 @@ static __attribute__((noinline, optimize("Os"))) void drawEnhancedEncounterBobs(
         0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0
     };
     drawEncounterTile(bitmap, bufferIndex, &game->helicopterSmoke, 1, 0, smoke);
+    drawHelicopterBullets(bitmap, bufferIndex, game);
 #if HAR_DEBUG_PERF_LOG
     UWORD end = currentRasterY();
     ULONG cost = end >= begin ? end - begin : end + 312 - begin;

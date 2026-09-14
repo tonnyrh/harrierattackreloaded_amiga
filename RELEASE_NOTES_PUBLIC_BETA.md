@@ -1,57 +1,63 @@
-# Harrier Attack Reloaded Amiga — Public Beta 3 RC1
+# Harrier Attack Reloaded Amiga - Public Beta 4
 
-Version **v0.9.0-beta.3-rc.1** is a public beta release candidate, not a final
-release. Target: PAL Amiga 500, 68000/OCS, 512 KiB Chip RAM plus 512 KiB
-expansion RAM, Kickstart 1.3. No ROMs or Amiga system software are included.
+**v0.9.0-beta.4 is a public prerelease.** Target: PAL Amiga 500, 68000/OCS,
+512 KiB Chip RAM plus 512 KiB expansion RAM. No ROMs or system software are included.
 
-## Changes since Public Beta 2
+## Changes since Public Beta 3 RC1
 
-- Latest user-edited Enhanced weapon and Missile Tank graphics. Editor sizes
-  remain 8x8 for missiles, 4x3 for bombs and 16x8 for tanks.
-- Rare Missile Tanks: first after 4–6 tanks per mission, then every 8–12,
-  subject to spacing so two never share a screen. A survivor fires as it
-  exits left, unless an enemy aircraft/missile is already active. Its missile
-  rises, then locks the lower aircraft's height and accelerates forwards.
-  Enemy aircraft cannot spawn while this missile remains active.
-- Missile Tank added to the Enhanced Field Guide with the current artwork.
-- Separate Tempo setting: 80%, 90%, 100%. Clearer Skill 1–5 labels.
-- Score bonuses combine starting Skill and Tempo, up to x1.32. Landing now
-  awards 2000 base points. Power-up thresholds still use unscaled points.
-- Separate Classic/Enhanced score tables with Skill/Tempo metadata. Earlier
-  scores remain available in the read-only Legacy archive.
-- Enemy planes stay anchored to scrolling scenery, with vertical attack and
-  retreat behaviour.
+- Enhanced Missile Silos fire accelerating vertical missiles independently of
+  enemy aircraft. Editable closed/open silo graphics.
+- Terrain-following helicopters appear from mission 2, remain ahead for a limited
+  time and stop before cities. Two missile hits bring them down. Rotor audio,
+  sparse damage smoke, right-facing runtime art and at most two small machine-gun
+  bullets at once; bullets disappear on terrain contact.
+- Very low throttle activates landing mode (L), landing gear, a deeper engine
+  tone and triple fuel consumption. Enter at throttle 2 or below; exit at 4.
+- Ordinary missiles remove one third of Harrier armour; Missile Tank shots remove
+  one half. Wingman dies from one missile. Hold both fire buttons with the E lamp
+  lit to eject; the existing E key remains available.
+- Rare, editable 8x8 F depots grant 20% fuel when destroyed by the player or
+  Wingman. Fuel is turquoise and Armour yellow. Effective difficulty 3/4/5 gains
+  10/20/30% fuel endurance for longer routes. Classic fuel timing is unchanged.
+- Wingman sprite data is staged and published during vertical blank, addressing
+  active-display writes implicated in the reported A500 corruption. Physical
+  confirmation of the original symptom remains outstanding.
+- Missile Tank missiles climb faster and explode on terrain contact. Wingman
+  formation convergence and camera/Copper update timing were also refined.
+
+Separate Classic/Enhanced scores, independent 80/90/100% Tempo, Skill labels,
+Missile Tanks and editable weapon/city graphics from previous betas remain included.
 
 ## Downloads and installation
 
-- **ADF:** bootable floppy image for compatible hardware/emulators.
-- **HD.zip:** AmigaDOS executable, Workbench icon, loading bitmap and README.
-  Keep these together; launch the executable or its Workbench icon.
-- **SHA256SUMS.txt:** SHA-256 checksums for the ADF and HD ZIP.
+- **ADF:** bootable floppy image.
+- **HD.zip:** executable, Workbench icon, loading bitmap, README and version file.
+  Keep the files together and launch the executable or its icon.
+- **SHA256SUMS.txt:** checksums for both packages.
 
-Keep existing `harrier_scores*.dat` files when upgrading: they supply Legacy.
-The new mode-specific `harrier_classic2_*.dat` and `harrier_enhanced2_*.dat`
-files store current records. Do not overwrite or delete these score files
-when copying a new build. Saving requires writable media.
+Preserve `harrier_scores*.dat`, `harrier_classic2_*.dat` and
+`harrier_enhanced2_*.dat` when upgrading. Saving requires writable media.
 
-## Testing and beta limits
+## Validation and beta limits
 
-Focused emulator contracts cover score/disk persistence, weapon palette and
-BOB/sprite equivalence, and Missile Tank placement/exclusion/flight. Classic
-regression and tempo tests have also passed during development. Release
-checks passed for the current weapon art, plus 1200-frame smokes on A500
-at 100% Tempo and stock A1200 at 90%. Results are in the rendering work log.
+- Focused emulator contracts passed for encounters, sprite staging, bullet
+  restoration, missile damage/eject and fuel supply.
+- Fuel tests exercised 80 generated routes across all five effective difficulties.
+  Whole-route cruise at throttle 5 or higher, 10 seconds departure allowance and
+  30 seconds triple-consumption landing left at least 10% fuel without pickups.
+  Extended hovering or slow flight can still exhaust fuel.
+- A500/OCS/Kickstart 1.2, 512 KiB Chip + 512 KiB Slow RAM, normal weapon load:
+  46-50 FPS in measured gameplay intervals, with zero late Copper commits.
+- A1200, 2 MiB Chip and no Fast RAM, 90% Tempo: 50 FPS in ordinary sampled
+  intervals of the hardware-feedback test; scripted pause excluded.
+- Dense two-player stress can drop substantially below 50 FPS. This beta does
+  not claim locked 50 FPS. PAL remains the qualified timing target.
 
-PAL remains the qualified timing target. Dense scenes and additional coloured
-BOBs can miss 50 FPS on a stock A500; this is not a locked-50-FPS claim. Graphics
-using colours outside the hardware projectile palette retain their colours
-through BOB rendering. Real-hardware feedback, especially on pacing, coloured
-weapons and the Missile Tank attack, remains valuable. Include machine,
-memory, mode, Skill, Tempo and reproduction steps with reports.
+Please report model, Kickstart, memory, mode, Skill, Tempo and reproduction steps.
+Real-hardware Wingman confirmation and extended playtesting remain important.
 
 Downloads enable `HAR_HARDWARE_PLAYER_ROCKET=1`,
 `HAR_HARDWARE_PROJECTILE_CHAIN=1` and `HAR_CRASH_DEBRIS_BOBS=1`.
-Default source builds keep these optional flags off.
 
 ## Credits and appreciation
 

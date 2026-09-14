@@ -39,6 +39,7 @@ GROUND_ASSETS = (
     AssetSpec("radar", "Radar", "radar_8x8.png", 8, 8),
     AssetSpec("launcher", "Launcher / car", "launcher_8x8.png", 8, 8),
     AssetSpec("gun", "Flak / ground gun", "gun_8x8.png", 8, 8),
+    AssetSpec("fuel_depot", "Fuel depot F (+20%)", "fuel_depot_8x8.png", 8, 8),
 )
 
 
@@ -212,12 +213,15 @@ def encode_tiles(image: Image.Image, origins: Iterable[tuple[int, int]]) -> byte
 
 def build_runtime_banks() -> dict[Path, bytes]:
     images = {spec.key: load_and_validate(spec) for spec in ASSETS}
+    # Rightward runtime heading; keep indexed editing masters intact.
+    for key in ("helicopter_0", "helicopter_1"):
+        images[key] = images[key].transpose(Image.Transpose.FLIP_LEFT_RIGHT)
     tank = encode_tiles(images["tank"], ((0, 0), (8, 0)))
     ground = b"".join(
         encode_tiles(images[key], ((0, 0),))
-        for key in ("radar", "launcher", "gun")
+        for key in ("radar", "launcher", "gun", "fuel_depot")
     )
-    if len(tank) != 80 or len(ground) != 120:
+    if len(tank) != 80 or len(ground) != 160:
         raise AssertionError("Internal Enhanced graphics bank-size error")
     # Town cells use the ordinary five-plane format. Pen zero is sky; the
     # fifth plane remains zero. Order matches the original column-major map.

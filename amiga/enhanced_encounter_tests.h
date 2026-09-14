@@ -1,4 +1,69 @@
 #if HAR_HEADLESS_CLASSIC_CONTRACT_TEST
+/* Actual generator and fuel clock: no pickup is required for route feasibility.
+ * Conservative budget: whole maximum viewport route (longer than approach),
+ * 10 seconds takeoff/acceleration plus 30 seconds at 3x landing consumption. */
+static ULONG fuelSupplyClockRemaining(const GameState* g) {
+    if (!g->fuelGaugeLevel) return 0;
+    return ((ULONG)(g->fuelGaugeLevel - 1) * CPC_FUEL_SUBCOUNT_FULL +
+        g->fuelSubCounter) * playerFuelClockLimit(g) - g->fuelClockAccumulator;
+}
+static UBYTE referenceFuelSupplyMatch(void) {
+    static GameState g;
+    UBYTE oldInfinite = debugInfiniteFuel, oldMod = modPlaying;
+    debugInfiniteFuel = 0; modPlaying = 1;
+    for (UBYTE skill = 1; skill <= 5; skill++) {
+        cpcLandSkillLevel = skill;
+        cpcLandRouteExtension = skill * CPC_LAND_EXTENSION_PER_DIFFICULTY;
+        cpcLandProceduralLength = CPC_LAND_PROCEDURAL_BASE_LENGTH + cpcLandRouteExtension;
+        for (UWORD seed = 1; seed <= 16; seed++) {
+            initGameState(&g, seed, seed, 1);
+            g.gameMode = GAME_MODE_ENHANCED; g.levelDifficulty = skill;
+            LONG previous = -1000, first = -1;
+            UWORD count = 0;
+            for (UWORD i = 0; i < cpcLandProceduralLength; i++) {
+                LONG column = CPC_LAND_PROCEDURAL_WORLD_START + i;
+                if (!isFuelDepotColumn(column)) continue;
+                UBYTE target = cpcLandGameplayTable[i].target;
+                if (target < 1 || target > 3 || isMissileTankColumn(column) ||
+                    missileSiloLocalColumn(column) >= 0 || column - previous < 192) return 1;
+                previous = column; if (first < 0) first = column; count++;
+            }
+            if (!count || first < 0) return 2;
+            /* Preserve the fractional clock: each refill is exactly 20%,
+             * not a rounded number of gauge cells or a reset of elapsed time. */
+            g.fuelGaugeLevel = 5; g.fuelSubCounter = 7; g.fuelClockAccumulator = 1234;
+            g.fuel = cpcFuelHudValue(&g);
+            ULONG before = fuelSupplyClockRemaining(&g);
+            refillFuelDepot(&g, first);
+            if (fuelSupplyClockRemaining(&g) - before !=
+                (ULONG)CPC_FUEL_TOTAL_QUANTA * playerFuelClockLimit(&g) / 5) return 3;
+            markTargetDestroyedAtColumn(first);
+            before = fuelSupplyClockRemaining(&g); refillFuelDepot(&g, first);
+            if (fuelSupplyClockRemaining(&g) != before) return 4;
+            resetDestroyedTargets(); resetPlayerFuel(&g);
+            updatePlayerFuel(&g); refillFuelDepot(&g, first);
+            if (g.fuel != 999 || g.fuelClockAccumulator) return 5;
+            g.gameMode = GAME_MODE_CLASSIC;
+            for (UWORD t = 0; t < 2000; t++) updatePlayerFuel(&g);
+            before = fuelSupplyClockRemaining(&g); refillFuelDepot(&g, first);
+            if (fuelSupplyClockRemaining(&g) != before) return 6;
+            g.gameMode = GAME_MODE_ENHANCED; resetPlayerFuel(&g);
+            UWORD cruiseSteps = (gameScrollMaxPixels() + 2) / scrollPixelsForSpeedLevel(5);
+            for (UWORD t = 0; t < cruiseSteps + 500; t++) updatePlayerFuel(&g);
+            g.lowSpeedLanding = 1;
+            for (UWORD t = 0; t < 1500; t++) updatePlayerFuel(&g);
+            if (g.fuel == 0 || g.fuel < 100) return 7;
+        }
+    }
+    g.gameMode = GAME_MODE_CLASSIC; g.lowSpeedLanding = 0; resetPlayerFuel(&g);
+    UWORD ticks = 0;
+    while (g.fuel && ticks < 10000) { updatePlayerFuel(&g); ticks++; }
+    if (ticks != 9558) return 8;
+    if (HUD_COLOR_FUEL == HUD_COLOR_VALUE || HUD_COLOR_FUEL >= (1 << HUD_PLANES)) return 9;
+    debugInfiniteFuel = oldInfinite; modPlaying = oldMod;
+    return 0;
+}
+
 static UBYTE encounterBytesDiffer(const UBYTE* a, const UBYTE* b, ULONG length) {
     while (length--) if (*a++ != *b++) return 1;
     return 0;
@@ -60,6 +125,50 @@ static UBYTE referenceMissileDamageEjectMatch(void) {
     return 0;
 }
 
+static UBYTE referenceHardwareFeedbackMatch(void) {
+    static GameState g;
+    initGameState(&g, 12040, 12040, 2);
+    g.gameMode = GAME_MODE_ENHANCED; g.takeoffState = TAKEOFF_STATE_AIRBORNE;
+    g.playerX = 80; g.playerY = 40; g.scrollX = 1200;
+    g.wingman.active = 1; g.wingman.mode = WINGMAN_FORMATION;
+    g.wingman.interceptScreenX = 60; g.wingman.screenY = 40;
+    UWORD live[PLAYER_SPRITE_WORDS], reference[PLAYER_SPRITE_WORDS];
+    for (UBYTE mode = 0; mode < 2; mode++) {
+        g.wingman.mode = mode ? WINGMAN_ON_DECK : WINGMAN_FORMATION;
+        for (UWORD i = 0; i < PLAYER_SPRITE_WORDS; i++) live[i] = 0x5aa5;
+        stageWingmanSprite(live, &g);
+        for (UWORD i = 0; i < PLAYER_SPRITE_WORDS; i++) if (live[i] != 0x5aa5) return 1;
+        buildSpriteFromCpcPlusHalves(reference, PLAYER_SPRITE_HEIGHT, wingmanScreenX(&g), g.wingman.screenY,
+            mode ? harCpcWingmanLandedLeftPixels : harCpcWingmanFlyingLeftPixels,
+            mode ? harCpcWingmanLandedRightPixels : harCpcWingmanFlyingRightPixels,
+            cpcPlusPenToWingmanHardwareColor);
+        commitWingmanSprite();
+        if (encounterBytesDiffer((UBYTE*)live, (UBYTE*)reference, sizeof(live))) return 2;
+    }
+    g.wingman.active = 0; stageWingmanSprite(live, &g); commitWingmanSprite();
+    if (live[0] || live[1]) return 3;
+    g.helicopter.active = 1; g.helicopter.worldX = g.scrollX + 180;
+    g.helicopter.x = 180; g.helicopter.y = 45;
+    for (UBYTE i = 0; i < 9; i++) fireHelicopterBullet(&g, i % HELICOPTER_BULLET_MAX);
+    for (UBYTE i = 0; i < HELICOPTER_BULLET_MAX; i++)
+        if (!g.helicopterBullets[i].active || g.helicopterBullets[i].vx16 >= 0) return 4;
+    if (g.helicopterBullets[0].vy16 == g.helicopterBullets[HELICOPTER_BULLET_MAX - 1].vy16) return 5;
+    for (UBYTE i = 0; i < HELICOPTER_BULLET_MAX; i++) {
+        g.helicopterBullets[i].y = terrainSurfacePixelYForWorldColumn(g.helicopterBullets[i].worldX >> 3);
+        g.helicopterBullets[i].vx16 = g.helicopterBullets[i].vy16 = 0;
+    }
+    updateHelicopterBullets(&g);
+    for (UBYTE i = 0; i < HELICOPTER_BULLET_MAX; i++) if (g.helicopterBullets[i].active) return 6;
+    UBYTE oldMod = modPlaying; modPlaying = 1;
+    memset(&g.enemyMissile, 0, sizeof(g.enemyMissile));
+    g.enemyMissile.active = 1; g.enemyMissile.type = ENEMY_MISSILE_TRUCK_TYPE;
+    g.enemyMissile.worldX = g.scrollX + 160; g.enemyMissile.x = 160;
+    g.enemyMissile.y = terrainSurfacePixelYForWorldColumn(g.enemyMissile.worldX >> 3);
+    if (!updateEnemyMissile(&g, 0) || g.enemyMissile.active || !g.impact.active) return 7;
+    modPlaying = oldMod;
+    return 0;
+}
+
 static UBYTE referenceEnhancedEncountersMatch(void) {
     static GameState game;
     memset(&game, 0xa5, sizeof(game));
@@ -67,11 +176,11 @@ static UBYTE referenceEnhancedEncountersMatch(void) {
     game.skillLevel = game.levelDifficulty = 1;
     if (game.lowSpeedLanding || game.siloMissile.active || game.helicopter.active ||
         game.helicopterSmoke.active || game.encounterPoseValid) return 1;
-    game.speedLevel = 3;
+    game.speedLevel = 2;
     if (!updateLowSpeedLanding(&game) || !game.lowSpeedLanding) return 2;
-    game.speedLevel = 4; updateLowSpeedLanding(&game);
+    game.speedLevel = 3; updateLowSpeedLanding(&game);
     if (!game.lowSpeedLanding) return 3;
-    game.speedLevel = 5; updateLowSpeedLanding(&game);
+    game.speedLevel = 4; updateLowSpeedLanding(&game);
     if (game.lowSpeedLanding) return 4;
     game.landingState = LANDING_STATE_HOVER; updateLowSpeedLanding(&game);
     if (!game.lowSpeedLanding) return 5;
@@ -151,12 +260,19 @@ static UBYTE referenceEnhancedEncountersMatch(void) {
         for (ULONG b = 0; b < GAME_WORLD_BITMAP_BYTES; b++) pixels[b] = baseline[b] = (UBYTE)(b * 37 + 11);
         LONG x = shift < 8 ? 80 + shift : GAME_WORLD_SCROLL_PAGE_BYTES * 8 - 8 + (shift & 7);
         game.siloMissile.worldX = game.helicopter.worldX = game.helicopterSmoke.worldX = x;
+        game.scrollX = x - 80;
+        for (UBYTE i = 0; i < HELICOPTER_BULLET_MAX; i++) {
+            game.helicopterBullets[i].active = 1;
+            game.helicopterBullets[i].worldX = x + ((shift & 1) ? i : 0);
+            game.helicopterBullets[i].y = 48;
+        }
         memset(encounterFootprints, 0, sizeof(encounterFootprints));
         drawEnhancedEncounterBobs(pixels, 0, &game);
         if (!encounterBytesDiffer(pixels, baseline, GAME_WORLD_BITMAP_BYTES)) ok = 0;
         retireEncounterBobs(pixels, 0);
         if (encounterBytesDiffer(pixels, baseline, GAME_WORLD_BITMAP_BYTES)) { ok = 0; failure = 30 + shift; }
     }
+    memset(game.helicopterBullets, 0, sizeof(game.helicopterBullets));
     /* Independent renderer reference: compare the combined preshifted path
      * against the original two masked tile operations, for both rotor poses. */
     game.siloMissile.active = game.helicopterSmoke.active = 0;
@@ -236,11 +352,11 @@ static UBYTE referenceEnhancedEncountersMatch(void) {
         break;
     }
     /* A passed player cannot receive another flak burst. */
-    game.helicopterAge = 64; game.helicopter.x = 40;
+    game.helicopterAge = 89; game.helicopter.x = 40;
     game.helicopter.worldX = game.scrollX + 40; game.playerX = 100;
-    UBYTE flakBefore = runtimeFlakCount;
+    memset(game.helicopterBullets, 0, sizeof(game.helicopterBullets));
     updateHelicopter(&game, 0, pixels);
-    if (runtimeFlakCount != flakBefore) ok = 0;
+    for (UBYTE i = 0; i < HELICOPTER_BULLET_MAX; i++) if (game.helicopterBullets[i].active) ok = 0;
     modPlaying = savedMod;
     currentWorldPresentationMode = savedMode;
     FreeMem(pixels, 2UL * GAME_WORLD_BITMAP_BYTES);

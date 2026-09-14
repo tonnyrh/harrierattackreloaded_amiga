@@ -12,19 +12,20 @@ kept here.
 
 ## Project status
 
-**Public Beta 3 RC1 (v0.9.0-beta.3-rc.1) remains a prerelease.** The complete
+**Public Beta 4 (v0.9.0-beta.4) remains a prerelease.** The complete
 mission loop is playable: carrier takeoff, generated sea/terrain/city route,
 air and ground combat, powerups, return flight, carrier landing and progression
 to the next mission. Solo, CPU Wingman and local Player 2 modes are available,
 along with the alternating attract demo.
 
-This candidate adds the latest edited Enhanced weapon graphics and Missile
-Tank, independent 80/90/100% Tempo, clearer Skill labels, score multipliers
-and separate Classic/Enhanced leaderboards with a read-only Legacy archive.
-The editor covers ground targets, cities, missiles and bombs at their existing
-sizes. Missile Tank also appears in the Enhanced Field Guide.
-Performance measurements and remaining visual checks are recorded in
-[the rendering work log](amiga/SCROLL_RENDER_STRATEGY.md).
+This beta adds Enhanced Missile Silos, terrain-following helicopters, low-speed
+landing mode, missile armour damage and two-button emergency eject. F depots
+grant 20% fuel, longer routes have a landing fuel reserve, and Fuel/Armour
+meters now have distinct colours. It also includes A500 Wingman sprite
+publication changes, terrain impacts for tank missiles and bounded helicopter
+machine-gun bullets. The editor includes the new encounter and fuel-depot art.
+See [encounter behavior and validation](amiga/ENHANCED_ENCOUNTERS.md) for details,
+performance measurements and remaining real-hardware checks.
 
 The port includes the CPC-derived weapon, collision, scoring, difficulty and
 level rules; hardware-assisted smooth scrolling; OCS sprites and pixel BOBs;
@@ -186,7 +187,7 @@ inputs. The build does not require the original CPC repository.
 ```powershell
 .\run-amiga-classic-contract.ps1
 .\run-amiga-parity.ps1
-.\package-amiga.ps1 -Version 0.9.0-beta.1
+.\package-amiga.ps1 -Version 0.9.0-beta.4
 ```
 
 The packaging command creates versioned ADF and HD ZIP release assets plus a
