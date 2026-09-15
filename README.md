@@ -31,7 +31,8 @@ The port includes the CPC-derived weapon, collision, scoring, difficulty and
 level rules; hardware-assisted smooth scrolling; OCS sprites and pixel BOBs;
 terrain radar; eject/aircraft lives; persistent high scores; Paula sound and
 music; menus, Field Guide and an optional in-game telemetry/debug hub. Classic
-mode is the CPC gameplay contract, while Enhanced mode keeps that foundation
+mode follows the CPC gameplay rules with the shared Amiga enemy-flight motion
+adjustment, while Enhanced mode keeps that foundation
 and applies explicitly documented Amiga presentation and balancing additions.
 
 The primary release target is a stock PAL Amiga 500 with Kickstart 1.3,

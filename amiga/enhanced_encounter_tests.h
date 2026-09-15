@@ -29,6 +29,24 @@ static UBYTE referenceFuelSupplyMatch(void) {
                 previous = column; if (first < 0) first = column; count++;
             }
             if (!count || first < 0) return 2;
+            /* Exhaustive edge sweep: original 8x8 remains, with 4px padding
+             * left/right/top and none beneath the ground-facing base. */
+            const LevelSegmentDef* depotSegment = levelSegmentForWorldColumn(first);
+            WORD depotRow = terrainYForWorldColumn(first, depotSegment,
+                HAR_TERRAIN_CPC_RANDOM_LAND) - 1;
+            g.scrollX = (UWORD)(first * 8 - 100);
+            for (WORD y = -6; y <= 9; y++) for (WORD x = -6; x <= 13; x++) {
+                LONG hitColumn = -1; WORD hitRow = -1; ObjectCell hit;
+                UBYTE actual = fuelDepotCellNearWorldPoint(&g, 100 + x,
+                    depotRow * 8 + y, &hit, &hitColumn, &hitRow);
+                UBYTE expected = x >= -4 && x < 12 && y >= -4 && y < 8;
+                if (actual != expected || (actual && (hitColumn != first ||
+                    hitRow != depotRow || hit.id != HAR_OBJ_GROUND_TARGET))) return 10;
+            }
+            g.gameMode = GAME_MODE_CLASSIC;
+            if (fuelDepotCellNearWorldPoint(&g, 100, depotRow * 8, 0, 0, 0)) return 11;
+            g.gameMode = GAME_MODE_ENHANCED;
+
             /* Preserve the fractional clock: each refill is exactly 20%,
              * not a rounded number of gauge cells or a reset of elapsed time. */
             g.fuelGaugeLevel = 5; g.fuelSubCounter = 7; g.fuelClockAccumulator = 1234;
@@ -38,6 +56,7 @@ static UBYTE referenceFuelSupplyMatch(void) {
             if (fuelSupplyClockRemaining(&g) - before !=
                 (ULONG)CPC_FUEL_TOTAL_QUANTA * playerFuelClockLimit(&g) / 5) return 3;
             markTargetDestroyedAtColumn(first);
+            if (fuelDepotCellNearWorldPoint(&g, 100, depotRow * 8, 0, 0, 0)) return 12;
             before = fuelSupplyClockRemaining(&g); refillFuelDepot(&g, first);
             if (fuelSupplyClockRemaining(&g) != before) return 4;
             resetDestroyedTargets(); resetPlayerFuel(&g);

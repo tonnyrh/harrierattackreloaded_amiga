@@ -82,3 +82,42 @@ The fuel contract exercises the actual terrain generator for 16 seeds at each of
 Run: `run-amiga-classic-contract.ps1 -ExtraCcFlags '-DHAR_HEADLESS_FUEL_SUPPLY_TEST_ONLY=1'`.
 
 Validation (`BETA 3 DEV3`): the fuel contract passed all 80 generated routes, exact 20% refill arithmetic, saturation, repeated-destruction protection and Classic duration. A500/Kickstart 1.2, OCS, 512 KB Chip + 512 KB Slow RAM, normal load with Wingman at 100% tempo completed at 46-50 FPS in sampled gameplay intervals, matching the preceding build. Zero late Copper commits, maximum line 4. Existing ground-target bank cells were verified byte-for-byte unchanged; the depot adds one 40-byte masked cell and a 198-byte placement bitset. No new sprite channel, BOB or audio synthesis is required.
+
+
+## F depot aiming assistance (after Beta 4)
+
+The depot artwork stays 8x8. Enhanced player rockets/Mavericks and player or
+Player-2 Wingman bombs accept a near miss within four pixels on either side
+or above the roof: a 16x12 contact area. There is no extension below its base.
+The normal impact probe has priority, so the assistance does not shoot through
+terrain or substitute a depot for another directly hit object. CPU Wingman
+bombing already uses the selected target's exact position. Other targets,
+aircraft collisions, target locking and Classic mode retain their behavior.
+
+The fuel contract sweeps every contact-area boundary on all 80 generated test
+routes, checks returned target coordinates and excludes destroyed depots and
+Classic mode. Supply amount, one-time collection and route reserve checks remain.
+
+Validation: the expanded fuel-supply contract passed for `BETA 4 DEV1`.
+
+
+## Shared enemy-plane motion (after Beta 4)
+
+Classic and Enhanced now use the same small independent horizontal velocity:
+one pixel toward the player/left per four simulation steps (12.5 pixels/second
+at 100% PAL tempo). This adds about 8.3% to the 3-pixel cruise closing speed.
+The aircraft continues left during its existing climbing retreat. No random
+jitter or player-control delay is added. Spawn/radar rules, firing distance,
+missile ownership and broken-aircraft behavior are unchanged.
+
+The movement checks the newly entered leading terrain column at current and
+intended height before crossing into it. A blocked move holds X while the
+existing vertical logic continues. No additional graphics, allocation or
+sprite channel is used. Classic deliberately shares this Amiga motion adjustment;
+it no longer keeps an intact enemy aircraft at a fixed world X.
+
+The focused `HAR_HEADLESS_ENEMY_SCENERY_TEST_ONLY` contract (legacy flag name)
+checks identical horizontal speed in both modes, camera speeds 0..3, both
+starting-column parities, occupied-missile-slot retreat and terrain blocking.
+
+Validation: the focused enemy-flight contract passed; interactive build `BETA 4 DEV2` includes the earlier F-depot aiming assistance.

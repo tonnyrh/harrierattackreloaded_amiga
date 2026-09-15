@@ -14,7 +14,7 @@
 #include <stddef.h>
 #include <string.h>
 #include "assets/harrier_menu_text.h"
-#define HAR_BUILD_LABEL "PUBLIC BETA 4"
+#define HAR_BUILD_LABEL "BETA 4 DEV2"
 #ifndef HAR_HARDWARE_PLAYER_ROCKET
 #define HAR_HARDWARE_PLAYER_ROCKET 0
 #endif
@@ -12847,6 +12847,33 @@ static UBYTE objectCellForWorldPoint(const GameState* game, WORD screenX, WORD s
 	return objectCellForWorldColumnTile(worldColumn, tileY, outCell);
 }
 
+/* Weapon-only assistance: four pixels on each side and above an F depot.
+ * Called only after the ordinary impact probe misses, so nearby terrain or
+ * another object keeps priority. Aircraft collision and target locks are unchanged. */
+static __attribute__((noinline, optimize("Os"))) UBYTE fuelDepotCellNearWorldPoint(
+    const GameState* game, WORD screenX, WORD screenY, ObjectCell* outCell,
+    LONG* outWorldColumn, WORD* outTileY) {
+    if (game->gameMode != GAME_MODE_ENHANCED || screenY < 0 || screenY >= HUD_TOP)
+        return 0;
+    LONG worldX = (LONG)game->scrollX + screenX;
+    LONG last = (worldX + 4) >> 3;
+    for (LONG column = (worldX - 4) >> 3; column <= last; column++) {
+        if (!isFuelDepotColumn(column) || isTargetDestroyedAtColumn(column)) continue;
+        const LevelSegmentDef* segment = levelSegmentForWorldColumn(column);
+        WORD row = (WORD)terrainYForWorldColumn(column, segment,
+            HAR_TERRAIN_CPC_RANDOM_LAND) - 1;
+        if (screenY < row * 8 - 4 || screenY >= row * 8 + 8) continue;
+        ObjectCell cell;
+        if (!objectCellForWorldColumnTile(column, row, &cell) ||
+            cell.id != HAR_OBJ_GROUND_TARGET) continue;
+        if (outCell) *outCell = cell;
+        if (outWorldColumn) *outWorldColumn = column;
+        if (outTileY) *outTileY = row;
+        return 1;
+    }
+    return 0;
+}
+
 static UBYTE columnMayContainEnemyShip(LONG worldColumn) {
 	for (UBYTE index = harLevelObjectFirstIndexForColumn(worldColumn);
 		index != HAR_LEVEL_OBJECT_COLUMN_INDEX_NONE; index = harLevelObjectNext[index]) {
@@ -17235,6 +17262,8 @@ static void updateWingmanPlayer2Bomb(GameState* game, UBYTE scrollPixels,
 		 cell.id == HAR_OBJ_SMOKE || cell.id == HAR_OBJ_OWN_FRIGATE ||
 		 cell.id == HAR_OBJ_PIER || cell.id == HAR_OBJ_TOWN_BLOCK);
 	if (!bombHitObject)
+		bombHitObject = fuelDepotCellNearWorldPoint(game, probeX, probeY, &cell, &worldColumn, &tileY);
+	if (!bombHitObject)
 		bombHitObject = ownFrigateCellNearWorldPoint(game,
 			probeX, probeY,
 			&cell, &worldColumn, &tileY);
@@ -17651,6 +17680,8 @@ static UBYTE updateWeapons(GameState* game, UBYTE scrollPixels, UBYTE** worldBuf
 		UBYTE rocketHitObject = objectCellForWorldPoint(game, rocketProbeX, rocketProbeY, &rocketCell, &rocketWorldColumn, &rocketTileY) &&
 			(rocketCell.id == HAR_OBJ_LAND || rocketCell.id == HAR_OBJ_GROUND_TARGET || rocketCell.id == HAR_OBJ_ENEMY_SHIP || rocketCell.id == HAR_OBJ_FLAK || rocketCell.id == HAR_OBJ_SMOKE || rocketCell.id == HAR_OBJ_OWN_FRIGATE || rocketCell.id == HAR_OBJ_PIER);
 		if (!rocketHitObject)
+			rocketHitObject = fuelDepotCellNearWorldPoint(game, rocketProbeX, rocketProbeY, &rocketCell, &rocketWorldColumn, &rocketTileY);
+		if (!rocketHitObject)
 			rocketHitObject = enemyShipCellNearWorldPoint(game, rocketProbeX, rocketProbeY, -1, 1, -1, 1, &rocketCell, &rocketWorldColumn, &rocketTileY);
 		if (!rocketHitObject)
 			rocketHitObject = ownFrigateCellNearWorldPoint(game, rocketProbeX, rocketProbeY, &rocketCell, &rocketWorldColumn, &rocketTileY);
@@ -17824,6 +17855,8 @@ static UBYTE updateWeapons(GameState* game, UBYTE scrollPixels, UBYTE** worldBuf
 		UBYTE bombHitObject = objectCellForWorldPoint(game, bombProbeX,
 			bombProbeY, &bombCell, &bombWorldColumn, &bombTileY) &&
 			(bombCell.id == HAR_OBJ_LAND || bombCell.id == HAR_OBJ_GROUND_TARGET || bombCell.id == HAR_OBJ_ENEMY_SHIP || bombCell.id == HAR_OBJ_FLAK || bombCell.id == HAR_OBJ_SMOKE || bombCell.id == HAR_OBJ_OWN_FRIGATE || bombCell.id == HAR_OBJ_PIER);
+		if (!bombHitObject)
+			bombHitObject = fuelDepotCellNearWorldPoint(game, bombProbeX, bombProbeY, &bombCell, &bombWorldColumn, &bombTileY);
 		if (!bombHitObject)
 			bombHitObject = ownFrigateCellNearWorldPoint(game, bombProbeX,
 				bombProbeY, &bombCell, &bombWorldColumn, &bombTileY);
@@ -19552,6 +19585,21 @@ static UBYTE updateClassicAirAdmission(GameState* game,
 	return spawnEnemyPlane(game, decisionColumn);
 }
 
+/* Same gentle self-propelled approach in both modes: 12.5 pixels/second
+ * at 100% PAL tempo. The existing simulation timer also scales with tempo.
+ * Check the newly entered leading column over current and intended height;
+ * if terrain blocks it, keep the old X and allow the vertical logic to act. */
+static void advanceEnemyPlaneHorizontal(GameState* game) {
+    if ((game->enemyPlane.timer & 3) != 3) return;
+    LONG nextX = game->enemyPlane.worldX - 1;
+    LONG column = nextX >> 3;
+    if (column != (game->enemyPlane.worldX >> 3) &&
+        (!enemyPlaneRowIsPassable(column, game->enemyPlane.y >> 3) ||
+         !enemyPlaneRowIsPassable(column, (game->enemyPlane.y + ENEMY_SPRITE_HEIGHT - 1) >> 3) ||
+         !enemyPlaneRowIsPassable(column, game->enemyPlane.targetY >> 3))) return;
+    game->enemyPlane.worldX = game->enemyPlane.targetWorldX = nextX;
+}
+
 static UBYTE updateEnemyPlane(GameState* game) {
 	UBYTE logicalTick = 0;
 	UBYTE traceEvent = ENEMY_PLANE_TRACE_STEP;
@@ -19639,9 +19687,10 @@ static UBYTE updateEnemyPlane(GameState* game) {
 		return 1;
 	}
 
-	/* Chris confirmed that an intact plane scrolls with the scenery: its
-	 * world X stays fixed. Only vertical decisions are interpolated. Moving
-	 * targetWorldX as well used to add flight speed on top of camera motion. */
+    /* Chris's scenery anchoring described the CPC implementation, not a
+     * restriction on this port. Both modes now share a small independent X
+     * velocity while retaining their admission rules and vertical attack. */
+    advanceEnemyPlaneHorizontal(game);
 	game->enemyPlaneLogicPhase = (UBYTE)(game->enemyPlaneLogicPhase +
 		HAR_ENEMY_PLANE_INTERPOLATION_PIXELS);
 	if (game->enemyPlaneLogicPhase >= GAME_TILE_WIDTH) {
@@ -21473,8 +21522,22 @@ static UBYTE referenceDifficultyProgressionMatches(void) {
 	return 1;
 }
 
-static UBYTE referenceEnemySceneryMotionMatches(void) {
+static UBYTE referenceEnemyFlightMotionMatches(void) {
 	static GameState fixture;
+    memset(&fixture, 0, sizeof(fixture));
+    fixture.enemyPlane.worldX = fixture.enemyPlane.targetWorldX = 400;
+    fixture.enemyPlane.y = fixture.enemyPlane.targetY = 32;
+    fixture.enemyPlane.timer = 3;
+    UBYTE oldValid = enemyPlanePassableColumnValid[49 >> 3];
+    UWORD oldMask = enemyPlanePassableMaskByColumn[49];
+    enemyPlanePassableColumnValid[49 >> 3] |= 1 << (49 & 7);
+    enemyPlanePassableMaskByColumn[49] = 0;
+    advanceEnemyPlaneHorizontal(&fixture);
+    UBYTE blocked = fixture.enemyPlane.worldX == 400 && fixture.enemyPlane.targetWorldX == 400;
+    enemyPlanePassableColumnValid[49 >> 3] = oldValid;
+    enemyPlanePassableMaskByColumn[49] = oldMask;
+    if (!blocked) return 0;
+
 	for (UBYTE mode = 0; mode < 2; mode++) {
 		for (UBYTE parity = 0; parity < 2; parity++) {
 			for (UBYTE speed = 0; speed <= 3; speed++) {
@@ -21491,21 +21554,23 @@ static UBYTE referenceEnemySceneryMotionMatches(void) {
 				for (UBYTE frame = 0; frame < 64; frame++) {
 					fixture.scrollX += speed;
 					updateEnemyPlane(&fixture);
-					if (!fixture.enemyPlane.active || fixture.enemyPlane.worldX != anchor ||
-						fixture.enemyPlane.x != anchor - fixture.scrollX)
+					if (!fixture.enemyPlane.active || fixture.enemyPlane.worldX != anchor - (frame + 1) / 4 ||
+						fixture.enemyPlane.x != fixture.enemyPlane.worldX - fixture.scrollX)
 						return 0;
 				}
 				if (fixture.enemyPlane.y != 32) return 0;
 				/* Enter firing range on the next logical decision. */
-				fixture.scrollX = anchor - 64;
+				fixture.scrollX = fixture.enemyPlane.worldX - 64;
 				fixture.enemyPlaneLogicPhase = 8 - HAR_ENEMY_PLANE_INTERPOLATION_PIXELS;
 				updateEnemyPlane(&fixture);
 				if (!fixture.enemyPlaneRetreating || !fixture.enemyMissile.active)
 					return 0;
 				/* With the camera stopped, both even/odd anchors must climb away. */
 				for (UWORD frame = 0; frame < 160 && fixture.enemyPlane.active; frame++) {
+                    LONG before = fixture.enemyPlane.worldX;
+                    UBYTE moving = (fixture.enemyPlane.timer & 3) == 3;
 					updateEnemyPlane(&fixture);
-					if (fixture.enemyPlane.worldX != anchor) return 0;
+					if (fixture.enemyPlane.worldX != before - moving) return 0;
 				}
 				if (fixture.enemyPlane.active) return 0;
 			}
@@ -22035,9 +22100,9 @@ static int runClassicGameplayContractTest(void) {
 #if HAR_HEADLESS_ENEMY_SCENERY_TEST_ONLY
 	configureRuntimeLevelRoute(0, 0);
 	buildHarLevelObjectIndex();
-	UBYTE enemyMatched = referenceEnemySceneryMotionMatches();
-	writeClassicContractResult(enemyMatched ? "PASS enemy-scenery-motion-and-retreat" :
-		"FAIL enemy-scenery-motion-and-retreat");
+	UBYTE enemyMatched = referenceEnemyFlightMotionMatches();
+	writeClassicContractResult(enemyMatched ? "PASS enemy-flight-motion-and-retreat" :
+		"FAIL enemy-flight-motion-and-retreat");
 	return enemyMatched ? 0 : 1;
 #endif
 	/* Keep large test fixtures off the command stack so nested rendering
