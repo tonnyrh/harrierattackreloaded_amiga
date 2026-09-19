@@ -1,4 +1,31 @@
 /* Enhanced-only bounded encounters. Included after the shared gameplay helpers. */
+/* A crashed helicopter reserves the next pickup slot without deleting a
+ * powerup already in flight. Release its kit when that slot becomes free. */
+static __attribute__((noinline, optimize("Os"))) void serviceCarrierRepairDrop(GameState* game) {
+    if (!game->defence.repairDropPending || game->powerup.active) return;
+    LONG x = game->defence.repairDropX[0]; WORD y = game->defence.repairDropY[0];
+    game->defence.repairDropPending--;
+    for (UBYTE i = 0; i < game->defence.repairDropPending; i++) {
+        game->defence.repairDropX[i] = game->defence.repairDropX[i + 1];
+        game->defence.repairDropY[i] = game->defence.repairDropY[i + 1];
+    }
+    if (x - game->scrollX < -16) return;
+    spawnPowerup(game, POWERUP_CARRIER_REPAIR, 0);
+    game->powerup.worldX = x; game->powerup.y = game->powerup.logicalY = y;
+    game->powerup.fallRate = 4;
+}
+static __attribute__((noinline, optimize("Os"))) void dropCarrierRepair(GameState* game) {
+    serviceCarrierRepairDrop(game);
+    /* The single helicopter slot and pickup expiry bound outstanding drops.
+     * Keep separate origins when another parachute already occupies the Bob. */
+    UBYTE slot = game->defence.repairDropPending;
+    if (slot >= 4) return;
+    game->defence.repairDropPending++;
+    game->defence.repairDropX[slot] = game->helicopter.worldX + 4;
+    game->defence.repairDropY[slot] = game->helicopter.y;
+    serviceCarrierRepairDrop(game);
+}
+
 static __attribute__((noinline, optimize("Os"))) WORD encounterClampVelocity(WORD value) {
     return value < -4 ? -4 : (value > 4 ? 4 : value);
 }
@@ -147,15 +174,23 @@ static __attribute__((noinline, optimize("Os"))) void fireHelicopterBullet(GameS
     }
 }
 
+/* One bounded cosmetic plume, shared by damaged helicopters and the carrier. */
+static void updateEncounterSmoke(GameState* game) {
+    WeaponState* smoke = &game->helicopterSmoke;
+    if (!smoke->active) return;
+    smoke->timer++;
+    if (!(smoke->timer & 3)) smoke->y--;
+    if (!(smoke->timer & 7)) smoke->worldX++;
+    smoke->x = (WORD)(smoke->worldX - game->scrollX);
+    if (smoke->timer >= 40 || smoke->x < -8 || smoke->x >= SCREEN_WIDTH || smoke->y < 0)
+        smoke->active = 0;
+}
+
 static __attribute__((noinline, optimize("Os"))) void updateHelicopter(GameState* game, UBYTE scrollPixels, UBYTE* bitmap) {
+    serviceCarrierRepairDrop(game);
     WeaponState* heli = &game->helicopter;
     WeaponState* smoke = &game->helicopterSmoke;
-    if (smoke->active) {
-        smoke->timer++;
-        if (!(smoke->timer & 3)) smoke->y--;
-        smoke->x = (WORD)(smoke->worldX - game->scrollX);
-        if (smoke->timer >= 22 || smoke->x < -8) smoke->active = 0;
-    }
+    updateEncounterSmoke(game);
     if (!heli->active) {
         if (game->helicopterCooldown) { game->helicopterCooldown--; return; }
         if (game->missionNumber < 2) return;
@@ -163,12 +198,13 @@ static __attribute__((noinline, optimize("Os"))) void updateHelicopter(GameState
         const LevelSegmentDef* segment = levelSegmentForWorldColumn(spawnX >> 3);
         if (!segment || segment->terrainKind != HAR_TERRAIN_CPC_RANDOM_LAND) return;
         memset(heli, 0, sizeof(*heli));
-        heli->active = 1; heli->worldX = spawnX; ENCOUNTER_STAT(1);
+        heli->active = 1; heli->direction = 1; heli->worldX = spawnX; ENCOUNTER_STAT(1);
         heli->x = SCREEN_WIDTH - 24; heli->y = helicopterTerrainY(game, spawnX);
         game->helicopterAge = 0; game->helicopterHits = 0; game->helicopterStopped = 0;
         UWORD extra = game->missionNumber > 12 ? 10 : game->missionNumber - 2;
         game->helicopterHold = 500 + extra * 100;
     }
+    LONG previousWorldX = heli->worldX;
     game->helicopterAge++;
     if (game->helicopterHits >= 2) {
         if (!(game->helicopterAge & 3) && heli->dy < 5) heli->dy++;
@@ -203,13 +239,15 @@ static __attribute__((noinline, optimize("Os"))) void updateHelicopter(GameState
         UBYTE pulse = game->helicopterHits ? 10 : 7;
         if (!(game->helicopterAge % pulse) && heli->x >= 0 && heli->x < SCREEN_WIDTH)
             playSfxAtTuned(SFX_HELICOPTER, heli->x, 24, game->helicopterHits ? 560 : 443);
-        /* One 22-step cosmetic puff every two seconds; never an object-map hazard. */
-        if (game->helicopterHits == 1 && !(game->helicopterAge % 100)) {
+        /* Sparse rising smoke; never an object-map hazard. */
+        if (game->helicopterHits == 1 && !smoke->active && !(game->helicopterAge & 63)) {
             memset(smoke, 0, sizeof(*smoke)); smoke->active = 1; ENCOUNTER_STAT(5);
             smoke->worldX = heli->worldX + 11; smoke->y = heli->y + 3;
             smoke->x = (WORD)(smoke->worldX - game->scrollX);
         }
     }
+    if (game->helicopterHits < 2 && heli->worldX != previousWorldX)
+        heli->direction = heli->worldX > previousWorldX;
     heli->x = (WORD)(heli->worldX - game->scrollX);
     if (heli->x < -16) {
         heli->active = 0; game->helicopterCooldown = 750; stopHelicopterAudio();
@@ -257,19 +295,26 @@ static __attribute__((noinline, optimize("Os"))) void collideEnhancedEncounters(
     }
     WeaponState* missile = &game->siloMissile;
     WeaponState* heli = &game->helicopter;
-    WeaponState* rockets[2] = { &game->rocketShot, &game->wingman.rocket };
-    for (UBYTE i = 0; i < 2; i++) {
+    WeaponState* rockets[3] = { &game->rocketShot, &game->wingman.rocket, &game->bombShot };
+    for (UBYTE i = 0; i < 3; i++) {
         WeaponState* shot = rockets[i];
         if (!shot->active) continue;
-        if (missile->active && rectsOverlap(shot->x, shot->y, 8, 8, missile->x, missile->y, 8, 8)) {
+        if (i < 2 && heli->active && game->helicopterHits >= 2 && rectsOverlap(shot->x, shot->y, 8, 8, heli->x, heli->y, 16, 8)) {
+            shot->active = heli->active = 0; startWorldImpact(game, heli->x, heli->y);
+            playSfxAt(SFX_HIT, heli->x); *weaponDirty = 1; continue;
+        }
+        if (i < 2 && missile->active && rectsOverlap(shot->x, shot->y, 8, 8, missile->x, missile->y, 8, 8)) {
             shot->active = missile->active = 0;
             awardGameScore(game, ENEMY_MISSILE_SCORE_VALUE); game->hitsCount++;
             startWorldImpact(game, missile->x, missile->y); *hudDirty = *weaponDirty = 1;
         } else if (heli->active && game->helicopterHits < 2 &&
-            rectsOverlap(shot->x, shot->y, 8, 8, heli->x, heli->y, 16, 8)) {
-            shot->active = 0; game->helicopterHits++; ENCOUNTER_STAT(3);
+            rectsOverlap(shot->x, shot->y, i == 2 ? 4 : 8, i == 2 ? 3 : 8, heli->x, heli->y, 16, 8)) {
+            shot->active = 0;
+            game->helicopterHits = i == 2 ? 2 : game->helicopterHits + 1;
+            ENCOUNTER_STAT(3);
             playSfxAt(SFX_HIT, heli->x); *weaponDirty = 1;
             if (game->helicopterHits == 2) {
+                dropCarrierRepair(game);
                 stopHelicopterAudio(); heli->dy = 1; ENCOUNTER_STAT(4);
                 awardGameScore(game, ENEMY_SCORE_VALUE); game->hitsCount++;
                 *hudDirty = 1;
@@ -288,6 +333,7 @@ static __attribute__((noinline, optimize("Os"))) void collideEnhancedEncounters(
     if (heli->active && game->helicopterHits < 2 && game->respawnSafeTimer == 0 &&
         rectsOverlap(game->playerX, game->playerY, 16, 8, heli->x, heli->y, 16, 8)) {
         game->helicopterHits = 2; heli->dy = 1; stopHelicopterAudio();
+        dropCarrierRepair(game);
         startAircraftFailure(game, AIRCRAFT_FAILURE_CAUSE_AIRCRAFT); *hudDirty = *weaponDirty = 1;
     }
 }

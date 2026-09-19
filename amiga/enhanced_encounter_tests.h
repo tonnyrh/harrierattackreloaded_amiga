@@ -129,7 +129,7 @@ static UBYTE referenceMissileDamageEjectMatch(void) {
     InputState in = {0}; in.fire = in.bomb = 1;
     for (UBYTE i = 0; i < 20; i++) if (updateEjectChord(&g, &in)) return 9;
     g.aircraftFailureState = AIRCRAFT_FAILURE_DESCENT;
-    for (UBYTE i = 0; i < 11; i++) if (updateEjectChord(&g, &in)) return 10;
+    for (UBYTE i = 0; i < EJECT_CHORD_HOLD_TICKS - 1; i++) if (updateEjectChord(&g, &in)) return 10;
     if (!updateEjectChord(&g, &in) || updateEjectChord(&g, &in)) return 11;
     in.bomb = 0; updateEjectChord(&g, &in);
     if (g.ejectChordTicks) return 12;
@@ -140,6 +140,37 @@ static UBYTE referenceMissileDamageEjectMatch(void) {
     g.gameMode = GAME_MODE_ENHANCED;
     for (UBYTE i = 0; i < 12; i++) if (updateEjectChord(&g, &in)) startPlayerEject(&g);
     if (!g.ejectState || g.aircraftFailureState) return 15;
+    initGameState(&g, 12040, 12040, 1); g.gameMode = GAME_MODE_ENHANCED;
+    g.takeoffState = TAKEOFF_STATE_AIRBORNE; g.playerX = 220; g.playerY = 40;
+    g.scrollX = g.speedLevel = g.respawnSafeTimer = 0;
+    memset(&in, 0, sizeof(in));
+    startAircraftFailure(&g, AIRCRAFT_FAILURE_CAUSE_ARMOUR);
+    for (UBYTE tick = 0; tick < 25; tick++) updateAircraftFailure(&g, &in);
+    if (g.playerY != 65 || g.aircraftFailureFallSpeed256 != 448 || g.crashTimer) return 19;
+    /* The two-tone alarm retains its own voice under a full effects mix. */
+    stopAllSfx(); g.aircraftFailureAlarmFrame = 0;
+    for (UBYTE tick = 0; tick < 16; tick++) {
+        updateAircraftFailureAlarm(&g);
+        if (!aircraftFailureAlarmDmaActive) return 20;
+    }
+    for (UBYTE channel = 0; channel < SFX_CHANNEL_COUNT; channel++) {
+        if (channel == ENGINE_CHANNEL) continue;
+        sfxChannelFrames[channel] = 10; sfxChannelPriority[channel] = SFX_PRIORITY_PLAYER;
+    }
+    if (selectSfxChannel(SFX_HIT, &sfxSamples[SFX_HIT], 0) != 255) return 21;
+    for (UBYTE tick = 0; tick < 6; tick++) {
+        updateAircraftFailureAlarm(&g);
+        if (aircraftFailureAlarmDmaActive) return 22;
+    }
+    updateAircraftFailureAlarm(&g);
+    if (!aircraftFailureAlarmDmaActive) return 23;
+    in.fire = in.bomb = 1;
+    for (UBYTE tick = 0; tick < 12; tick++) {
+        if (updateEjectChord(&g, &in)) startPlayerEject(&g);
+        else updateAircraftFailure(&g, &in);
+    }
+    if (!g.ejectState || g.crashTimer || aircraftFailureAlarmDmaActive) return 24;
+    stopAllSfx();
     modPlaying = oldMod;
     return 0;
 }
@@ -285,6 +316,13 @@ static UBYTE referenceEnhancedEncountersMatch(void) {
             game.helicopterBullets[i].worldX = x + ((shift & 1) ? i : 0);
             game.helicopterBullets[i].y = 48;
         }
+        game.defence.phase = DEFENCE_WAVE; game.defence.hull = 100;
+        for (UBYTE i = 0; i < CARRIER_DEFENCE_BOMBS; i++) {
+            game.defence.bombs[i].active = 1;
+            game.defence.bombs[i].x = 80 + i;
+            game.defence.bombs[i].worldX = x + i;
+            game.defence.bombs[i].y = 48;
+        }
         memset(encounterFootprints, 0, sizeof(encounterFootprints));
         drawEnhancedEncounterBobs(pixels, 0, &game);
         if (!encounterBytesDiffer(pixels, baseline, GAME_WORLD_BITMAP_BYTES)) ok = 0;
@@ -292,19 +330,20 @@ static UBYTE referenceEnhancedEncountersMatch(void) {
         if (encounterBytesDiffer(pixels, baseline, GAME_WORLD_BITMAP_BYTES)) { ok = 0; failure = 30 + shift; }
     }
     memset(game.helicopterBullets, 0, sizeof(game.helicopterBullets));
+    memset(game.defence.bombs, 0, sizeof(game.defence.bombs)); game.defence.phase = 0;
     /* Independent renderer reference: compare the combined preshifted path
      * against the original two masked tile operations, for both rotor poses. */
     game.siloMissile.active = game.helicopterSmoke.active = 0;
     game.helicopterHits = 0;
-    for (UBYTE frame = 0; frame < 2 && ok; frame++) {
-        game.helicopterAge = frame * 4;
+    for (UBYTE frame = 0; frame < 4 && ok; frame++) {
+        game.helicopterAge = (frame & 1) * 4; game.helicopter.direction = !(frame >> 1);
         for (UBYTE shift = 0; shift < 16 && ok; shift++) {
             for (ULONG i = 0; i < GAME_WORLD_BITMAP_BYTES; i++) pixels[i] = baseline[i] = (UBYTE)(i * 37 + 11);
             game.helicopter.worldX = shift < 8 ? 80 + shift : GAME_WORLD_SCROLL_PAGE_BYTES * 8 - 8 + (shift & 7);
             memset(encounterFootprints, 0, sizeof(encounterFootprints));
             memset(helicopterFootprints, 0, sizeof(helicopterFootprints));
             drawHelicopterBob(pixels, 0, &game);
-            const UBYTE* source = enhancedEncounterTiles + 160 + frame * 80;
+            const UBYTE* source = frame >= 2 ? enhancedHelicopterMirrored + (frame - 2) * 80 : enhancedEncounterTiles + 160 + frame * 80;
             drawEncounterTile(baseline, 0, &game.helicopter, 0, 0, source);
             drawEncounterTile(baseline, 0, &game.helicopter, 1, 8, source + 40);
             if (encounterBytesDiffer(pixels, baseline, GAME_WORLD_BITMAP_BYTES)) { ok = 0; failure = 50 + frame * 16 + shift; }

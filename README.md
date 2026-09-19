@@ -52,6 +52,12 @@ Public-beta downloads are published under
 Use the ADF on real hardware, MiniMig or an emulator, or use the HD ZIP for a
 Workbench/hard-disk installation. Kickstart ROMs are never included.
 
+## Current development build
+
+BETA5DEV2 adds Enhanced carrier defence with CPU/P2 ship weapons and helicopter repair-kit drops. Wingman remains available over land.
+See [carrier controls and mission cycle](amiga/CARRIER_DEFENCE.md).
+The existing public Beta 4 download is unchanged.
+
 ## Difficulty
 
 The menu runs from **Skill 1: Easiest** to **Skill 5: Hardest**, with Easy,

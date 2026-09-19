@@ -1,0 +1,125 @@
+#if HAR_HEADLESS_CLASSIC_CONTRACT_TEST
+static UBYTE referenceCarrierGunneryMatches(void) {
+    static GameState g;
+    UBYTE* buffers[GAME_WORLD_BUFFER_COUNT] = {0};
+    InputState in = {0}, prev = {0}; Player2InputState p2 = {0};
+    initGameState(&g, 12040, 12040, 1); g.gameMode = GAME_MODE_ENHANCED;
+    g.defence.phase = DEFENCE_WAVE; g.defence.spawnDelay = 200; g.defence.quota = 3;
+    g.takeoffState = TAKEOFF_STATE_AIRBORNE; g.playerX = 240; g.playerY = 20;
+    g.wingmanControl = WINGMAN_CONTROL_PLAYER2; g.wingman.active = 1;
+    g.defence.aimX = 160; g.defence.aimY = 48; p2.left = p2.up = 1;
+    updateCarrierDefence(&g, &in, &prev, &p2, buffers);
+    if (g.wingman.active || g.defence.aimX != 158 || g.defence.aimY != 46) return 101;
+    static UWORD sight[PLAYER_SPRITE_WORDS], plane[PLAYER_SPRITE_WORDS];
+    updateWingmanSprite(sight, 0, &g);
+    if (!sight[0] || !sight[2] || (sight[1] & HW_SPRITE_ATTACH_BIT)) return 102;
+    g.wingmanControl = WINGMAN_CONTROL_CPU; updateWingmanSprite(plane, 0, &g);
+    if (plane[0] || plane[1]) return 103;
+    g.defence.phase = 0; g.wingman.active = 1; g.wingman.mode = WINGMAN_FORMATION;
+    g.wingman.interceptScreenX = 200; g.wingman.screenY = 40;
+    updateWingmanSprite(plane, 0, &g);
+    if (!plane[0] || referenceBuffersEqual((UBYTE*)(plane+2), (UBYTE*)(sight+2), 32)) return 104;
+    g.defence.phase = DEFENCE_WAVE;
+    HelicopterBullet* b = &g.helicopterBullets[0];
+    g.enemyPlane.active = 1; g.enemyPlane.x = 100; g.enemyPlane.y = 40;
+    for (UBYTE hit = 0; hit < 4; hit++) {
+        memset(b, 0, sizeof(*b)); b->active = 1; b->worldX = 104; b->y = 43;
+        carrierAdvanceBullet(&g, b);
+        if (b->active || g.enemyPlane.active != (hit < 3)) return 105;
+    }
+    g.helicopter.active = 1; g.helicopter.x = g.helicopter.worldX = 100;
+    g.helicopter.y = 40; g.helicopter.type = g.helicopterHits = 0;
+    for (UBYTE hit = 0; hit < 8; hit++) {
+        memset(b, 0, sizeof(*b)); b->active = 1; b->worldX = 104; b->y = 43;
+        carrierAdvanceBullet(&g, b);
+        if (b->active || g.helicopterHits != (hit + 1) / 4) return 106;
+    }
+    if (!g.powerup.active || g.powerup.type != POWERUP_CARRIER_REPAIR || g.helicopter.type != 2) return 107;
+    g.defence.hull = 40; activatePowerup(&g, POWERUP_CARRIER_REPAIR);
+    if (g.defence.cargo != 20 || g.defence.hull != 40) return 108;
+    g.powerup.active = 0; g.helicopter.active = 0;
+    g.defence.landed = 1; g.playerX = 80; g.playerY = TAKEOFF_PLAYER_DECK_Y; g.defence.wave = 2;
+    memset(&p2, 0, sizeof(p2)); updateCarrierDefence(&g, &in, &prev, &p2, buffers);
+    if (g.defence.hull != 60 || g.defence.cargo || g.defence.wave != 2 || g.defence.phase != DEFENCE_WAVE) return 109;
+    g.defence.landed = 0; g.playerX = 100; g.playerY = 40; g.armour = 100;
+    memset(b, 0, sizeof(*b)); b->active = 1; b->worldX = 104; b->y = 43;
+    carrierAdvanceBullet(&g, b);
+    if (!b->active || g.armour != 100) return 110;
+    carrierDropBomb(&g, 101, 41, 0); carrierAdvanceBullet(&g, b);
+    if (b->active || carrierBombsActive(&g)) return 111;
+    memset(b, 0, sizeof(*b)); b->active = 1; b->worldX = 104; b->y = 43;
+    g.enemyMissile.active = 1; g.enemyMissile.x = 101; g.enemyMissile.y = 41;
+    carrierAdvanceBullet(&g, b);
+    if (b->active || g.enemyMissile.active) return 112;
+    g.defence.aimX = 160; g.defence.aimY = 48; g.respawnSafeTimer = 0;
+    carrierLaunchMissile(&g); WeaponState* m = &g.wingman.rocket;
+    g.playerX = m->x + (m->dx >> 8); g.playerY = m->y + (m->dy >> 8);
+    carrierAdvanceMissile(&g);
+    if (m->active || g.armour != 67) return 113;
+    g.playerX = 260; g.playerY = 20;
+    carrierLaunchMissile(&g); WORD dx = m->dx, dy = m->dy;
+    for (UBYTE t = 0; t < 20; t++) carrierAdvanceMissile(&g);
+    if (!m->active || m->dx != dx || m->dy != dy || m->x + 4 <= 160 || m->y + 4 >= 48) return 114;
+    m->active = 0;
+    g.enemyPlane.active = 1; g.enemyPlane.x = 140; g.enemyPlane.y = 35;
+    g.defence.missileCooldown = g.defence.gunCooldown = 0;
+    g.defence.gunHeight[0] = g.defence.gunHeight[1] = 8;
+    carrierGunnery(&g, &p2);
+    if (!m->active || !g.helicopterBullets[0].active) return 115;
+    /* Terrain helicopters use the same cargo pickup, never instant healing. */
+    g.defence.phase = 0; g.powerup.active = 0; g.helicopter.worldX = 200; g.helicopter.y = 30;
+    dropCarrierRepair(&g);
+    if (!g.powerup.active || g.powerup.worldX != 204 || g.powerup.type != POWERUP_CARRIER_REPAIR) return 116;
+    for (UBYTE i = 0; i < 5; i++) activatePowerup(&g, POWERUP_CARRIER_REPAIR);
+    if (g.defence.cargo != 60 || g.defence.hull != 60) return 117;
+    for (LONG c = CPC_LAND_PROCEDURAL_WORLD_START; c < CPC_LAND_PROCEDURAL_WORLD_START + cpcLandProceduralLength; c++)
+        if (repairDepotLocalColumn(c) >= 0) return 118;
+    initGameState(&g, 12040, 12040, 1); g.gameMode = GAME_MODE_ENHANCED;
+    g.defence.phase = DEFENCE_WAVE; g.defence.spawnDelay = 200; g.defence.quota = 3;
+    g.ejectState = 2; g.ejectX = 80; g.ejectY = 40; g.defence.clock = 1;
+    in.right = 1; updateCarrierDefence(&g, &in, &prev, &p2, buffers);
+    if (g.ejectX != 81) return 119;
+    g.ejectY = CARRIER_DECK_PIXEL_Y - HAR_CPC_PARACHUTE_HEIGHT;
+    g.abandonedAircraftActive = g.crashTimer = 0; g.lives = 3;
+    if (updatePlayerEject(&g) != EJECT_UPDATE_CARRIER_RESTART || g.lives != 2 || g.gameOver) return 120;
+    g.ejectState = 2; g.ejectX = 220; g.ejectY = SEA_SURFACE_Y - HAR_CPC_PARACHUTE_HEIGHT;
+    updatePlayerEject(&g);
+    if (!g.gameOver) return 121;
+    initGameState(&g, 12040, 12040, 1); g.gameMode = GAME_MODE_ENHANCED;
+    g.defence.phase = DEFENCE_WAVE; spawnPowerup(&g, POWERUP_HEALTH, 0);
+    g.helicopter.worldX = 100; g.helicopter.y = 30; dropCarrierRepair(&g);
+    g.helicopter.worldX = 200; dropCarrierRepair(&g);
+    if (g.defence.repairDropPending != 2 || g.powerup.type != POWERUP_HEALTH) return 122;
+    g.powerup.active = 0; serviceCarrierRepairDrop(&g);
+    if (g.powerup.worldX != 104 || g.defence.repairDropPending != 1) return 123;
+    g.powerup.active = 0; serviceCarrierRepairDrop(&g);
+    if (g.powerup.worldX != 204 || g.defence.repairDropPending) return 124;
+    respawnPlayer(&g);
+    if (!g.powerup.active || g.powerup.type != POWERUP_CARRIER_REPAIR) return 125;
+    UBYTE* actual = AllocMem(2UL * GAME_WORLD_BITMAP_BYTES, MEMF_PUBLIC | MEMF_CLEAR);
+    if (!actual) return 126;
+    UBYTE* expected = actual + GAME_WORLD_BITMAP_BYTES;
+    UBYTE mode = currentWorldPresentationMode; currentWorldPresentationMode = GAME_MODE_ENHANCED;
+    g.powerup.active = 1; g.powerup.type = POWERUP_CARRIER_REPAIR;
+    g.powerup.worldX = 84; g.powerup.y = 40;
+    powerupBobFootprintValid = 0; updatePowerupBob(expected, &g);
+    memset(helicopterFootprints, 0, sizeof(helicopterFootprints));
+    memset(encounterFootprints, 0, sizeof(encounterFootprints));
+    memset(bulletFootprints, 0, sizeof(bulletFootprints));
+    resetRocketShotPixelBobFootprints();
+    g.helicopter.active = 1; g.helicopter.x = g.helicopter.worldX = 80;
+    g.helicopter.y = 40; g.helicopterHits = 0;
+    drawHelicopterBob(actual, 0, &g);
+    powerupBobFootprintValid = 0; updatePowerupBob(actual, &g); retireEncounterBobs(actual, 0);
+    UBYTE equal = referenceBuffersEqual(actual, expected, GAME_WORLD_BITMAP_BYTES);
+    /* Moving R under an existing helicopter must also replace its saved background. */
+    drawHelicopterBob(actual, 0, &g); g.powerup.y = 41;
+    updatePowerupBob(actual, &g); retireEncounterBobs(actual, 0);
+    powerupBobFootprintY = 40; updatePowerupBob(expected, &g);
+    equal &= referenceBuffersEqual(actual, expected, GAME_WORLD_BITMAP_BYTES);
+    powerupBobFootprintValid = 0; currentWorldPresentationMode = mode;
+    FreeMem(actual, 2UL * GAME_WORLD_BITMAP_BYTES);
+    if (!equal) return 127;
+    return 0;
+}
+#endif

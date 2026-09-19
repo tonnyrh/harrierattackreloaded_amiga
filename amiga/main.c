@@ -14,7 +14,7 @@
 #include <stddef.h>
 #include <string.h>
 #include "assets/harrier_menu_text.h"
-#define HAR_BUILD_LABEL "BETA 4 DEV2"
+#define HAR_BUILD_LABEL "BETA 5 DEV2"
 #ifndef HAR_HARDWARE_PLAYER_ROCKET
 #define HAR_HARDWARE_PLAYER_ROCKET 0
 #endif
@@ -523,6 +523,7 @@ static ULONG headlessDamageStats[DAMAGE_FIELD_COUNT];
 #define CPC_FUEL_TOTAL_QUANTA (CPC_FUEL_SUBCOUNT_FULL * CPC_FUEL_GAUGE_LEVELS)
 #define CPC_FUEL_CLOCK_LIMIT (CPC_FUEL_FRAME_HZ * CPC_FUEL_TIME_QUANTUM)
 #define PLAYER_CRASH_FRAMES 64
+#define EJECT_CHORD_HOLD_TICKS 6
 #define PLAYER_CRASH_PART_COUNT 3
 #define AIRCRAFT_FAILURE_NONE 0
 #define AIRCRAFT_FAILURE_DESCENT 1
@@ -532,16 +533,17 @@ static ULONG headlessDamageStats[DAMAGE_FIELD_COUNT];
 #define AIRCRAFT_FAILURE_CAUSE_MISSILE 3
 #define AIRCRAFT_FAILURE_CAUSE_AIRCRAFT 4
 #define AIRCRAFT_FAILURE_CAUSE_VOLUNTARY_EJECT 5
-#define AIRCRAFT_FAILURE_FALL_START_256 96
-#define AIRCRAFT_FAILURE_FALL_ACCEL_256 24
-#define AIRCRAFT_FAILURE_FALL_MAX_256 640
+#define AIRCRAFT_FAILURE_FALL_START_256 64
+#define AIRCRAFT_FAILURE_FALL_ACCEL_256 16
+#define AIRCRAFT_FAILURE_FALL_MAX_256 448
 #define AIRCRAFT_FAILURE_HORIZONTAL_PIXELS 1
 #define AIRCRAFT_FAILURE_SPEED_DECAY_FRAMES 20
-#define AIRCRAFT_FAILURE_ALARM_SWEEP_FRAMES 13
-#define AIRCRAFT_FAILURE_ALARM_GAP_FRAMES 25
-#define AIRCRAFT_FAILURE_ALARM_LOW_PERIOD 520
-#define AIRCRAFT_FAILURE_ALARM_HIGH_PERIOD 300
-#define AIRCRAFT_FAILURE_ALARM_VOLUME 48
+#define AIRCRAFT_FAILURE_ALARM_TONE_FRAMES 8
+#define AIRCRAFT_FAILURE_ALARM_SWEEP_FRAMES 16
+#define AIRCRAFT_FAILURE_ALARM_GAP_FRAMES 6
+#define AIRCRAFT_FAILURE_ALARM_LOW_PERIOD 400
+#define AIRCRAFT_FAILURE_ALARM_HIGH_PERIOD 240
+#define AIRCRAFT_FAILURE_ALARM_VOLUME 64
 #define EJECT_UPDATE_NONE 0
 #define EJECT_UPDATE_CHANGED 1
 #define EJECT_UPDATE_CARRIER_RESTART 2
@@ -1480,7 +1482,31 @@ typedef struct HelicopterBullet {
     UBYTE active, age;
 } HelicopterBullet;
 
+#define CARRIER_DEFENCE_BOMBS 4
+#define ENCOUNTER_TILE_LAYERS 6
+#define DEFENCE_ALARM 1
+#define DEFENCE_WAVE 2
+#define DEFENCE_LULL 3
+#define DEFENCE_SECURE 4
+#define DEFENCE_DEPART 5
+#define DEFENCE_SINKING 6
+/* Mission-persistent hull/cargo, and a bounded stationary combat scene. */
+typedef struct CarrierDefenceState {
+    UBYTE phase, hull, cargo, wave, waves, spawned, quota, jetType;
+    UBYTE landed, facing, fireCooldown, service, gunFlash[2], sink;
+    UBYTE gunHealth[2], gunHeight[2], gunsRetract, turnTicks, turnTarget, alarmPlayed;
+    UBYTE wingFacing, wingTurnTicks, wingTurnTarget, wingPose;
+    WORD aimX, aimY;
+    UBYTE gunCooldown, missileCooldown, jetBulletHits, heliBulletHits, jetHits;
+    UBYTE repairDropPending; LONG repairDropX[4]; WORD repairDropY[4];
+    UWORD clock, phaseTicks, spawnDelay, jetAge, heliAge;
+    UBYTE fullVtol, leftHold, rightHold, centerVtol, repairLoad, repairAmbush, vtolPose;
+    LONG repairPad;
+    WeaponState bombs[CARRIER_DEFENCE_BOMBS];
+} CarrierDefenceState;
+
 typedef struct GameState {
+    CarrierDefenceState defence;
 	UWORD scrollX;
 	WORD playerX;
 	WORD playerY;
@@ -1615,6 +1641,7 @@ typedef struct GameState {
 	UWORD wingmanReviveDelayColumns;
 	UBYTE wingmanControl;
 	WingmanState wingman;
+    UBYTE groundBounceTicks; /* Enhanced terrain recoil, logical ticks. */
 } GameState;
 
 /* Gameplay policy lives here rather than being rediscovered at individual
@@ -1869,7 +1896,7 @@ static UBYTE tempoBlendTable[100][33];
 static UBYTE tempoBlendTableReady;
 typedef struct TempoUndo { void* address; LONG value; UBYTE word; } TempoUndo;
 /* Original 37 writes plus three new weapon poses (nine scalar writes). */
-static TempoUndo tempoUndo[64];
+static TempoUndo tempoUndo[88];
 static UBYTE tempoUndoCount;
 static void tempoInitBlendTable(void) {
 	if (tempoBlendTableReady) return;
@@ -1938,7 +1965,9 @@ static void tempoCopyWeaponPose(WeaponState* to, const WeaponState* from) {
 	to->x = from->x; to->y = from->y; to->worldX = from->worldX;
 }
 static void tempoCopyPose(GameState* to, const GameState* from) {
-	to->scrollX = from->scrollX;
+	for (UBYTE i = 0; i < CARRIER_DEFENCE_BOMBS; i++)
+        tempoCopyWeaponPose(&to->defence.bombs[i], &from->defence.bombs[i]);
+    to->scrollX = from->scrollX;
 	to->playerX = from->playerX; to->playerY = from->playerY;
 	to->ejectX = from->ejectX; to->ejectY = from->ejectY;
 	to->missionNumber = from->missionNumber;
@@ -2058,7 +2087,9 @@ static UBYTE tempoBeginRender(GameState* game) {
 	tempoBlendWeapon(&game->rocketShot, &tempoPreviousGame.rocketShot);
 	tempoBlendWeapon(&game->bombShot, &tempoPreviousGame.bombShot);
 	tempoBlendWeapon(&game->enemyMissile, &tempoPreviousGame.enemyMissile);
-	tempoBlendWeapon(&game->siloMissile, &tempoPreviousGame.siloMissile);
+	for (UBYTE i = 0; i < CARRIER_DEFENCE_BOMBS; i++)
+        tempoBlendWeapon(&game->defence.bombs[i], &tempoPreviousGame.defence.bombs[i]);
+    tempoBlendWeapon(&game->siloMissile, &tempoPreviousGame.siloMissile);
 	tempoBlendWeapon(&game->helicopter, &tempoPreviousGame.helicopter);
 	tempoBlendWeapon(&game->helicopterSmoke, &tempoPreviousGame.helicopterSmoke);
     for (UBYTE i = 0; i < HELICOPTER_BULLET_MAX; i++) {
@@ -2715,7 +2746,8 @@ enum PowerupType {
 	POWERUP_HEALTH = 2,
 	POWERUP_ROCKETS = 3,
 	POWERUP_BOMBS = 4,
-	POWERUP_EXTRA_AIRCRAFT = 5
+	POWERUP_EXTRA_AIRCRAFT = 5,
+    POWERUP_CARRIER_REPAIR = 6
 };
 
 #include "assets/level_route.h"
@@ -2952,9 +2984,11 @@ EMBED gameSceneMap[] = { 0 };
 EMBED gamePalette[] = { 0, 0 };
 EMBED enhancedTankTiles[80] = { 0 };
 EMBED enhancedMissileTankTiles[80] = { 0 };
+EMBED enhancedRepairDepotTiles[80] = { 0 };
 EMBED enhancedWeaponRows[550] = { 0 };
 EMBED enhancedEncounterTiles[320] = { 0 };
-EMBED enhancedHelicopterShifted[1920] = { 0 };
+EMBED enhancedHelicopterMirrored[160] = { 0 };
+EMBED enhancedHelicopterShifted[3840] = { 0 };
 EMBED enhancedGroundTargetTiles[160] = { 0 };
 #else
 EMBED enhancedTownTiles[] = {
@@ -2975,11 +3009,17 @@ EMBED gameSceneMap[] = {
 EMBED gamePalette[] = {
 	#embed "assets/game_palette.pal"
 };
+EMBED enhancedRepairDepotTiles[] = {
+    #embed "assets/enhanced/repair_depot_masked.bpl"
+};
 EMBED enhancedMissileTankTiles[] = {
 	#embed "assets/enhanced/missile_tank_16x8_masked.bpl"
 };
 EMBED enhancedHelicopterShifted[] = {
 	#embed "assets/enhanced/helicopter_shifted.bpl"
+};
+EMBED enhancedHelicopterMirrored[] = {
+    #embed "assets/enhanced/helicopter_mirrored.bpl"
 };
 EMBED enhancedEncounterTiles[] = {
 	#embed "assets/enhanced/encounters_masked.bpl"
@@ -2999,7 +3039,7 @@ typedef char EnhancedTownTilesSizeCheck[
 	(sizeof(enhancedTownTiles) == ENHANCED_TOWN_TILE_COUNT * GAME_TILE_BYTES &&
 	 GAME_TILE_COUNT + ENHANCED_TOWN_TILE_COUNT <= 256) ? 1 : -1];
 typedef char EnhancedEncounterBankSizeCheck[(sizeof(enhancedEncounterTiles) == 320 &&
-    sizeof(enhancedHelicopterShifted) == 1920) ? 1 : -1];
+    sizeof(enhancedHelicopterShifted) == 3840) ? 1 : -1];
 typedef char EnhancedWeaponBankSizeCheck[(sizeof(enhancedWeaponRows) == 550 &&
 	sizeof(enhancedMissileTankTiles) == 80) ? 1 : -1];
 typedef char EnhancedTankTilesMustBe80Bytes[
@@ -3126,6 +3166,22 @@ EMBED_CHIP sfxRadarAlarmWave[] = {
 	0x85, 0x87, 0x8d, 0x98, 0xa7, 0xba, 0xd0, 0xe8
 };
 
+#ifdef __INTELLISENSE__
+EMBED_CHIP sfxCarrierKlaxon[8400] = {0};
+#else
+EMBED_CHIP sfxCarrierKlaxon[] = {
+    #embed "assets/sfx/carrier_klaxon.raw"
+};
+#endif
+
+#ifdef __INTELLISENSE__
+EMBED_CHIP sfxGroundBounce[6000] = {0};
+#else
+EMBED_CHIP sfxGroundBounce[] = {
+    #embed "assets/sfx/ground_impact.raw"
+};
+#endif
+
 EMBED_CHIP sfxHelicopterPulse[] = {
 	0x00, 0x14, 0x25, 0x31, 0x39, 0x3c, 0x3b, 0x38, 0x35, 0x33, 0x35, 0x3a, 0x40, 0x47, 0x4d, 0x50,
 	0x4e, 0x48, 0x3c, 0x2e, 0x1e, 0x0f, 0x02, 0xf8, 0xf2, 0xf0, 0xef, 0xef, 0xed, 0xe9, 0xe2, 0xd9,
@@ -3165,6 +3221,8 @@ enum {
 	SFX_CARRIER_IDLE_1,
 	SFX_CARRIER_IDLE_2,
 	SFX_HELICOPTER,
+    SFX_CARRIER_KLAXON,
+    SFX_GROUND_BOUNCE,
 	SFX_COUNT
 };
 
@@ -3174,6 +3232,10 @@ enum {
 static UBYTE sfxRetriggerGuard[SFX_COUNT];
 
 static const SfxSample sfxSamples[SFX_COUNT] = {
+    [SFX_GROUND_BOUNCE] = { sfxGroundBounce, sizeof(sfxGroundBounce), SFX_PAULA_PERIOD, 56,
+        SFX_PRIORITY_PLAYER, SFX_PAN_ANY, SFX_FRAMES_FOR_BYTES(sizeof(sfxGroundBounce)) },
+    [SFX_CARRIER_KLAXON] = { sfxCarrierKlaxon, sizeof(sfxCarrierKlaxon), 591, 64,
+        SFX_PRIORITY_PLAYER, SFX_PAN_ANY, 211 },
 	[SFX_HELICOPTER] = { sfxHelicopterPulse, sizeof(sfxHelicopterPulse), 443, 24,
 		SFX_PRIORITY_AMBIENT, SFX_PAN_ANY, 3 },
 	/* ~700 ms: short ignition pop followed by the rocket exhaust hiss. */
@@ -3487,7 +3549,7 @@ static UBYTE selectSfxChannel(UBYTE sfxId, const SfxSample* sample, WORD screenX
 	 * flak cannot cut off flak-hit, weapons, impacts, engine or music. */
 	if (isFlakGunSfx(sfxId)) {
 		for (UBYTE channel = 0; channel < SFX_CHANNEL_COUNT; channel++) {
-			if (channel == ENGINE_CHANNEL && engineActive)
+			if (channel == ENGINE_CHANNEL && (engineActive || aircraftFailureAlarmDmaActive))
 				continue;
 			if (isFlakGunSfx(sfxChannelCurrentId[channel]))
 				return channel;
@@ -3497,7 +3559,7 @@ static UBYTE selectSfxChannel(UBYTE sfxId, const SfxSample* sample, WORD screenX
 	UBYTE bestChannel = 0xff;
 	WORD bestScore = -32767;
 	for (UBYTE channel = 0; channel < SFX_CHANNEL_COUNT; channel++) {
-		if (channel == ENGINE_CHANNEL && engineActive)
+		if (channel == ENGINE_CHANNEL && (engineActive || aircraftFailureAlarmDmaActive))
 			continue;
 
 		UBYTE occupied = sfxChannelFrames[channel] != 0 ||
@@ -3961,9 +4023,11 @@ static void startPendingSfxChannel(UBYTE channel) {
 	custom->dmacon = DMAF_SETCLR | sfxDmaBit(channel);
 	/* Ordinary one-shots switch to a silent reload word after their first
 	 * pass. The procedural radar tone is intentionally a tiny waveform loop;
-	 * its frame timer stops DMA after the short beep. */
+	 * its frame timer stops DMA after the short beep. The carrier klaxon also
+     * loops deliberately for its longer, fixed-duration alarm. */
 	sfxChannelSilenceQueueDelay[channel] =
-		sfxChannelCurrentId[channel] == SFX_RADAR_ALARM ? 0 : 1;
+		(sfxChannelCurrentId[channel] == SFX_RADAR_ALARM ||
+         sfxChannelCurrentId[channel] == SFX_CARRIER_KLAXON) ? 0 : 1;
 }
 
 static void updateSfx(void) {
@@ -5256,10 +5320,9 @@ static void updateEngineSound(UBYTE speed, UBYTE landing) {
 }
 
 /* Sprint 15.60: the failed-aircraft warning owns the engine voice only after
- * the engine has been stopped. Paula loops the same tiny signed waveform as
- * the radar beep while AUD3PER sweeps upward in pitch. At PAL 50 Hz the
- * 13-frame bleep is 0.26 s (the nearest whole-frame value to 0.25 s), followed
- * by exactly 25 silent frames/0.5 s. Keeping the silent phase in GameState
+ * the engine has been stopped. Paula loops the existing tiny waveform with
+ * two distinct pitches: 8 ticks low, 8 high, then 6 silent. No per-tick
+ * division, mixing or sample generation is needed. Keeping the silent phase in GameState
  * prevents an orphaned audio timer from restarting the warning after eject,
  * impact, pause or menu return. */
 static void stopAircraftFailureAlarm(void) {
@@ -5287,10 +5350,8 @@ static void updateAircraftFailureAlarm(GameState* game) {
 
 	UBYTE frame = game->aircraftFailureAlarmFrame;
 	if (frame < AIRCRAFT_FAILURE_ALARM_SWEEP_FRAMES) {
-		UWORD period = (UWORD)(AIRCRAFT_FAILURE_ALARM_LOW_PERIOD -
-			((ULONG)frame * (AIRCRAFT_FAILURE_ALARM_LOW_PERIOD -
-			AIRCRAFT_FAILURE_ALARM_HIGH_PERIOD)) /
-			(AIRCRAFT_FAILURE_ALARM_SWEEP_FRAMES - 1));
+        UWORD period = frame < AIRCRAFT_FAILURE_ALARM_TONE_FRAMES ?
+            AIRCRAFT_FAILURE_ALARM_LOW_PERIOD : AIRCRAFT_FAILURE_ALARM_HIGH_PERIOD;
 		if (!aircraftFailureAlarmDmaActive)
 			startAircraftFailureAlarmPulse(period);
 		else
@@ -7635,14 +7696,22 @@ static UBYTE ejectLampIsLit(const GameState* game) {
 /* Count logical steps only: pause/interpolation cannot advance the hold. */
 static UBYTE updateEjectChord(GameState* game, const InputState* input) {
     if (game->gameMode != GAME_MODE_ENHANCED || !ejectLampIsLit(game) ||
-        !input->fire || !input->bomb || input->cancel || game->gameOver ||
+        input->cancel || game->gameOver ||
         game->crashTimer || game->ejectState || game->respawnSafeTimer ||
         game->takeoffState != TAKEOFF_STATE_AIRBORNE ||
         game->landingState != LANDING_STATE_NONE || game->missionComplete) {
         game->ejectChordTicks = 0; return 0;
     }
-    if (game->ejectChordTicks >= 12) return 0;
-    return ++game->ejectChordTicks == 12;
+    if (!input->fire || !input->bomb) {
+        /* A brief one-button dropout loses one tick, not the entire hold.
+         * Releasing both, or releasing after triggering, fully rearms it. */
+        if ((input->fire || input->bomb) && game->ejectChordTicks &&
+            game->ejectChordTicks < EJECT_CHORD_HOLD_TICKS) game->ejectChordTicks--;
+        else game->ejectChordTicks = 0;
+        return 0;
+    }
+    if (game->ejectChordTicks >= EJECT_CHORD_HOLD_TICKS) return 0;
+    return ++game->ejectChordTicks == EJECT_CHORD_HOLD_TICKS;
 }
 
 static UBYTE updateLowSpeedLanding(GameState* game) {
@@ -7692,6 +7761,9 @@ static UBYTE updatePlayerFuel(GameState* game) {
 
 static void initGameState(GameState* game, UWORD campaignSeed,
 	UWORD worldSeed, UBYTE missionNumber) {
+	memset(&game->defence, 0, sizeof(game->defence));
+    game->defence.hull = 100;
+    game->defence.gunHealth[0] = game->defence.gunHealth[1] = 2;
 	resetDestroyedTargets();
 	game->campaignSeed = campaignSeed ? campaignSeed : WORLD_SEED_FALLBACK;
 	game->worldSeed = worldSeed ? worldSeed : WORLD_SEED_FALLBACK;
@@ -7704,6 +7776,7 @@ static void initGameState(GameState* game, UWORD campaignSeed,
 	resetPowerup(game);
 	game->wingmanReviveDelayColumns = 0;
 	game->scrollX = 0;
+    game->groundBounceTicks = 0;
 	game->playerX = PLAYER_START_X;
 	game->playerY = PLAYER_START_Y;
 	game->speedLevel = GAME_SPEED_LEVEL_DEFAULT;
@@ -8399,6 +8472,7 @@ static void drawHudStatic(UBYTE* hud, UBYTE gameMode) {
  * authoritative HUD; Sprint 15.39 deliberately removed the differently-
  * paletted decorative copy from the main menu. */
 typedef struct HudRenderState {
+    UBYTE carrierHull, carrierCargo, carrierStatus, carrierLoad;
 	UBYTE valid;
 	ULONG score;
 	ULONG highScore;
@@ -8471,6 +8545,42 @@ static void drawHudStatusPanel(UBYTE* hud, UBYTE outerColor) {
 			row += SCREEN_PLANES * SCREEN_ROW_BYTES;
 		}
 	}
+}
+
+/* Compact carrier panel below LV; original instruments keep their positions. */
+static __attribute__((noinline, optimize("Os"))) void drawCarrierInstruments(UBYTE* hud, const GameState* g, HudRenderState* state, UBYTE overlay) {
+    if (g->gameMode != GAME_MODE_ENHANCED) return;
+    if (overlay) { state->carrierHull = state->carrierStatus = 255; return; }
+    const CarrierDefenceState* d = &g->defence;
+    UBYTE full = !state->valid || state->carrierHull == 255;
+    UBYTE colour = d->hull < 25 ? HUD_COLOR_WARN : HUD_COLOR_FUEL;
+    if (full) {
+        fillRect(hud, 280, 16, 40, 26, HUD_COLOR_LABEL);
+        fillRect(hud, 281, 17, 38, 24, HUD_COLOR_BACKGROUND);
+        drawTelemetryText(hud, 282, 18, "CARRIER", HUD_COLOR_LABEL);
+        drawTelemetryText(hud, 282, 26, "HULL", HUD_COLOR_LABEL);
+        drawTelemetryText(hud, 282, 34, "REPAIR", HUD_COLOR_LABEL);
+    }
+    if (full || state->carrierHull != d->hull) {
+        fillRect(hud, 303, 26, 15, 5, HUD_COLOR_BACKGROUND);
+        drawTelemetryUnsignedPadded(hud, 303, 26, d->hull, 3, colour);
+    }
+    if (full || state->carrierCargo != d->cargo) {
+        fillRect(hud, 313, 34, 5, 5, HUD_COLOR_BACKGROUND);
+        drawTelemetryUnsignedPadded(hud, 313, 34, d->cargo / 20, 1, HUD_COLOR_SAFE);
+    }
+    UBYTE status = d->phase == DEFENCE_ALARM || d->phase == DEFENCE_LULL ? 1 :
+        d->phase == DEFENCE_SECURE ? 2 : d->phase == DEFENCE_DEPART ? 3 : d->phase == DEFENCE_SINKING ? 4 :
+        d->fullVtol ? (d->repairLoad == 150 ? 5 : d->repairPad >= 0 ? 6 : 7) : 0;
+    UBYTE load = d->repairLoad / 15;
+    if (full || status != state->carrierStatus || (status == 6 && load != state->carrierLoad)) {
+        fillRect(hud, 0, 58, 320, 8, HUD_COLOR_BACKGROUND);
+        static const char* messages[] = { "", "AIR RAID SCRAMBLE", "LAND NOW", "UP: DEPART", "CARRIER LOST",
+            "REPAIR KIT ABOARD", "LOADING - WATCH THE SKY", "VTOL - LAND ON R / RIGHT: CRUISE" };
+        drawTextCentered(hud, 58, messages[status], status == 4 ? HUD_COLOR_WARN : HUD_COLOR_LABEL);
+    }
+    state->carrierHull = d->hull; state->carrierCargo = d->cargo;
+    state->carrierStatus = status; state->carrierLoad = load;
 }
 
 static void drawHudValues(UBYTE* hud, const GameState* game, ULONG highScore, UBYTE hudBufferIndex) {
@@ -8629,7 +8739,7 @@ static void drawHudValues(UBYTE* hud, const GameState* game, ULONG highScore, UB
 			drawHudStatusPanel(hud, HUD_COLOR_SAFE);
 			drawTextCentered(hud, 38, "HIGH SCORE", HUD_COLOR_SAFE);
 			drawHighScoreNameEditor(hud, game);
-		} else {
+		} else if (!overlayMode) {
 			/* Overlay just cleared - restore what's normally there. */
 			drawHudCellGaugeFrame(hud, 8, 46, 8, 10);
 			drawTextStyled(hud, 80, 47, "SPEED", FONT_STYLE_CPC_HUD);
@@ -8648,6 +8758,7 @@ static void drawHudValues(UBYTE* hud, const GameState* game, ULONG highScore, UB
 		(!state->valid || state->landingIndicatorVisual != landingIndicatorVisual))
 		drawCockpitIndicator(hud, 248, 'L', landingIndicatorVisual);
 	state->landingIndicatorVisual = landingIndicatorVisual;
+	drawCarrierInstruments(hud, game, state, overlayMode);
 	state->valid = 1;
 	state->score = game->score;
 	state->highScore = highScore;
@@ -9497,7 +9608,12 @@ typedef struct BombShotFootprint {
 
 static BombShotFootprint bombShotFootprints[GAME_WORLD_BUFFER_COUNT];
 static BombShotFootprint wingmanBombFootprints[GAME_WORLD_BUFFER_COUNT];
+static UBYTE carrierDefenceGunMask;
+static UBYTE carrierDefenceGunHeight[2];
+static UBYTE carrierDefenceGunPose[2];
+static UBYTE carrierDefenceSinkPixels;
 static UBYTE carrierParkedWingmanVisible = 0;
+static UBYTE carrierWingmanLiftDepth; /* 0 on deck, 8 below deck. */
 
 #define ROCKET_PIXEL_BOB_WIDTH 8
 #define ROCKET_PIXEL_BOB_HEIGHT 8
@@ -9521,7 +9637,7 @@ static RocketShotFootprint rocketShotFootprints[GAME_WORLD_BUFFER_COUNT];
 static RocketShotFootprint wingmanRocketFootprints[GAME_WORLD_BUFFER_COUNT];
 static RocketShotFootprint enemyMissileFootprints[GAME_WORLD_BUFFER_COUNT];
 /* Topmost encounter layers: silo shot, helicopter halves, cosmetic smoke. */
-static RocketShotFootprint encounterFootprints[2][GAME_WORLD_BUFFER_COUNT];
+static RocketShotFootprint encounterFootprints[ENCOUNTER_TILE_LAYERS][GAME_WORLD_BUFFER_COUNT];
 typedef struct HelicopterFootprint {
 	UBYTE valid, count;
 	WORD y;
@@ -9779,23 +9895,41 @@ static void buildPowerupBobTileIfNeeded(UBYTE type) {
 	 * powerupTypeColor[] table's intent - red/yellow/blue/green - translated
 	 * to the closest existing playfield colours since a Bob can't repoint a
 	 * hardware colour register per pixel the way a sprite could). */
-	static const UBYTE typeColor[6] = {
+	static const UBYTE typeColor[7] = {
 		GAME_COLOR_SKY,    /* NONE (unused) */
 		GAME_COLOR_RED,    /* WINGMAN */
 		GAME_COLOR_YELLOW, /* HEALTH */
 		GAME_COLOR_POWERUP_BLUE,  /* ROCKETS: stable across mission palettes */
 		GAME_COLOR_POWERUP_GREEN, /* BOMBS: stable across mission palettes */
-		GAME_COLOR_WHITE   /* EXTRA AIRCRAFT */
+		GAME_COLOR_WHITE,  /* EXTRA AIRCRAFT */
+        GAME_COLOR_POWERUP_BLUE /* REPAIR: blue canopy, white R */
 	};
-	UBYTE canopyColor = typeColor[type < 6 ? type : 0];
+	UBYTE canopyColor = typeColor[type < 7 ? type : 0];
 	memset(powerupBobTileLeft, 0, sizeof(powerupBobTileLeft));
 	memset(powerupBobTileRight, 0, sizeof(powerupBobTileRight));
 	for (UBYTE row = 0; row < HAR_CPC_PARACHUTE_HEIGHT; row++) {
 		for (UBYTE col = 0; col < HAR_CPC_PARACHUTE_WIDTH; col++) {
 			UBYTE pen = harCpcParachutePixels[row * HAR_CPC_PARACHUTE_WIDTH + col];
-			if (pen != 15 && pen != 1)
-				continue;
-			UBYTE pixelColor = (pen == 15) ? canopyColor : GAME_COLOR_BLACK;
+            UBYTE pixelColor;
+            if (type == POWERUP_CARRIER_REPAIR) {
+                /* Compact crate beneath canopy and rigging, within the same
+                 * 16x8 footprint. Native pixel art uses stable game colours. */
+                static const UBYTE repairR[4] = {6,5,6,5};
+                if ((row == 0 && col >= 4 && col <= 8) ||
+                    (row == 1 && col >= 2 && col <= 10))
+                    pixelColor = row == 0 ? GAME_COLOR_WHITE : canopyColor;
+                else if (row == 2 && (col == 3 || col == 9))
+                    pixelColor = GAME_COLOR_WHITE;
+                else if (row >= 3 && col >= 3 && col <= 9) {
+                    pixelColor = col == 3 || col == 9 || row == 7 ? GAME_COLOR_BLACK : canopyColor;
+                    if (row < 7 && col >= 5 && col <= 7 &&
+                        (repairR[row - 3] & (4 >> (col - 5))))
+                        pixelColor = GAME_COLOR_WHITE;
+                } else continue;
+            } else {
+                if (pen != 15 && pen != 1) continue;
+                pixelColor = pen == 15 ? canopyColor : GAME_COLOR_BLACK;
+            }
 			UBYTE* dest = (col < 8 ? powerupBobTileLeft : powerupBobTileRight) +
 				row * (GAME_WORLD_DISPLAY_PLANES + 1);
 			UBYTE bit = (UBYTE)(0x80 >> (col & 7));
@@ -10034,6 +10168,9 @@ static void buildSpriteFromGameTile(UWORD* sprite, UWORD height, WORD x, WORD y,
 	sprite[3 + height * 2] = 0;
 }
 
+#include "assets/enhanced/harrier_poses.h"
+#include "assets/enhanced/carrier_art.h"
+
 static void buildPlayerSprite(UWORD* sprite, UWORD* attachSprite, WORD x, WORD y) {
 	buildAttachedSpriteFromCpcPlusHalves(sprite, attachSprite, PLAYER_SPRITE_HEIGHT, x, y, harCpcHarrierFlyingLeftPixels, harCpcHarrierFlyingRightPixels);
 }
@@ -10048,7 +10185,16 @@ static void buildPlayerCrashPartSprite(UWORD* sprite, WORD x, WORD y, UBYTE part
 
 static void buildEjectSprite(UWORD* sprite, const GameState* game);
 
+/* Render-only impact rattle: never perturbs collision or aiming coordinates. */
+static WORD playerGroundShakeOffset(const GameState* game) {
+    if (game->gameMode != GAME_MODE_ENHANCED || !game->groundBounceTicks ||
+        game->crashTimer || game->ejectState || game->aircraftFailureState) return 0;
+    WORD amplitude = game->groundBounceTicks > 4 ? 2 : 1;
+    return (game->groundBounceTicks & 1) ? amplitude : -amplitude;
+}
+
 static void updatePlayerSprite(UWORD* sprite, UWORD* attachSprite, const GameState* game) {
+    WORD drawX = game->playerX + playerGroundShakeOffset(game);
 	if (game->gameOver) {
 		hideHardwareSprite(sprite);
 		hideHardwareSprite(attachSprite);
@@ -10077,17 +10223,32 @@ static void updatePlayerSprite(UWORD* sprite, UWORD* attachSprite, const GameSta
 		return;
 	}
 
+    if (game->gameMode == GAME_MODE_ENHANCED && game->takeoffState != TAKEOFF_STATE_ROLLING_IN &&
+        (game->defence.phase || game->defence.fullVtol || game->landingState == LANDING_STATE_HOVER)) {
+        const UBYTE* art = game->defence.vtolPose == 2 ? harrierLandingEnhancedReverse : harrierFront;
+        if (game->defence.vtolPose == 1) buildAttachedSpriteFromCpcPlusHalves(sprite, attachSprite, PLAYER_SPRITE_HEIGHT, drawX, game->playerY, harrierLandingEnhanced, harrierLandingEnhanced + 8);
+        else buildAttachedSpriteFromCpcPlusHalves(sprite, attachSprite, PLAYER_SPRITE_HEIGHT,
+            drawX, game->playerY, art, art + 8);
+        return;
+    }
+
 	/* CPC beginlandingapproach calls setlandingsprite immediately, loading
 	 * sprite_pixel_data4/3 (the Harrier with its undercarriage down), and
 	 * keeps that artwork throughout landinghoverloop.  The Amiga port
 	 * already had the correctly extracted attached-sprite pair, but only
 	 * selected it while parked on the opening carrier. */
+    if (game->gameMode == GAME_MODE_ENHANCED) {
+        UBYTE landed = game->takeoffState == TAKEOFF_STATE_ROLLING_IN || game->takeoffState == TAKEOFF_STATE_READY || game->landingState != LANDING_STATE_NONE || game->lowSpeedLanding;
+        const UBYTE* art = landed ? harrierLandingEnhanced : harrierFlyingEnhanced;
+        buildAttachedSpriteFromCpcPlusHalves(sprite, attachSprite, PLAYER_SPRITE_HEIGHT, drawX, game->playerY, art, art + 8);
+        return;
+    }
 	if (game->takeoffState == TAKEOFF_STATE_ROLLING_IN ||
 		game->takeoffState == TAKEOFF_STATE_READY ||
 		game->landingState != LANDING_STATE_NONE || game->lowSpeedLanding)
-		buildPlayerLandingSprite(sprite, attachSprite, game->playerX, game->playerY);
+		buildPlayerLandingSprite(sprite, attachSprite, drawX, game->playerY);
 	else
-		buildPlayerSprite(sprite, attachSprite, game->playerX, game->playerY);
+		buildPlayerSprite(sprite, attachSprite, drawX, game->playerY);
 }
 
 static void buildEjectSprite(UWORD* sprite, const GameState* game) {
@@ -10132,7 +10293,15 @@ static void buildSpriteFromRows(UWORD* sprite, UWORD height, WORD x, WORD y, con
 }
 
 #define ENEMY_MISSILE_TRUCK_TYPE 128
+#define ENEMY_MISSILE_CARRIER_TYPE 129
 static UBYTE enemyMissileTileForState(const WeaponState* missile) {
+    if (missile->type == ENEMY_MISSILE_CARRIER_TYPE) {
+        WORD ax = missile->dx < 0 ? -missile->dx : missile->dx;
+        WORD ay = missile->dy < 0 ? -missile->dy : missile->dy;
+        if (ax < ay / 2) return missile->dy < 0 ? 101 : 100;
+        if (ay < ax / 2) return missile->dx < 0 ? 55 : 56;
+        return missile->dx < 0 ? (missile->dy < 0 ? 53 : 54) : (missile->dy < 0 ? 98 : 99);
+    }
     if (missile->type == ENEMY_MISSILE_TRUCK_TYPE)
         return missile->direction == 0 ? 98 : 56;
     return missile->dy < 0 ? 53 : (missile->dy > 0 ? 54 : 55);
@@ -10242,7 +10411,7 @@ static void drawPromotedCpcCarrierRangeRowAt(UBYTE* bitmap,
 		return;
 	const UBYTE* tileData;
 	const UBYTE* tileSkip;
-	if (carrierParkedWingmanVisible) {
+	if (carrierParkedWingmanVisible && !carrierWingmanLiftDepth) {
 		tileData = harCarrierTileData;
 		tileSkip = harCarrierTileSkip;
 	} else {
@@ -10252,15 +10421,62 @@ static void drawPromotedCpcCarrierRangeRowAt(UBYTE* bitmap,
 	if (row >= HAR_CARRIER_TILES_TALL)
 		return;
 	UWORD gridIndex = (UWORD)(row * HAR_CARRIER_TILES_WIDE + compositeColumn);
-	if (tileSkip[gridIndex])
+    UBYTE gunTile = !carrierDefenceSinkPixels && row == 1 &&
+        ((compositeColumn == 1 && (carrierDefenceGunMask & 1)) ||
+         (compositeColumn == 10 && (carrierDefenceGunMask & 2)));
+	UBYTE tipTile = !carrierDefenceSinkPixels && currentWorldPresentationMode == GAME_MODE_ENHANCED && compositeColumn == 5 && row < 2;
+	if (tileSkip[gridIndex] && !gunTile && !tipTile &&
+        !(carrierParkedWingmanVisible && carrierWingmanLiftDepth && row == 1 && compositeColumn >= 9))
 		return;
 	/* Canvas row 0 in the generator corresponds to world tile row 12
 	 * (pixel Y 96 = the caller's old fixed y=80 base + the 16px/2-tile
 	 * shift the generator applied so its own canvas starts at row 0 -
 	 * see the promoted carrier canvas
 	 * comment). Only ever called with that same fixed base today. */
-	drawGameScrollTileMasked(bitmap, (short)physicalTileX, (short)(12 + row),
-		tileData + (ULONG)gridIndex * HAR_CARRIER_TILE_BYTES);
+    if (!carrierDefenceSinkPixels) {
+        drawGameScrollTileMasked(bitmap, (short)physicalTileX, (short)(12 + row),
+            tileData + (ULONG)gridIndex * HAR_CARRIER_TILE_BYTES);
+        if (tipTile) {
+            /* Only the white missile nose peeks above the second island step. */
+            static const UBYTE tipTop[40] = { [36]=2,[39]=2 };
+            static const UBYTE tipBottom[40] = {0,6,0,0,6, 4,6,0,0,6};
+            drawGameScrollTileMasked(bitmap, physicalTileX, 12 + row, row ? tipBottom : tipTop);
+        }
+        if (carrierParkedWingmanVisible && carrierWingmanLiftDepth && row == 1 && compositeColumn >= 9) {
+            const UBYTE* parked = harCarrierTileData + (ULONG)gridIndex * HAR_CARRIER_TILE_BYTES;
+            const UBYTE* bare = harCarrierWithoutWingmanTileData + (ULONG)gridIndex * HAR_CARRIER_TILE_BYTES;
+            for (UBYTE r = 0; r < 8; r++) {
+                UWORD y = 104 + r + carrierWingmanLiftDepth;
+                if (y >= 112) break; /* Deck occludes the lowered aircraft. */
+                UBYTE mask = 0;
+                for (UBYTE plane = 0; plane < 4; plane++) mask |= parked[r*5+plane] ^ bare[r*5+plane];
+                mask &= parked[r*5+4];
+                UBYTE* dst = bitmap + (ULONG)y * SCREEN_PLANES * GAME_WORLD_ROW_BYTES + physicalTileX;
+                for (UBYTE plane = 0; plane < 4; plane++)
+                    dst[plane * GAME_WORLD_ROW_BYTES] = (dst[plane * GAME_WORLD_ROW_BYTES] & ~mask) | (parked[r*5+plane] & mask);
+            }
+        }
+        if (gunTile)
+        {
+            /* Slide the existing 8x8 gun down behind the deck; no new BOB. */
+            UBYTE height = carrierDefenceGunHeight[compositeColumn == 10];
+            UBYTE lowered[40] = {0};
+            for (UBYTE r = 0; r < height; r++)
+                memcpy(lowered + (8 - height + r) * 5, carrierAaPoses[carrierDefenceGunPose[compositeColumn == 10]] + r * 5, 5);
+            drawGameScrollTileMasked(bitmap, physicalTileX, 13, lowered);
+        }
+    } else {
+        const UBYTE* tile = tileData + (ULONG)gridIndex * HAR_CARRIER_TILE_BYTES;
+        for (UBYTE r = 0; r < 8; r++) {
+            UWORD y = 96 + row * 8 + r + carrierDefenceSinkPixels;
+            /* The sea is opaque: submerged hull pixels never reach the bitmap. */
+            if (y >= SEA_SURFACE_Y) break;
+            const UBYTE* src = tile + r * 5;
+            UBYTE* dst = bitmap + (ULONG)y * SCREEN_PLANES * GAME_WORLD_ROW_BYTES + physicalTileX;
+            for (UBYTE plane = 0; plane < 4; plane++)
+                dst[plane * GAME_WORLD_ROW_BYTES] = (dst[plane * GAME_WORLD_ROW_BYTES] & ~src[4]) | (src[plane] & src[4]);
+        }
+    }
 }
 
 static void drawPromotedCpcCarrierRangeAt(UBYTE* bitmap, UWORD physicalTileX,
@@ -10343,7 +10559,7 @@ static const char* const debugTownBlockNames[HAR_CPC_TOWN_BLOCK_COUNT] = {
 	"TOWN BLOCK 4", "TOWN BLOCK 5", "TOWN BLOCK 6", "TOWN BLOCK 7"
 };
 
-static const char* const debugSfxNames[SFX_COUNT] = {
+static const char* const debugSfxNames[] = {
 	"ROCKET FIRE",
 	"BOMB DROP",
 	"IMPACT",
@@ -10365,8 +10581,11 @@ static const char* const debugSfxNames[SFX_COUNT] = {
 	"RADAR ALARM",
 	"CARRIER IDLE 1",
 	"CARRIER IDLE 2",
-	"HELICOPTER ROTOR"
+	"HELICOPTER ROTOR",
+    "CARRIER KLAXON",
+    "GROUND IMPACT"
 };
+typedef char DebugSfxNamesMustMatchCount[(sizeof(debugSfxNames) / sizeof(debugSfxNames[0]) == SFX_COUNT) ? 1 : -1];
 
 #define DEBUG_MUSIC_COUNT 3
 static const char* const debugMusicNames[DEBUG_MUSIC_COUNT] = {
@@ -10817,7 +11036,7 @@ static __attribute__((noinline, optimize("Os"))) void drawDebugSoundBrowser(UBYT
 		drawText(bitmap, x, y, channelLabel, MENU_COLOR_WHITE);
 		drawText(bitmap, (WORD)(x + 28), y,
 			sfxChannelIsLeft(channel) ? "L" : "R", MENU_COLOR_CYAN);
-		if (channel == ENGINE_CHANNEL && engineActive) {
+		if (channel == ENGINE_CHANNEL && (engineActive || aircraftFailureAlarmDmaActive)) {
 			drawText(bitmap, (WORD)(x + 44), y, "ENGINE",
 				MENU_COLOR_GREEN);
 		} else if (sfxChannelCurrentId[channel] < SFX_COUNT) {
@@ -11031,6 +11250,8 @@ typedef struct CpcLandGameplayState {
 	UBYTE transition;
 } CpcLandGameplayState;
 static CpcLandGameplayState cpcLandGameplayTable[CPC_LAND_PROCEDURAL_MAX_LENGTH];
+static UBYTE repairDepotColumns[(CPC_LAND_PROCEDURAL_MAX_LENGTH + 7) / 8];
+static UBYTE repairDepotCollected[(CPC_LAND_PROCEDURAL_MAX_LENGTH + 7) / 8];
 static UBYTE fuelDepotColumns[(CPC_LAND_PROCEDURAL_MAX_LENGTH + 7) / 8];
 static UBYTE missileTankColumns[(CPC_LAND_PROCEDURAL_MAX_LENGTH + 7) / 8];
 static UBYTE missileSiloColumns[(CPC_LAND_PROCEDURAL_MAX_LENGTH + 7) / 8];
@@ -11634,6 +11855,8 @@ static void resetCpcRandomSequence(UWORD worldSeed) {
         }
     }
 
+    memset(repairDepotColumns, 0, sizeof(repairDepotColumns));
+    memset(repairDepotCollected, 0, sizeof(repairDepotCollected));
     /* Rare 8x8 supply buildings replace single-cell targets only. Placement
      * is deterministic, independent of CPC/encounter RNG and never a tank/silo.
      * First after 96..127 columns, then at least 192..255 columns apart. */
@@ -12304,6 +12527,15 @@ static UBYTE isTargetDestroyedAtColumn(LONG worldColumn) {
 			return 1;
 	}
 	return 0;
+}
+
+static LONG repairDepotLocalColumn(LONG column) {
+    const LevelSegmentDef* segment = levelSegmentForWorldColumn(column);
+    if (!segment || segment->terrainKind != HAR_TERRAIN_CPC_RANDOM_LAND) return -1;
+    LONG local = column - segment->startColumn;
+    if (local < 0 || local >= cpcLandProceduralLength ||
+        !(repairDepotColumns[local >> 3] & (1 << (local & 7)))) return -1;
+    return local;
 }
 
 static UBYTE isFuelDepotColumn(LONG column) {
@@ -12984,6 +13216,11 @@ static UBYTE playerOnOwnFrigateDeck(const GameState* game) {
 	return 0;
 }
 
+static WORD playerCarrierDeckY(const GameState* game) {
+    return game->gameMode == GAME_MODE_ENHANCED ? TAKEOFF_PLAYER_DECK_Y :
+        CARRIER_DECK_PIXEL_Y - PLAYER_SPRITE_HEIGHT;
+}
+
 static UBYTE playerOnNativeCarrierDeckPixels(const GameState* game) {
 	if (game->takeoffState != TAKEOFF_STATE_AIRBORNE || game->crashTimer || game->gameOver)
 		return 0;
@@ -12993,8 +13230,8 @@ static UBYTE playerOnNativeCarrierDeckPixels(const GameState* game) {
 	 * steps, so accept contact through one pixel into the deck, but never
 	 * accept the previous step with visible air below the aircraft. The
 	 * collision path snaps an accepted position back onto the exact row. */
-	if (playerBottom < CARRIER_DECK_PIXEL_Y ||
-		playerBottom > CARRIER_DECK_PIXEL_Y + 2)
+	if (playerBottom < playerCarrierDeckY(game) + PLAYER_SPRITE_HEIGHT ||
+		playerBottom > playerCarrierDeckY(game) + PLAYER_SPRITE_HEIGHT + 2)
 		return 0;
 
 	LONG playerLeftWorld = (LONG)game->scrollX + game->playerX + 2;
@@ -13143,7 +13380,7 @@ static UBYTE replenishPlayerFromFrigate(GameState* game) {
 		(!game->wingman.active ||
 		 (game->wingman.mode == WINGMAN_LANDING_DECK &&
 		  game->wingman.screenY ==
-			(WORD)(CARRIER_DECK_PIXEL_Y - PLAYER_SPRITE_HEIGHT)))) {
+			playerCarrierDeckY(game)))) {
 		game->missionComplete = 1;
 		game->missionCompleteTimer = LANDING_COMPLETE_HOLD_FRAMES;
 		game->speedLevel = 0;
@@ -13627,8 +13864,10 @@ static void drawEnhancedGroundTargetColumnRowAt(UBYTE* bitmap,
 	const UBYTE* tileData;
 	ULONG tileIndex;
 	if (pairedTank) {
+        LONG repair = repairDepotLocalColumn(anchorColumn);
 		LONG silo = missileSiloLocalColumn(anchorColumn);
-		if (silo >= 0)
+        if (repair >= 0) tileData = enhancedRepairDepotTiles;
+		else if (silo >= 0)
 			tileData = enhancedEncounterTiles +
 				((missileSiloFired[silo >> 3] & (1 << (silo & 7))) ? 80 : 0);
 		else tileData = isMissileTankColumn(anchorColumn) ?
@@ -14832,6 +15071,14 @@ static void spawnCarrierGull(const GameState* game, UBYTE index) {
 		CARRIER_GULL_CRUISE_Y256 : -CARRIER_GULL_CRUISE_Y256;
 }
 
+static UBYTE carrierDeckIdleEligible(const GameState* game) {
+    if (game->gameMode == GAME_MODE_ENHANCED && game->defence.phase)
+        return game->defence.landed && !game->crashTimer && !game->ejectState &&
+            !game->aircraftFailureState &&
+            (game->defence.phase == DEFENCE_SECURE || game->defence.phase == DEFENCE_DEPART);
+    return game->takeoffState == TAKEOFF_STATE_READY || game->missionComplete;
+}
+
 static void updateCarrierGulls(const GameState* game, UBYTE idleEligible,
 	UBYTE sceneActive) {
 	if (!sceneActive || game->gameOver) {
@@ -15476,9 +15723,12 @@ static LONG bombImpactBobFootprintWorldColumn = 0;
 static WORD bombImpactBobFootprintRow = 0;
 static UBYTE bombImpactBobFootprintKind = 0xff;
 
+static void retireImpactProjectiles(UBYTE* bitmap, LONG worldColumn, WORD tileRow);
+
 static void eraseBombImpactBobFootprint(UBYTE* bitmap) {
 	if (!bombImpactBobFootprintValid)
 		return;
+	retireImpactProjectiles(bitmap, bombImpactBobFootprintWorldColumn, bombImpactBobFootprintRow);
 	bobCompositorErase(bitmap, bombImpactBobFootprintWorldColumn, bombImpactBobFootprintRow, 1);
 	bombImpactBobFootprintValid = 0;
 	bombImpactBobFootprintKind = 0xff;
@@ -15502,6 +15752,7 @@ static void drawBombImpactBobAt(UBYTE* bitmap, LONG worldColumn, WORD row, UBYTE
 		 * from world truth before applying the same impact frame again. */
 		eraseBombImpactBobFootprint(bitmap);
 	}
+	retireImpactProjectiles(bitmap, worldColumn, row);
 	bobCompositorDrawMasked(bitmap, worldColumn, row, bombImpactBobTile);
 	bombImpactBobFootprintWorldColumn = worldColumn;
 	bombImpactBobFootprintRow = row;
@@ -15580,6 +15831,13 @@ static void eraseRocketPixelBobFootprint(UBYTE* bitmap, UBYTE bufferIndex,
 	RocketShotFootprint* footprint = &footprints[bufferIndex];
 	if (!footprint->valid)
 		return;
+    /* Draw order is player, wingman/carrier, enemy. Later saved backgrounds
+     * may contain earlier missiles: always unwind that stack before erasing
+     * a lower layer, including early pickup/world-mutation retirement. */
+    if (footprints == rocketShotFootprints || footprints == wingmanRocketFootprints)
+        eraseRocketPixelBobFootprint(bitmap, bufferIndex, enemyMissileFootprints);
+    if (footprints == rocketShotFootprints)
+        eraseRocketPixelBobFootprint(bitmap, bufferIndex, wingmanRocketFootprints);
 	if (footprints == rocketShotFootprints || footprints == wingmanRocketFootprints ||
 		footprints == enemyMissileFootprints)
 		retireEncounterRegion(bitmap, bufferIndex, footprint->worldX, footprint->y, 8, 8);
@@ -15611,6 +15869,20 @@ static void eraseRocketPixelBobFootprint(UBYTE* bitmap, UBYTE bufferIndex,
 	}
 	footprint->valid = 0;
 	footprint->placementCount = 0;
+}
+
+/* Missiles save framebuffer bytes after hit flashes are drawn. Unwind any
+ * overlapping snapshots before changing/removing a flash, otherwise the later
+ * missile erase resurrects its old explosion (including after helicopter hits). */
+static void retireImpactProjectiles(UBYTE* bitmap, LONG worldColumn, WORD tileRow) {
+    RocketShotFootprint* shots[] = {rocketShotFootprints, wingmanRocketFootprints, enemyMissileFootprints};
+    WORD y = tileRow * 8;
+    for (UBYTE i = 0; i < 3; i++) {
+        const RocketShotFootprint* fp = &shots[i][0];
+        if (fp->valid && y < fp->y + 8 && y + 8 > fp->y &&
+            worldColumn >= (fp->worldX >> 3) && worldColumn <= ((fp->worldX + 7) >> 3))
+            eraseRocketPixelBobFootprint(bitmap, 0, shots[i]);
+    }
 }
 
 /* The scrolling playfield is intentionally single-buffered. On a fast frame
@@ -15687,7 +15959,7 @@ static WORD rocketLastScreenYForUpdate(UBYTE bufferIndex,
 			weapons[index]->y > lastScreenY)
 			lastScreenY = weapons[index]->y;
 	}
-	for (UBYTE i = 0; i < 2; i++)
+	for (UBYTE i = 0; i < ENCOUNTER_TILE_LAYERS; i++)
 		if (encounterFootprints[i][bufferIndex].valid &&
 			encounterFootprints[i][bufferIndex].y > lastScreenY)
 			lastScreenY = encounterFootprints[i][bufferIndex].y;
@@ -15788,28 +16060,23 @@ static UBYTE projectileCanUseHardware(UBYTE tile, UBYTE enemy) {
 
 /* Same indexed source for coloured BOBs; reserve/save the existing footprint.
  * Compatible black/yellow rockets retain their specialised cached fast path. */
-static UBYTE drawEnhancedWeaponRows(UBYTE* bitmap, UBYTE* saved, UWORD x,
+static __attribute__((noinline, optimize("O2"))) UBYTE drawEnhancedWeaponRows(UBYTE* bitmap, UBYTE* saved, UWORD x,
     WORD y, const UBYTE* source, UBYTE width, UBYTE height) {
     UBYTE shift = x & 7;
     UWORD byteX = x >> 3;
     UBYTE count = shift + width > 8 ? 2 : 1;
     if (byteX + count > GAME_WORLD_ROW_BYTES) count = GAME_WORLD_ROW_BYTES - byteX;
-    UBYTE* dest = bitmap + y * SCREEN_PLANES * GAME_WORLD_ROW_BYTES + byteX;
-    for (UBYTE row = 0; row < height; row++) {
+    UBYTE* dest = bitmap + (ULONG)y * SCREEN_PLANES * GAME_WORLD_ROW_BYTES + byteX;
+    for (UBYTE row = 0; row < height; row++, source += 5) {
         UWORD mask = ((UWORD)source[4] << 8) >> shift;
+        UBYTE keep0 = ~(mask >> 8), keep1 = ~(UBYTE)mask;
         for (UBYTE plane = 0; plane < GAME_WORLD_DISPLAY_PLANES; plane++) {
-            UWORD bits = ((UWORD)source[plane] << 8) >> shift;
-            for (UBYTE byte = 0; byte < count; byte++) {
-                UBYTE m = byte ? (UBYTE)mask : (UBYTE)(mask >> 8);
-                UBYTE b = byte ? (UBYTE)bits : (UBYTE)(bits >> 8);
-                UBYTE* target = dest + plane * GAME_WORLD_ROW_BYTES + byte;
-                saved[plane * 2 + byte] = *target;
-                *target = (*target & ~m) | (b & m);
-            }
+            UWORD bits = (((UWORD)source[plane] << 8) >> shift) & mask;
+            saved[0] = dest[0]; dest[0] = (dest[0] & keep0) | (bits >> 8);
+            if (count > 1) { saved[1] = dest[1]; dest[1] = (dest[1] & keep1) | (UBYTE)bits; }
+            saved += 2; dest += GAME_WORLD_ROW_BYTES;
         }
-        dest += SCREEN_PLANES * GAME_WORLD_ROW_BYTES;
-        saved += GAME_WORLD_DISPLAY_PLANES * 2;
-        source += 5;
+        dest += (SCREEN_PLANES - GAME_WORLD_DISPLAY_PLANES) * GAME_WORLD_ROW_BYTES;
     }
     return count;
 }
@@ -16049,12 +16316,12 @@ static void drawEnemyMissilePixelBob(UBYTE* bitmap, UBYTE bufferIndex,
 	footprint->worldX = missile->worldX;
 	UBYTE tileId = enemyMissileTileForState(missile);
 	drawRocketShotPixelBobPlacement(bitmap, footprint, 0, primaryPixelX,
-		missile->y, tileId, 1);
+		missile->y, tileId, missile->type != ENEMY_MISSILE_CARRIER_TYPE);
 	if (primaryPixelX <
 		(GAME_WORLD_BUFFER_MARGIN_TILES + GAME_FETCH_BYTES) * GAME_TILE_WIDTH) {
 		footprint->placementCount = 2;
 		drawRocketShotPixelBobPlacement(bitmap, footprint, 1,
-			(UWORD)(primaryPixelX + pagePixels), missile->y, tileId, 1);
+			(UWORD)(primaryPixelX + pagePixels), missile->y, tileId, missile->type != ENEMY_MISSILE_CARRIER_TYPE);
 	}
 }
 
@@ -16222,9 +16489,24 @@ static const RenderColumn* powerupBackgroundColumns(LONG leftColumn) {
 	return columns;
 }
 
+/* A repair drop may overlap the falling helicopter or a retained missile.
+ * Retire saved backgrounds before mutating the pickup's scanlines. */
+static void retirePowerupOverlaps(UBYTE* bitmap, LONG x, WORD y, UBYTE columns) {
+    retireEncounterRegion(bitmap, 0, x, y, columns * 8, POWERUP_SPRITE_HEIGHT);
+    RocketShotFootprint* shots[] = {rocketShotFootprints, wingmanRocketFootprints, enemyMissileFootprints};
+    for (UBYTE i = 0; i < 3; i++) {
+        const RocketShotFootprint* fp = &shots[i][0];
+        if (fp->valid && y < fp->y + 8 && y + POWERUP_SPRITE_HEIGHT > fp->y &&
+            (x >> 3) <= ((fp->worldX + 7) >> 3) && ((x >> 3) + columns - 1) >= (fp->worldX >> 3))
+            eraseRocketPixelBobFootprint(bitmap, 0, shots[i]);
+    }
+}
+
 static void erasePowerupBobFootprint(UBYTE* bitmap) {
 	if (!powerupBobFootprintValid)
 		return;
+    retirePowerupOverlaps(bitmap, powerupBobFootprintWorldColumnLeft * 8,
+        powerupBobFootprintY, powerupBobColumnCount);
 	const RenderColumn* rebuiltColumns =
 		powerupBackgroundColumns(powerupBobFootprintWorldColumnLeft);
 	/* Restore only the eight scanlines actually touched by the old canopy.
@@ -16357,6 +16639,10 @@ static void updatePowerupBob(UBYTE* bitmap, const GameState* game) {
 		powerupBobFootprintPhase == phase &&
 		powerupBobFootprintY == pixelY)
 		return;
+    if (powerupBobFootprintValid)
+        retirePowerupOverlaps(bitmap, powerupBobFootprintWorldColumnLeft * 8,
+            powerupBobFootprintY, powerupBobColumnCount);
+    retirePowerupOverlaps(bitmap, worldColumnLeft * 8, pixelY, phase ? 3 : 2);
 	preparePowerupDrawTiles(phase);
 	if (powerupBobFootprintValid &&
 		powerupBobFootprintWorldColumnLeft == worldColumnLeft &&
@@ -16857,9 +17143,24 @@ static WORD wingmanScreenX(const GameState* game) {
 			WINGMAN_FORMATION_COLUMNS_BEHIND * GAME_TILE_WIDTH);
 }
 
+static UBYTE wingmanCrosshairPayload;
 /* Wingman uses channel 6. Channel 7 is independent and is used by the
  * player's ejector-seat/parachute sequence. */
 static void updateWingmanSprite(UWORD* sprite, UWORD* unusedSprite7, const GameState* game) {
+    if (game->gameMode == GAME_MODE_ENHANCED && game->defence.phase) {
+        wingmanCrosshairPayload = 1;
+        if (game->wingmanControl != WINGMAN_CONTROL_PLAYER2 || game->defence.phase == DEFENCE_SINKING) {
+            hideHardwareSprite(sprite); return;
+        }
+        memset(sprite, 0, PLAYER_SPRITE_WORDS * sizeof(UWORD));
+        setHardwareSpritePosition(sprite, PLAYER_SPRITE_HEIGHT, game->defence.aimX - 3, game->defence.aimY - 3);
+        for (UBYTE row = 0; row < 7; row++) {
+            UWORD bits = row == 3 ? 0xee00 : (row == 2 || row == 4 ? 0 : 0x1000);
+            sprite[2 + row * 2] = bits; sprite[3 + row * 2] = bits;
+        }
+        return;
+    }
+
 	/* The CPC pixels and pen mapping are immutable.  Converting all 16x16
 	 * pixels through a function pointer on every movement frame used to cost
 	 * 256 mapping calls plus all sprite-plane packing each time.  Hardware
@@ -16869,14 +17170,20 @@ static void updateWingmanSprite(UWORD* sprite, UWORD* unusedSprite7, const GameS
 	 * the final approach begins, so rebuild only on that state transition. */
 	static UWORD* payloadSprite = 0;
 	static UBYTE payloadLanding = 0xff;
+    static UBYTE payloadPose = 0xff;
 	const WingmanState* wingman = &game->wingman;
 	UBYTE landingArtwork =
 		(wingman->mode == WINGMAN_ON_DECK ||
 		 wingman->mode == WINGMAN_LANDING_APPROACH ||
 		 wingman->mode == WINGMAN_LANDING_DECK) ? 1 : 0;
+    UBYTE pose = game->gameMode == GAME_MODE_ENHANCED && game->defence.phase ? game->defence.wingPose : 1;
+    if (game->gameMode == GAME_MODE_ENHANCED && game->defence.phase) landingArtwork = 1;
 	(void)unusedSprite7;
-	if (payloadSprite != sprite || payloadLanding != landingArtwork) {
-		if (landingArtwork)
+	if (wingmanCrosshairPayload || payloadSprite != sprite || payloadLanding != landingArtwork || payloadPose != pose) {
+        if (!pose)
+            buildSpriteFromCpcPlusHalves(sprite, PLAYER_SPRITE_HEIGHT, 0, 0,
+                harrierFront, harrierFront + 8, cpcPlusPenToWingmanHardwareColor);
+		else if (landingArtwork)
 			buildSpriteFromCpcPlusHalves(sprite, PLAYER_SPRITE_HEIGHT, 0, 0,
 				harCpcWingmanLandedLeftPixels, harCpcWingmanLandedRightPixels,
 				cpcPlusPenToWingmanHardwareColor);
@@ -16884,8 +17191,16 @@ static void updateWingmanSprite(UWORD* sprite, UWORD* unusedSprite7, const GameS
 			buildSpriteFromCpcPlusHalves(sprite, PLAYER_SPRITE_HEIGHT, 0, 0,
 				harCpcWingmanFlyingLeftPixels, harCpcWingmanFlyingRightPixels,
 				cpcPlusPenToWingmanHardwareColor);
+        if (pose == 2) {
+            /* Reverse only on pose changes, retaining the safe single channel. */
+            for (UBYTE i = 2; i < 2 + PLAYER_SPRITE_HEIGHT * 2; i++) {
+                UWORD source = sprite[i], reversed = 0;
+                for (UBYTE bit = 0; bit < 16; bit++) { reversed = (reversed << 1) | (source & 1); source >>= 1; }
+                sprite[i] = reversed;
+            }
+        }
 		payloadSprite = sprite;
-		payloadLanding = landingArtwork;
+		payloadLanding = landingArtwork; payloadPose = pose; wingmanCrosshairPayload = 0;
 	}
 	if (!wingman->active ||
 		(wingman->mode != WINGMAN_ON_DECK &&
@@ -18520,6 +18835,7 @@ static void updateTargetLock(GameState* game) {
 	if (localColumn < 0 || localColumn >= cpcLandProceduralLength)
 		return;
 
+    if (game->gameMode == GAME_MODE_ENHANCED && repairDepotLocalColumn(checkColumn) >= 0) return;
 	UBYTE target = cpcLandProceduralTarget((UWORD)localColumn);
 	/* insertenemylandtile updates CPC's lock once at the tank's front. The
 	 * following TANK_REAR column is only drawspriteblock3 continuation and
@@ -18742,10 +19058,11 @@ static UBYTE playerHighEnoughForPowerup(const GameState* game) {
 }
 
 static void spawnPowerup(GameState* game, UBYTE type, UBYTE startRow) {
+    if (game->defence.repairDropPending && type != POWERUP_CARRIER_REPAIR) return;
 	PowerupState* p = &game->powerup;
 	/* Audit every Enhanced entry point, including the end-of-board aircraft
 	 * bonus. The caller-side arbitration should keep this at zero. */
-	if (game->gameMode == GAME_MODE_ENHANCED && game->enemyPlane.active &&
+	if (game->gameMode == GAME_MODE_ENHANCED && type != POWERUP_CARRIER_REPAIR && game->enemyPlane.active &&
 		telemetryEnhancedPowerupWhileEnemy < 0xffff)
 		telemetryEnhancedPowerupWhileEnemy++;
 	p->active = 1;
@@ -18964,6 +19281,11 @@ static void activatePowerup(GameState* game, UBYTE type) {
 				game->ejectChordTicks = 0;
 			}
 			break;
+        case POWERUP_CARRIER_REPAIR:
+            if (game->gameMode == GAME_MODE_ENHANCED) {
+                if (game->defence.cargo < 60) game->defence.cargo += 20;
+            } else collected = 0;
+            break;
 		case POWERUP_EXTRA_AIRCRAFT:
 			if (game->gameMode != GAME_MODE_ENHANCED) {
 				collected = 0;
@@ -19007,6 +19329,7 @@ static UBYTE powerupHitsSolidWorld(const GameState* game, const PowerupState* p)
 }
 
 static UBYTE powerupHitsPlayer(const GameState* game, const PowerupState* p) {
+    if (game->gameMode == GAME_MODE_ENHANCED && (game->gameOver || game->ejectState || game->crashTimer || game->aircraftFailureState)) return 0;
 	WORD screenX = (WORD)(p->worldX - (LONG)game->scrollX);
 	/* Collection follows the visible, smoothly interpolated 16x8 Bob. Keep
 	 * POWERUP_COLLISION_WIDTH/logicalY for CPC-style world and projectile
@@ -19687,6 +20010,9 @@ static UBYTE updateEnemyPlane(GameState* game) {
 		return 1;
 	}
 
+    /* R-pad bomber keeps a fixed bombing pass, not the radar pursuit path. */
+    if (game->gameMode == GAME_MODE_ENHANCED && game->defence.repairAmbush == 2) return 1;
+
     /* Chris's scenery anchoring described the CPC implementation, not a
      * restriction on this port. Both modes now share a small independent X
      * velocity while retaining their admission rules and vertical attack. */
@@ -20364,7 +20690,7 @@ static void updateWingmanLanding(GameState* game) {
 				next < wingman->landingTargetX ? wingman->landingTargetX : next;
 		}
 
-		WORD deckY = (WORD)(CARRIER_DECK_PIXEL_Y - PLAYER_SPRITE_HEIGHT);
+		WORD deckY = playerCarrierDeckY(game);
 		if (wingman->screenY < deckY) {
 			WORD next = (WORD)(wingman->screenY +
 				WINGMAN_LANDING_DESCEND_PIXELS);
@@ -20537,6 +20863,10 @@ static void losePlayerLife(GameState* game);
 static void startPlayerCrash(GameState* game, WORD x, WORD y);
 
 static void respawnPlayer(GameState* game) {
+    game->groundBounceTicks = 0;
+	game->defence.fullVtol = game->defence.centerVtol = 0;
+	game->defence.leftHold = game->defence.rightHold = game->defence.repairLoad = 0;
+	game->defence.repairPad = -1;
 	game->playerX = PLAYER_START_X;
 	game->playerY = PLAYER_START_Y;
 	game->armour = 100;
@@ -20568,7 +20898,7 @@ static void respawnPlayer(GameState* game) {
 	game->enemyMissile.active = 0;
 	game->enemyMissileFromShip = 0;
 	game->enemyRespawnTimer = 0;
-	game->powerup.active = 0;
+	if (!game->defence.phase || game->powerup.type != POWERUP_CARRIER_REPAIR) game->powerup.active = 0;
 	telemetryLogGameEvent(TELEMETRY_GAME_EVENT_PLAYER_RESPAWN,
 		game->respawnSafeTimer, (UWORD)(game->scrollX >> 3), game,
 		game->lives);
@@ -20622,7 +20952,7 @@ static void startAircraftFailure(GameState* game, UBYTE cause) {
 	game->enemyMissile.active = 0;
 	game->enemyMissileFromShip = 0;
 	game->enemyMissileTarget = ENEMY_TARGET_NONE;
-	game->powerup.active = 0;
+	if (!game->defence.phase || game->powerup.type != POWERUP_CARRIER_REPAIR) game->powerup.active = 0;
 	stopSfxChannel(ENGINE_CHANNEL);
 	engineActive = 0;
 	if (cause == AIRCRAFT_FAILURE_CAUSE_MISSILE ||
@@ -20705,7 +21035,7 @@ static void startPlayerEject(GameState* game) {
 	game->enemyMissile.active = 0;
 	game->enemyMissileFromShip = 0;
 	game->enemyMissileTarget = ENEMY_TARGET_NONE;
-	game->powerup.active = 0;
+	if (!game->defence.phase || game->powerup.type != POWERUP_CARRIER_REPAIR) game->powerup.active = 0;
 	stopSfxChannel(ENGINE_CHANNEL);
 	engineActive = 0;
 	playSfxAt(SFX_EJECT, game->playerX);
@@ -20855,14 +21185,21 @@ static UBYTE updatePlayerEject(GameState* game) {
 
 	/* CPC descends one character step per update. The Amiga port keeps the
 	 * same state transition but moves one pixel every other frame. */
-	if ((game->ejectTimer & 1) == 0)
-		game->ejectY++;
+    UBYTE carrierRescue = game->gameMode == GAME_MODE_ENHANCED && game->defence.phase;
+    if (carrierRescue ? game->ejectTimer % 3 == 0 : (game->ejectTimer & 1) == 0)
+        game->ejectY++;
 
 	LONG worldColumn = ((LONG)game->scrollX + game->ejectX) /
 		GAME_TILE_WIDTH;
 	WORD surfaceY = terrainSurfacePixelYForWorldColumn(worldColumn);
+    WORD pilotX = game->ejectX + HAR_CPC_PARACHUTE_WIDTH / 2;
+    UBYTE overDeck = pilotX >= 64 && pilotX < 160;
+    if (carrierRescue) surfaceY = overDeck ? CARRIER_DECK_PIXEL_Y : SEA_SURFACE_Y;
 	if (game->ejectY + HAR_CPC_PARACHUTE_HEIGHT >= surfaceY ||
 		game->ejectY >= HUD_TOP - HAR_CPC_PARACHUTE_HEIGHT) {
+        if (carrierRescue && !overDeck) {
+            game->ejectState = 0; triggerGameOver(game); return EJECT_UPDATE_CHANGED;
+        }
 		game->ejectY = (WORD)(surfaceY - HAR_CPC_PARACHUTE_HEIGHT);
 		game->ejectState = 3;
 		if (!game->abandonedAircraftActive && !game->crashTimer)
@@ -21429,8 +21766,9 @@ static UBYTE referenceTempoMatches(void) {
 	 * adjustment, then require a byte-for-byte restoration of all gameplay. */
 	WeaponState* weapons[] = { &sample.enemyPlane, &sample.rocketShot,
 		&sample.bombShot, &sample.enemyMissile, &sample.wingman.rocket,
-		&sample.wingman.bomb, &sample.siloMissile, &sample.helicopter, &sample.helicopterSmoke, &sample.crashPart[0], &sample.crashPart[1], &sample.crashPart[2] };
-	for (UBYTE i = 0; i < 12; i++) {
+		&sample.wingman.bomb, &sample.siloMissile, &sample.helicopter, &sample.helicopterSmoke, &sample.crashPart[0], &sample.crashPart[1], &sample.crashPart[2],
+        &sample.defence.bombs[0], &sample.defence.bombs[1], &sample.defence.bombs[2], &sample.defence.bombs[3] };
+	for (UBYTE i = 0; i < 16; i++) {
 		weapons[i]->active = 1; weapons[i]->type = 1;
 		weapons[i]->x = 80; weapons[i]->y = 40; weapons[i]->worldX = 180;
 	}
@@ -21440,7 +21778,7 @@ static UBYTE referenceTempoMatches(void) {
         sample.helicopterBullets[i].worldX = 180; sample.helicopterBullets[i].y = 40;
     }
 	tempoCopyPose(&tempoPreviousGame, &sample);
-	for (UBYTE i = 0; i < 12; i++) {
+	for (UBYTE i = 0; i < 16; i++) {
 		weapons[i]->x += 3; weapons[i]->y += 2; weapons[i]->worldX += 3;
 	}
 	for (UBYTE i = 0; i < HELICOPTER_BULLET_MAX; i++) {
@@ -21452,7 +21790,7 @@ static UBYTE referenceTempoMatches(void) {
 	sample.wingman.screenY += 2; sample.wingman.interceptScreenX += 3;
 	sample.powerup.y += 2; sample.powerup.worldX += 3;
 	expected = sample;
-	if (!tempoBeginRender(&sample) || tempoUndoCount < 39 || tempoUndoCount > 64 ||
+	if (!tempoBeginRender(&sample) || tempoUndoCount < 39 || tempoUndoCount > 88 ||
 		sample.enemyPlane.x != sample.enemyPlane.worldX - sample.scrollX) return 0;
 	tempoEndRender(&sample);
 	if (!referenceBuffersEqual((const UBYTE*)&sample, (const UBYTE*)&expected, sizeof(sample))) return 0;
@@ -21968,8 +22306,26 @@ static void writeClassicContractResult(const char* result) {
 static UBYTE referenceEnhancedEncountersMatch(void);
 static UBYTE referenceHardwareFeedbackMatch(void);
 static UBYTE referenceFuelSupplyMatch(void);
+static UBYTE referenceCarrierDefenceMatches(void);
 static UBYTE referenceMissileDamageEjectMatch(void);
 static int runClassicGameplayContractTest(void) {
+#if HAR_HEADLESS_CARRIER_DEFENCE_TEST_ONLY
+    UBYTE result = referenceCarrierDefenceMatches();
+#if !HAR_HEADLESS_CARRIER_RULES_ONLY
+    if (!result) result = referenceEnhancedEncountersMatch();
+    if (!result && !referenceTempoMatches()) result = 29;
+    if (!result && !referenceEditableWeaponArtMatches()) result = 30;
+#endif
+    char message[48] = "PASS carrier-defence-and-repair";
+    if (result) {
+        memcpy(message, "FAIL carrier-defence check ", sizeof("FAIL carrier-defence check "));
+        UWORD n = strlen(message); if (result >= 100) message[n++] = '0' + result / 100;
+        message[n++] = '0' + (result / 10) % 10;
+        message[n++] = '0' + result % 10; message[n] = 0;
+    }
+    writeClassicContractResult(message); return result != 0;
+#endif
+
 #if HAR_HEADLESS_FUEL_SUPPLY_TEST_ONLY
     UBYTE result = referenceFuelSupplyMatch();
     char message[48] = "PASS fuel-supply-and-route-budget";
@@ -23991,7 +24347,7 @@ static void startPlayerCrashWithSfx(GameState* game, WORD x, WORD y, UBYTE sfxId
 	game->enemyPlane.active = 0;
 	game->enemyMissile.active = 0;
 	game->enemyMissileFromShip = 0;
-	game->powerup.active = 0;
+    if (!game->defence.phase || game->powerup.type != POWERUP_CARRIER_REPAIR) game->powerup.active = 0;
 
 	/* CPC planebrokepart{1,2,3}data stores (dy,dx) for three altitude
 	 * bands. Every fragment keeps moving forward; none is thrown backwards
@@ -24184,6 +24540,10 @@ static void driveAttractDemoInput(AttractDemoState* demo, GameState* game,
 
 #include "enhanced_encounters.h"
 #include "enhanced_encounter_tests.h"
+#include "carrier_defence.h"
+#include "carrier_repair.h"
+#include "ground_bounce.h"
+#include "carrier_defence_tests.h"
 
 static UBYTE updateGameCollisions(GameState* game, UBYTE** worldBuffers,
 	UBYTE* hudChanged, UBYTE* weaponChanged, UBYTE* enemyMissileChanged,
@@ -24196,6 +24556,8 @@ static UBYTE updateGameCollisions(GameState* game, UBYTE** worldBuffers,
 	ULONG collisionSubStart = perfReadRasterClock();
 #endif
 	UBYTE objectCollision = playerObjectMapCollision(game, &collisionWorldColumn, &collisionTileY);
+    if (game->defence.fullVtol && repairLandingColumn(game, game->playerX, game->playerY) >= 0)
+        objectCollision = PLAYER_OBJECT_COLLISION_SAFE;
 #if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
 	ULONG collisionSubNow = perfReadRasterClock();
 	perfStageLines[16] += (collisionSubNow - collisionSubStart) & 0x00ffffffUL;
@@ -24207,7 +24569,7 @@ static UBYTE updateGameCollisions(GameState* game, UBYTE** worldBuffers,
 	if (replenishPlayerFromFrigate(game))
 		*hudChanged = 1;
 	if (game->missionComplete && playerOnNativeCarrierDeckPixels(game) && game->speedLevel <= 3) {
-		WORD deckPlayerY = (WORD)(CARRIER_DECK_PIXEL_Y - PLAYER_SPRITE_HEIGHT);
+		WORD deckPlayerY = playerCarrierDeckY(game);
 		if (game->playerY != deckPlayerY) {
 			game->playerY = deckPlayerY;
 			*weaponChanged = 1;
@@ -24231,7 +24593,8 @@ static UBYTE updateGameCollisions(GameState* game, UBYTE** worldBuffers,
 		 * gameplay restart. Interactive builds retain the real fatal path. */
 		objectCollision = PLAYER_OBJECT_COLLISION_SAFE;
 #else
-		startPlayerCrash(game, game->playerX, game->playerY);
+        if (!handleEnhancedGroundBounce(game, worldBuffers, collisionWorldColumn, collisionTileY))
+            startPlayerCrash(game, game->playerX, game->playerY);
 		*hudChanged = 1;
 		*weaponChanged = 1;
 		return enemyChanged;
@@ -24478,7 +24841,13 @@ static void updateEnemySprite(UWORD* enemySprite, UWORD* enemyAttachSprite,
 	}
 	if (game->enemyPlane.active && game->enemyPlane.x >= 0 &&
 		game->enemyPlane.x <= SCREEN_WIDTH - ENEMY_SPRITE_WIDTH) {
-		if (game->enemyPlaneDamageState == ENEMY_PLANE_DAMAGE_BROKEN)
+        if (game->gameMode == GAME_MODE_ENHANCED && game->defence.phase) {
+            const UBYTE* art = game->defence.jetType == 2 ?
+                (game->enemyPlane.direction ? carrierBomberRight : carrierBomberLeft) :
+                (game->enemyPlane.direction ? carrierFighterRight : carrierFighterLeft);
+            buildAttachedSpriteFromCpcPlusHalves(enemySprite, enemyAttachSprite, ENEMY_SPRITE_HEIGHT,
+                game->enemyPlane.x, game->enemyPlane.y, art, art + 8);
+        } else if (game->enemyPlaneDamageState == ENEMY_PLANE_DAMAGE_BROKEN)
 			buildEnemyBrokenPlaneSprite(enemySprite, enemyAttachSprite,
 				game->enemyPlane.x, game->enemyPlane.y);
 		else
@@ -24525,8 +24894,8 @@ static UBYTE selectHardwareProjectileChain(const GameState* game,
 	UBYTE count = 0;
 	for (UBYTE i = 0; i < 3; i++) {
 		const WeaponState* weapon = candidates[i];
-        UBYTE enemy = i == 2;
-        UBYTE tile = enemy ? enemyMissileTileForState(weapon) : rocketTileForState(weapon);
+        UBYTE enemy = i == 2 && weapon->type != ENEMY_MISSILE_CARRIER_TYPE;
+        UBYTE tile = i == 2 ? enemyMissileTileForState(weapon) : rocketTileForState(weapon);
         if (!projectileCanUseHardware(tile, enemy)) continue;
 		if (!rocketPixelBobVisible(weapon, 0) || weapon->x < 0 ||
 			weapon->x + ROCKET_PIXEL_BOB_WIDTH > SCREEN_WIDTH) continue;
@@ -24566,8 +24935,8 @@ static void updateHardwareProjectileChain(UWORD* sprite, const GameState* game) 
 	}
 	for (UBYTE i = 0; i < count; i++) {
 		const WeaponState* weapon = hardwareProjectileChain[i];
-		UBYTE mono = weapon == &game->enemyMissile;
-		UBYTE tile = mono ? enemyMissileTileForState(weapon) :
+		UBYTE mono = weapon == &game->enemyMissile && weapon->type != ENEMY_MISSILE_CARRIER_TYPE;
+		UBYTE tile = weapon == &game->enemyMissile ? enemyMissileTileForState(weapon) :
 			rocketTileForState(weapon);
 		UWORD key = tile | ((UWORD)mono << 8) |
             (currentWorldPresentationMode == GAME_MODE_ENHANCED ? 0x8000U : 0);
@@ -24833,6 +25202,17 @@ static void startGameSession(GameState* game,
 	 * assigns this again only after the old world has been discarded. */
 	selectHighScoreMode(game->gameMode);
 	currentWorldPresentationMode = game->gameMode;
+    carrierDefenceSinkPixels = 0; carrierDefenceGunMask = 0; carrierWingmanLiftDepth = 0;
+    carrierDefenceGunHeight[0] = carrierDefenceGunHeight[1] = 0;
+    if (game->gameMode == GAME_MODE_ENHANCED) {
+        game->defence.phase = DEFENCE_ALARM;
+        game->defence.phaseTicks = 150;
+        game->defence.waves = 2 + (game->missionNumber > 6 ? 2 : (game->missionNumber - 1) / 3);
+        game->defence.landed = 1;
+        game->defence.facing = MAVERICK_DIRECTION_RIGHT;
+        game->defence.vtolPose = 1;
+        game->defence.aimX = 160; game->defence.aimY = 48;
+    }
 	KPrintF("World seed campaign=%ld mission=%ld world=%ld skill=%ld mode=%ld\n",
 		(ULONG)game->campaignSeed, (ULONG)game->missionNumber,
 		(ULONG)game->worldSeed, (ULONG)game->levelDifficulty,
@@ -25256,8 +25636,7 @@ int main(void) {
 		UBYTE carrierAmbienceEligible =
 			inGameScene && !telemetryStatsPaused && !gamePaused &&
 			!modPlaying && !game.gameOver &&
-			(game.takeoffState == TAKEOFF_STATE_READY ||
-			 game.missionComplete);
+            carrierDeckIdleEligible(&game);
 		updateCarrierIdleSfx(carrierAmbienceEligible);
 		updateSeaAmbience(seaAmbienceTargetForGame(&game,
 			carrierAmbienceEligible,
@@ -25590,6 +25969,20 @@ int main(void) {
 				break;
 		}
 #endif
+#if HAR_HEADLESS_AUTOPLAY && HAR_HEADLESS_CARRIER_DEFENCE_EXERCISE
+        if (inGameScene && game.defence.phase && game.takeoffState != TAKEOFF_STATE_ROLLING_IN) {
+            input.left = input.right = input.up = input.down = input.fire = input.bomb = 0;
+            WORD targetX = 80, targetY = 60;
+            if (game.defence.phase == DEFENCE_SECURE || game.defence.phase == DEFENCE_DEPART) targetY = TAKEOFF_PLAYER_DECK_Y;
+            if (game.defence.phase == DEFENCE_DEPART) input.up = !(game.defence.clock & 15);
+            else {
+                input.left = game.playerX > targetX + 1; input.right = game.playerX < targetX - 1;
+                if (game.playerX == 81) input.left = 1;
+                input.up = game.playerY > targetY; input.down = game.playerY < targetY;
+                input.fire = game.defence.phase == DEFENCE_WAVE;
+            }
+        }
+#endif
 		UBYTE inputMask = InputMask(&input);
 
 		/* One complete ticker pass drives each attract-mode transition. This
@@ -25746,7 +26139,8 @@ int main(void) {
 				custom->copjmp1 = 0x7fff;
 				if (!game.gameOver && game.takeoffState == TAKEOFF_STATE_AIRBORNE &&
 					!game.crashTimer && !game.ejectState &&
-					game.aircraftFailureState == AIRCRAFT_FAILURE_NONE)
+					game.aircraftFailureState == AIRCRAFT_FAILURE_NONE &&
+                    !(game.gameMode == GAME_MODE_ENHANCED && game.defence.phase && game.defence.landed))
 					startEngineSound(engineSpeedForSpeedLevel(game.speedLevel));
 				pendingGameScrollCopperUpdate = 1;
 				pendingPlayerSpriteUpdate = 1;
@@ -25768,7 +26162,8 @@ int main(void) {
 				if (!game.gameOver &&
 					game.takeoffState == TAKEOFF_STATE_AIRBORNE &&
 					!game.crashTimer && !game.ejectState &&
-					game.aircraftFailureState == AIRCRAFT_FAILURE_NONE)
+					game.aircraftFailureState == AIRCRAFT_FAILURE_NONE &&
+                    !(game.gameMode == GAME_MODE_ENHANCED && game.defence.phase && game.defence.landed))
 					startEngineSound(
 						engineSpeedForSpeedLevel(game.speedLevel));
 				pendingGameScrollCopperUpdate = 1;
@@ -26221,7 +26616,16 @@ int main(void) {
 				/* Render an intermediate pose; gameplay remains unchanged this field. */
 			} else if (!game.gameOver) {
                 if (updateEjectChord(&game, &input)) input.eject = 1;
-				if (game.takeoffState == TAKEOFF_STATE_ROLLING_IN) {
+                if (game.defence.phase && game.gameMode == GAME_MODE_ENHANCED &&
+                    game.takeoffState != TAKEOFF_STATE_ROLLING_IN) {
+                    updateCarrierDefence(&game, &input, &previousInput, &input2, worldBuffers);
+                    pendingPlayerSpriteUpdate = pendingEnemySpriteUpdate = 1;
+                    pendingCrashSpriteUpdate = pendingEnemyMissileSpriteUpdate = pendingWingmanSpriteUpdate = 1;
+                    if (!(game.defence.clock & 7) || game.gameOver || !game.defence.phase) {
+                        drawHudValues(hudBuffer, &game, highScore, 0);
+
+                    }
+                } else if (game.takeoffState == TAKEOFF_STATE_ROLLING_IN) {
 					if (game.scrollX > TAKEOFF_SCROLL_STEP_PIXELS)
 						game.scrollX = (UWORD)(game.scrollX - TAKEOFF_SCROLL_STEP_PIXELS);
 					else {
@@ -26280,6 +26684,7 @@ int main(void) {
 					}
 					if (hudDirty) {
 						drawHudValues(hudBuffer, &game, highScore, 0);
+
 						hudDirty = 0;
 					}
 				} else if (game.ejectState) {
@@ -26308,7 +26713,11 @@ int main(void) {
 						 * sortie's score or damage map.  startGameSession gives us one
 						 * canonical actor/audio/display reset; the run-persistent CPC
 						 * state is restored before rebuilding the ring buffer. */
-						ULONG rescuedScore = game.score;
+						UBYTE rescuedHull = game.defence.hull, rescuedCargo = game.defence.cargo;
+                        UBYTE rescuedGuns[2]; memcpy(rescuedGuns, game.defence.gunHealth, 2);
+                        UBYTE rescuedPads[sizeof(repairDepotCollected)];
+                        memcpy(rescuedPads, repairDepotCollected, sizeof(rescuedPads));
+                        ULONG rescuedScore = game.score;
 						ULONG rescuedBonusScore = game.bonusScore;
 						ULONG rescuedBaseScore = game.missionBaseScore;
 						UWORD rescuedFraction = game.scoreFraction;
@@ -26356,7 +26765,10 @@ int main(void) {
 							&pendingWingmanSpriteUpdate, &hudDirty, highScore,
 							rescuedCampaignSeed, rescuedMissionNumber, game.skillLevel, rescuedGameMode,
 							game.wingmanControl, 0);
-						game.score = rescuedScore;
+						game.defence.phase = 0; game.defence.hull = rescuedHull; game.defence.cargo = rescuedCargo;
+                        memcpy(game.defence.gunHealth, rescuedGuns, 2);
+                        memcpy(repairDepotCollected, rescuedPads, sizeof(rescuedPads));
+                        game.score = rescuedScore;
 						game.bonusScore = rescuedBonusScore;
 						game.missionBaseScore = rescuedBaseScore;
 						game.scoreFraction = rescuedFraction;
@@ -26400,6 +26812,7 @@ int main(void) {
 					}
 					if (hudDirty) {
 						drawHudValues(hudBuffer, &game, highScore, 0);
+
 						hudDirty = 0;
 					}
 				} else if (game.takeoffState == TAKEOFF_STATE_AIRBORNE &&
@@ -26422,6 +26835,7 @@ int main(void) {
 					}
 					if (hudDirty) {
 						drawHudValues(hudBuffer, &game, highScore, 0);
+
 						hudDirty = 0;
 					}
 				} else {
@@ -26500,6 +26914,9 @@ int main(void) {
 						UWORD nextHitsCount = game.hitsCount;
 						UBYTE nextLives = game.lives;
 						UBYTE nextGameMode = game.gameMode;
+                        UBYTE nextCarrierHull = game.defence.hull;
+                        UBYTE nextCarrierCargo = game.defence.cargo;
+                        UBYTE nextCarrierGuns[2]; memcpy(nextCarrierGuns, game.defence.gunHealth, 2);
 						UWORD nextCampaignSeed = game.campaignSeed;
 						/* CPC increments leveldifficulty, not the player's menu
 						 * selection. startGameSession derives the next board's
@@ -26527,7 +26944,9 @@ int main(void) {
 							&pendingWingmanSpriteUpdate, &hudDirty, highScore,
 							nextCampaignSeed, nextMissionNumber, nextSkill, nextGameMode, nextWingmanControl,
 							preservedLandingWorld);
-						game.bonusScore = nextBonusScore;
+						memcpy(game.defence.gunHealth, nextCarrierGuns, 2);
+                        carrierDeliverRepair(&game, nextCarrierHull, nextCarrierCargo);
+                        game.bonusScore = nextBonusScore;
 						game.scoreFraction = nextScoreFraction;
 						game.score = nextBonusScore;
 						game.missionStartScore = nextBonusScore;
@@ -26564,13 +26983,14 @@ int main(void) {
 				if (game.bombLaunchCooldown > 0)
 					game.bombLaunchCooldown--;
 
-				if (updateLandingApproach(&game))
-					hudDirty = 1;
-				if (!game.missionComplete && game.landingState == LANDING_STATE_NONE &&
+                game.defence.fullVtol = 0; /* Keep original overland controls. */
+                if (!game.defence.fullVtol && updateLandingApproach(&game))
+                    hudDirty = 1;
+				if (!game.defence.fullVtol && !game.missionComplete && game.landingState == LANDING_STATE_NONE &&
 					updateThrottle(&game, &input))
 					hudDirty = 1;
 
-				UBYTE scrollPixels = (game.missionComplete || game.landingState == LANDING_STATE_HOVER) ?
+				UBYTE scrollPixels = (game.defence.fullVtol || game.missionComplete || game.landingState == LANDING_STATE_HOVER) ?
 					0 : scrollPixelsForSpeedLevel(game.speedLevel);
 				if (!game.missionComplete && game.landingState != LANDING_STATE_HOVER &&
 					game.scrollX < gameScrollMaxPixels()) {
@@ -26645,15 +27065,17 @@ int main(void) {
 						}
 					}
 				} else if (game.landingState == LANDING_STATE_HOVER) {
+                    game.defence.vtolPose = input.left ? 2 : (input.right ? 1 : 0);
+                    pendingPlayerSpriteUpdate = 1;
 					/* CPC landinghoverloop releases the speed-derived X
 					 * anchor and allows four-direction hover control. */
 					if (input.left && !input.right && game.playerX > PLAYER_MIN_X)
 						game.playerX -= PLAYER_MOVE_SPEED_PIXELS;
 					if (input.right && !input.left && game.playerX < PLAYER_MAX_X)
 						game.playerX += PLAYER_MOVE_SPEED_PIXELS;
-					if (input.up && game.playerY > PLAYER_MIN_Y)
+					if (!game.groundBounceTicks && input.up && game.playerY > PLAYER_MIN_Y)
 						game.playerY -= PLAYER_MOVE_SPEED_PIXELS;
-					if (input.down && game.playerY < PLAYER_MAX_Y)
+					if (!game.groundBounceTicks && input.down && game.playerY < PLAYER_MAX_Y)
 						game.playerY += PLAYER_MOVE_SPEED_PIXELS;
 				} else {
 					WORD targetPlayerX = playerTargetXForSpeedLevel(game.speedLevel);
@@ -26671,17 +27093,18 @@ int main(void) {
 							game.playerX = PLAYER_MIN_X;
 					}
 
-					if (input.up && game.playerY > PLAYER_MIN_Y) {
+					if (!game.groundBounceTicks && input.up && game.playerY > PLAYER_MIN_Y) {
 						game.playerY -= PLAYER_MOVE_SPEED_PIXELS;
 						if (game.playerY < PLAYER_MIN_Y)
 							game.playerY = PLAYER_MIN_Y;
 					}
-					if (input.down && game.playerY < PLAYER_MAX_Y) {
+					if (!game.groundBounceTicks && input.down && game.playerY < PLAYER_MAX_Y) {
 						game.playerY += PLAYER_MOVE_SPEED_PIXELS;
 						if (game.playerY > PLAYER_MAX_Y)
 							game.playerY = PLAYER_MAX_Y;
 					}
 				}
+                updatePlayerGroundBounce(&game);
 				/* Boundary telemetry is edge-triggered so holding a direction at a
 				 * limit never fills the event ring every frame. */
 				if ((Pressed(input.up, previousInput.up) &&
@@ -26731,7 +27154,7 @@ int main(void) {
 				 * Fire must not launch another rocket as soon as the previous
 				 * one disappears; a fresh press is required, matching the
 				 * bomb path below and preventing accidental ammunition drain. */
-				if (game.landingState != LANDING_STATE_HOVER &&
+				if (!game.defence.fullVtol && game.landingState != LANDING_STATE_HOVER &&
 					Pressed(input.fire, previousInput.fire)) {
 					if (launchRocket(&game, input.left)) {
 						hudDirty = 1;
@@ -26833,6 +27256,7 @@ int main(void) {
 						pendingEnemySpriteUpdate = 1;
 				}
 				updateEnhancedEncounters(&game, scrollPixels, worldBuffers[activeWorldBuffer]);
+
 				UBYTE collisionHudDirty = 0;
 #if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
 				wingmanSubNow = perfReadRasterClock();
@@ -26883,6 +27307,7 @@ int main(void) {
 				}
 				if (hudDirty) {
 					drawHudValues(hudBuffer, &game, highScore, 0);
+
 					hudDirty = 0;
 				}
 				}
@@ -26971,7 +27396,7 @@ int main(void) {
 					wingmanRocketFootprints) ||
 				rocketPixelBobBlocksRingStream(&game, activeWorldBuffer,
 					enemyMissileFootprints);
-			for (UBYTE i = 0; i < 2; i++)
+			for (UBYTE i = 0; i < ENCOUNTER_TILE_LAYERS; i++)
 				deferRingWorldStream |= rocketPixelBobBlocksRingStream(&game,
 					activeWorldBuffer, encounterFootprints[i]);
             for (UBYTE i = 0; i < HELICOPTER_BULLET_MAX; i++) {

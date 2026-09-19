@@ -1,3 +1,9 @@
+static const UBYTE carrierDefenceBombRows[40] = {
+    0,0x18,0x18,0,0x18, 0,0x18,0,0x18,0x18,
+    0,0x3c,0,0x3c,0x3c, 0,0x3c,0,0x3c,0x3c,
+    0,0x18,0,0x18,0x18, 0,0x18,0x18,0,0x18,
+    0,0,0,0,0, 0,0,0,0,0
+};
 /* Single pixels save/restore their own bit, never a whole neighbour byte. */
 static __attribute__((noinline, optimize("Os"))) void eraseHelicopterBullets(UBYTE* bitmap, UBYTE index) {
     for (UBYTE n = HELICOPTER_BULLET_MAX; n; n--) {
@@ -85,7 +91,7 @@ static __attribute__((noinline, optimize("Os"))) void drawHelicopterSeam(UBYTE* 
             fp->byteX[slot] = byteX; fp->bytes[slot] = count;
             UBYTE* dest = bitmap + (ULONG)fp->y * SCREEN_PLANES * GAME_WORLD_ROW_BYTES + byteX;
             UBYTE* old = (UBYTE*)&fp->background[slot];
-            const UBYTE* src = enhancedEncounterTiles + 160 + frame * 80 + half * 40;
+            const UBYTE* src = (frame >= 2 ? enhancedHelicopterMirrored + (frame - 2) * 80 : enhancedEncounterTiles + 160 + frame * 80) + half * 40;
             for (UBYTE row = 0; row < 8; row++, src += 5) {
                 UWORD mask = ((UWORD)src[4] << 8) >> shift;
                 for (UBYTE plane = 0; plane < 4; plane++) {
@@ -107,6 +113,8 @@ static __attribute__((noinline, optimize("Os"))) void drawHelicopterBob(UBYTE* b
     UWORD local = (UWORD)heli->worldX % (UWORD)(GAME_WORLD_SCROLL_PAGE_BYTES * 8);
     UWORD x = GAME_WORLD_BUFFER_MARGIN_PIXELS + local;
     UBYTE frame = game->helicopterHits >= 2 ? 0 : (game->helicopterAge >> 2) & 1;
+    /* Packer base frames face right; the mirrored bank faces left. */
+    frame += heli->direction ? 0 : 2;
     const UBYTE* source = enhancedHelicopterShifted + ((frame * 8 + (x & 7)) * 120);
     HelicopterFootprint* fp = &helicopterFootprints[index];
     fp->valid = 1; fp->y = heli->y; fp->worldX = heli->worldX;
@@ -134,7 +142,7 @@ static __attribute__((noinline, optimize("Os"))) void retireEncounterBobs(UBYTE*
     for (UBYTE i = 0; i < HELICOPTER_BULLET_MAX; i++)
         if (bulletFootprints[i][bufferIndex].valid && bulletFootprints[i][bufferIndex].y > lastY)
             lastY = bulletFootprints[i][bufferIndex].y;
-    for (UBYTE i = 0; i < 2; i++)
+    for (UBYTE i = 0; i < ENCOUNTER_TILE_LAYERS; i++)
         if (encounterFootprints[i][bufferIndex].valid && encounterFootprints[i][bufferIndex].y > lastY)
             lastY = encounterFootprints[i][bufferIndex].y;
     if (helicopterFootprints[bufferIndex].valid && helicopterFootprints[bufferIndex].y > lastY)
@@ -145,6 +153,8 @@ static __attribute__((noinline, optimize("Os"))) void retireEncounterBobs(UBYTE*
         while (currentRasterY() <= target) { }
     }
 #endif
+    for (UBYTE i = ENCOUNTER_TILE_LAYERS; i > 2; i--)
+        eraseRocketPixelBobFootprint(bitmap, bufferIndex, encounterFootprints[i - 1]);
     eraseHelicopterBullets(bitmap, bufferIndex);
     /* Reverse composition order is required when the halves share a byte. */
     eraseRocketPixelBobFootprint(bitmap, bufferIndex, encounterFootprints[1]);
@@ -166,7 +176,7 @@ static __attribute__((noinline, optimize("Os"))) void retireEncounterRegion(UBYT
         (x >> 3) <= ((heli->worldX + 15) >> 3) && ((x + w - 1) >> 3) >= (heli->worldX >> 3)) {
         retireEncounterBobs(bitmap, index); return;
     }
-    for (UBYTE i = 0; i < 2; i++) {
+    for (UBYTE i = 0; i < ENCOUNTER_TILE_LAYERS; i++) {
         const RocketShotFootprint* fp = &encounterFootprints[i][index];
         /* Saved bytes include transparent neighbours; align both X bounds. */
         if (fp->valid && y < fp->y + 8 && y + h > fp->y &&
@@ -206,14 +216,25 @@ static __attribute__((noinline, optimize("Os"))) void drawEnhancedEncounterBobs(
     drawEncounterTile(bitmap, bufferIndex, &game->siloMissile, 0, 0,
         enhancedWeaponRows + 7 * 40); /* Existing editable vertical missile. */
     drawHelicopterBob(bitmap, bufferIndex, game);
-    /* The same small neutral plume character as Harrier failure particles,
-     * at a much lower rate, with no collision-map entry. */
-    static const UBYTE smoke[40] = {
-        0,0x60,0,0,0x60, 0,0x90,0,0,0x90, 0,0x60,0,0,0x60,
-        0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0
+    /* Filled, irregular grey wisps expand then break up; no outlined bubble.
+     * Four prepacked 8x8 poses, still only one saved-background BOB. */
+    static const UBYTE smoke[4][40] = {
+        {0,0,0,0,0,0,0,0,0,0,0,24,0,0,24,24,60,0,0,60,24,56,0,0,56,0,24,0,0,24,0,0,0,0,0,0,0,0,0,0},
+        {0,0,0,0,0,0,24,0,0,24,24,60,0,0,60,56,124,0,0,124,28,62,0,0,62,8,28,0,0,28,0,8,0,0,8,0,0,0,0,0},
+        {0,24,0,0,24,0,60,0,0,60,32,118,0,0,118,24,124,0,0,124,4,62,0,0,62,0,20,0,0,20,0,8,0,0,8,0,0,0,0,0},
+        {0,16,0,0,16,0,36,0,0,36,0,66,0,0,66,0,20,0,0,20,0,40,0,0,40,0,4,0,0,4,0,0,0,0,0,0,0,0,0,0}
     };
-    drawEncounterTile(bitmap, bufferIndex, &game->helicopterSmoke, 1, 0, smoke);
+    UBYTE smokeFrame = game->helicopterSmoke.timer / 10;
+    if (smokeFrame > 3) smokeFrame = 3;
+    drawEncounterTile(bitmap, bufferIndex, &game->helicopterSmoke, 1, 0, smoke[smokeFrame]);
     drawHelicopterBullets(bitmap, bufferIndex, game);
+    {
+        for (UBYTE i = 0; i < CARRIER_DEFENCE_BOMBS; i++)
+            drawEncounterTile(bitmap, bufferIndex, &game->defence.bombs[i], i + 2, 0,
+                carrierDefenceBombRows);
+
+    }
+
 #if HAR_DEBUG_PERF_LOG
     UWORD end = currentRasterY();
     ULONG cost = end >= begin ? end - begin : end + 312 - begin;
