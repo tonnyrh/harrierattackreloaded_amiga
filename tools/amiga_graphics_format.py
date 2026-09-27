@@ -88,8 +88,11 @@ ENCOUNTER_ASSETS = (
 )
 REPAIR_DEPOT = AssetSpec("repair_depot", "Carrier repair depot R", "repair_depot_16x8.png", 16, 8)
 HARRIER_FRONT = AssetSpec("harrier_front", "Harrier front / VTOL gear down", "harrier_front_16x8.png", 16, 8)
-CARRIER_ASSETS = (AssetSpec("carrier_aa", "Carrier AA turret", "carrier_aa_8x8.png", 8, 8), AssetSpec("carrier_bomber", "Carrier heavy bomber", "carrier_bomber_16x8.png", 16, 8))
-ASSETS = CARRIER_ASSETS + GROUND_ASSETS + (MISSILE_TANK, REPAIR_DEPOT, HARRIER_FRONT) + ENCOUNTER_ASSETS + PROJECTILE_ASSETS + BOMB_ASSETS + TOWN_ASSETS
+CARRIER_ASSETS = (AssetSpec("carrier_aa", "Carrier AA turret", "carrier_aa_8x8.png", 8, 8), AssetSpec("carrier_bomber", "Carrier heavy bomber", "carrier_bomber_32x16.png", 32, 16))
+MISSILE_TURRET_ASSETS = tuple(AssetSpec("carrier_missile_"+p, "Carrier missile turret "+p, "carrier_missile_"+p+"_8x8.png", 8, 8) for p in ("left", "up", "right"))
+SUBMARINE_ASSETS = (AssetSpec("carrier_submarine", "Carrier attack submarine", "carrier_submarine_32x8.png", 32, 8),
+                    AssetSpec("carrier_ballistic", "Submarine ballistic missile", "carrier_ballistic_8x16.png", 8, 16))
+ASSETS = SUBMARINE_ASSETS + MISSILE_TURRET_ASSETS + CARRIER_ASSETS + GROUND_ASSETS + (MISSILE_TANK, REPAIR_DEPOT, HARRIER_FRONT) + ENCOUNTER_ASSETS + PROJECTILE_ASSETS + BOMB_ASSETS + TOWN_ASSETS
 
 
 def pixel_is_editable(spec: AssetSpec, x: int, y: int) -> bool:
@@ -311,11 +314,59 @@ def build_runtime_banks() -> dict[Path, bytes]:
         "03222440", "03222440", "04444440", "04333440") for p in row])
     carrier_header += c_array("carrierAaUpTile", encode_tiles(aa_up, ((0,0),)))
     carrier_header += "static const UBYTE* const carrierAaPoses[3] = {carrierAaMirrorTile, carrierAaUpTile, carrierAaTile};\n"
-    bomber = [mapping[pen] for pen in images["carrier_bomber"].getdata()]
+    for pose in ("left", "up", "right"):
+        carrier_header += c_array("carrierMissile"+pose.title()+"Tile", encode_tiles(images["carrier_missile_"+pose], ((0,0),)))
+    carrier_header += "static const UBYTE* const carrierMissilePoses[3] = {carrierMissileLeftTile, carrierMissileUpTile, carrierMissileRightTile};\n"
+    # Surface only a larger conning tower. Preserve the editable source's
+    # periscope and cabin palette; the full hull remains below the waterline.
+    sub_source=images["carrier_submarine"]
+    tower=Image.new("P",(32,8))
+    for y in range(2):
+        for x in range(32): tower.putpixel((x,y),sub_source.getpixel((x,y)))
+    for y in range(2,8):
+        for x in range(8,24):
+            source_x=12+(x-8)*9//16
+            source_y=2 if y<4 else 3
+            tower.putpixel((x,y),sub_source.getpixel((source_x,source_y)))
+    carrier_header += c_array("carrierSubmarineTiles",encode_tiles(tower,tuple((x,0) for x in (0,8,16,24))))
+    missile=images["carrier_ballistic"]
+    descending = missile.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+    # Engine is off under the canopy: remove the old exhaust at the tail.
+    for y in range(1):
+        for x in range(8): descending.putpixel((x,y),0)
+    carrier_header += c_array("carrierBallisticTiles",b"".join(encode_tiles(im,((0,0),(0,8))) for im in (missile,descending)))
+    # Reuse the original game's 8-pixel canopy/rigging, prepacked at build time.
+    promoted = (ROOT / "amiga/assets/promoted_assets.h").read_text()
+    canopy_source = re.search(r"harCpcParachutePixels\[128\] = \{(.*?)\};", promoted, re.S)
+    canopy_pixels = list(map(int,re.findall(r"\d+",canopy_source.group(1))))
+    canopy = Image.new("P",(8,8))
+    canopy.putdata([2 if canopy_pixels[y*16+x]==15 else 3 if canopy_pixels[y*16+x] else 0
+                    for y in range(8) for x in range(8)])
+    carrier_header += c_array("carrierBallisticCanopy",encode_tiles(canopy,((0,0),)))
+    bomber = images["carrier_bomber"]
+    bomber_tiles = b"".join(encode_tiles(im, tuple((x,y) for y in (0,8) for x in (0,8,16,24))) for im in (bomber, bomber.transpose(Image.Transpose.FLIP_LEFT_RIGHT)))
+    carrier_header += c_array("carrierBomberTiles", bomber_tiles)
+    # Three finite 32x16 explosion frames, reusing the bomber's BOB slots.
+    blast = bytearray()
+    for frame in range(3):
+        im = Image.new("P", (32,16)); pixels=[]
+        for y in range(16):
+            for x in range(32):
+                radius = min((x-cx)**2+(y-cy)**2 for cx,cy in ((7,8),(16,6),(25,8)))
+                edge=(20,40,48)[frame] + ((x*7+y*11)&7)
+                if radius>edge or (frame==2 and ((x*3+y*5)&7)==0): pen=0
+                elif radius<edge//5: pen=2
+                elif radius<edge//2: pen=6
+                else: pen=12 if frame<2 else 3
+                pixels.append(pen)
+        im.putdata(pixels)
+        blast.extend(encode_tiles(im, tuple((x,y) for y in (0,8) for x in (0,8,16,24))))
+    carrier_header += c_array("carrierBomberBlast",blast)
+
     fighter = []
     left, right = half("harCpcEnemyPlaneFlyingLeftPixels"), half("harCpcEnemyPlaneFlyingRightPixels")
     for y in range(8): fighter.extend(left[y*16:y*16+8] + right[y*16:y*16+8])
-    for name, pixels in (("carrierBomberLeft", bomber), ("carrierFighterLeft", fighter)):
+    for name, pixels in (("carrierFighterLeft", fighter),):
         carrier_header += c_array(name, pixels)
         carrier_header += c_array(name.replace("Left","Right"), [v for y in range(8) for v in pixels[y*16:y*16+16][::-1]])
     # Keep the existing side silhouettes; brighten only their cockpit glazing.
@@ -325,6 +376,27 @@ def build_runtime_banks() -> dict[Path, bytes]:
         for x,y in ((11,2),(12,2),(12,3)): pixels[y*16+x] = 6
         carrier_header += c_array("harrier"+pose+"Enhanced",pixels)
         carrier_header += c_array("harrier"+pose+"EnhancedReverse",[v for y in range(8) for v in pixels[y*16:y*16+16][::-1]])
+    # Native CPC pose variants, packed offline; no rotation during gameplay.
+    front=aircraft[2]
+    poses=[]
+    for leftward in (True,False):
+        tilted=[0]*128
+        for y in range(8):
+            for x in range(16):
+                dy=(-1 if x<6 else 1 if x>9 else 0)*(1 if leftward else -1)
+                yy=y+dy
+                if 0<=yy<8: tilted[yy*16+x]=front[y*16+x]
+        poses.append(tilted)
+    left,right=half("harCpcHarrierLandingLeftPixels"),half("harCpcHarrierLandingRightPixels")
+    side=[v for y in range(8) for v in left[y*16:y*16+8]+right[y*16:y*16+8]]
+    quarter=front.copy()
+    for y in range(8):
+        for x in range(16):
+            pen=side[y*16+x]
+            if pen: quarter[y*16+3+x*12//16]=pen
+    quarter[2*16+12]=quarter[2*16+13]=6
+    poses.extend(([v for y in range(8) for v in quarter[y*16:y*16+16][::-1]],quarter))
+    carrier_header += c_array("harrierVtolIntermediate",[v for pose in poses for v in pose])
     return {
         ASSET_DIR / "carrier_art.h": carrier_header.encode("ascii"),
         ASSET_DIR / "harrier_poses.h": aircraft_header.encode("ascii"),

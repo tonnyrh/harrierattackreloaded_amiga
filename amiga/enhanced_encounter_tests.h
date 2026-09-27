@@ -126,20 +126,20 @@ static UBYTE referenceMissileDamageEjectMatch(void) {
     g.respawnSafeTimer = 1; applyPlayerMissileDamage(&g, 1);
     if (g.armour != 100) return 8;
     g.respawnSafeTimer = 0;
-    InputState in = {0}; in.fire = in.bomb = 1;
-    for (UBYTE i = 0; i < 20; i++) if (updateEjectChord(&g, &in)) return 9;
-    g.aircraftFailureState = AIRCRAFT_FAILURE_DESCENT;
-    for (UBYTE i = 0; i < EJECT_CHORD_HOLD_TICKS - 1; i++) if (updateEjectChord(&g, &in)) return 10;
-    if (!updateEjectChord(&g, &in) || updateEjectChord(&g, &in)) return 11;
-    in.bomb = 0; updateEjectChord(&g, &in);
-    if (g.ejectChordTicks) return 12;
-    in.bomb = 1; in.cancel = 1;
-    if (updateEjectChord(&g, &in) || g.ejectChordTicks) return 13;
-    in.cancel = 0; g.gameMode = GAME_MODE_CLASSIC;
-    for (UBYTE i = 0; i < 20; i++) if (updateEjectChord(&g, &in)) return 14;
-    g.gameMode = GAME_MODE_ENHANCED;
-    for (UBYTE i = 0; i < 12; i++) if (updateEjectChord(&g, &in)) startPlayerEject(&g);
-    if (!g.ejectState || g.aircraftFailureState) return 15;
+    InputState in={0}, released={0}; in.fire=1;
+    if(fireButtonEjectRequested(&g,&in,&released)) return 9;
+    g.aircraftFailureState=AIRCRAFT_FAILURE_DESCENT;
+    if(fireButtonEjectRequested(&g,&in,&in)) return 10;
+    if(!fireButtonEjectRequested(&g,&in,&released)) return 11;
+    in.fire=0; in.bomb=1;
+    if(fireButtonEjectRequested(&g,&in,&released)) return 12;
+    in.fire=1; in.cancel=1;
+    if(fireButtonEjectRequested(&g,&in,&released)) return 13;
+    in.cancel=0; in.bomb=0; g.gameMode=GAME_MODE_CLASSIC;
+    if(fireButtonEjectRequested(&g,&in,&released)) return 14;
+    g.gameMode=GAME_MODE_ENHANCED;
+    if(fireButtonEjectRequested(&g,&in,&released)) startPlayerEject(&g);
+    if(!g.ejectState || g.aircraftFailureState) return 15;
     initGameState(&g, 12040, 12040, 1); g.gameMode = GAME_MODE_ENHANCED;
     g.takeoffState = TAKEOFF_STATE_AIRBORNE; g.playerX = 220; g.playerY = 40;
     g.scrollX = g.speedLevel = g.respawnSafeTimer = 0;
@@ -164,10 +164,12 @@ static UBYTE referenceMissileDamageEjectMatch(void) {
     }
     updateAircraftFailureAlarm(&g);
     if (!aircraftFailureAlarmDmaActive) return 23;
-    in.fire = in.bomb = 1;
+    in.fire = 1; in.bomb = 0;
+    InputState previousFire={0};
     for (UBYTE tick = 0; tick < 12; tick++) {
-        if (updateEjectChord(&g, &in)) startPlayerEject(&g);
-        else updateAircraftFailure(&g, &in);
+        if (fireButtonEjectRequested(&g, &in, &previousFire)) startPlayerEject(&g);
+        else if(!g.ejectState) updateAircraftFailure(&g, &in);
+        previousFire=in;
     }
     if (!g.ejectState || g.crashTimer || aircraftFailureAlarmDmaActive) return 24;
     stopAllSfx();

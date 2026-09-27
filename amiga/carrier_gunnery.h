@@ -8,11 +8,13 @@ static DEFENCE_SMALL UBYTE carrierChooseAim(GameState* g) {
         WeaponState* b = &d->bombs[i];
         if (b->active && (!target || b->y > target->y)) target = b;
     }
+    if (d->ballistic.active) target=&d->ballistic;
     if (!target && g->enemyMissile.active) target = &g->enemyMissile;
     if (!target && g->enemyPlane.active) target = &g->enemyPlane;
     if (!target && g->helicopter.active && g->helicopter.type != 2) target = &g->helicopter;
     if (!target) return 0;
     d->aimX = target->x + 4; d->aimY = target->y + 3;
+    if (target == &g->enemyPlane) { d->aimX += CARRIER_JET_WIDTH(g)/2 - 4; d->aimY = target->y + CARRIER_JET_HEIGHT(g)/2; }
     if (target == &g->enemyPlane) d->aimX += (g->enemyPlane.direction ? 1 : -1) * (100 - target->y) / 4;
     return 1;
 }
@@ -46,7 +48,7 @@ static DEFENCE_SMALL void carrierAdvanceBullet(GameState* g, HelicopterBullet* b
     if (g->enemyMissile.active && rectsOverlap(x, y, 3, 3, g->enemyMissile.x, g->enemyMissile.y, 8, 8)) {
         g->enemyMissile.active = b->active = 0; return;
     }
-    if (g->enemyPlane.active && rectsOverlap(x, y, 3, 3, g->enemyPlane.x, g->enemyPlane.y, 16, 8)) {
+    if (g->enemyPlane.active && rectsOverlap(x, y, 3, 3, g->enemyPlane.x, g->enemyPlane.y, CARRIER_JET_WIDTH(g), CARRIER_JET_HEIGHT(g))) {
         b->active = 0;
         if (++g->defence.jetBulletHits >= 4) { g->defence.jetBulletHits = 0; carrierDefenceKillJet(g); }
     } else if (g->helicopter.active &&
@@ -59,10 +61,10 @@ static DEFENCE_SMALL void carrierAdvanceBullet(GameState* g, HelicopterBullet* b
 
 static DEFENCE_SMALL void carrierLaunchMissile(GameState* g) {
     WeaponState* m = &g->wingman.rocket;
-    WORD dx = g->defence.aimX - 110, dy = g->defence.aimY - 100;
+    WORD dx = g->defence.aimX - 116, dy = g->defence.aimY - 96;
     WORD distance = carrierAbs(dx); if (carrierAbs(dy) > distance) distance = carrierAbs(dy);
-    if (!distance || m->active) return;
-    memset(m, 0, sizeof(*m)); m->active = 1; m->x = 106; m->y = 96; m->worldX = 106;
+    if (!distance || m->active || g->defence.missileHeight != 8 || g->defence.phase == DEFENCE_SINKING) return;
+    memset(m, 0, sizeof(*m)); m->active = 1; m->x = 112; m->y = 92; m->worldX = 112;
     m->targetWorldX = (LONG)m->x * 256; m->targetY = m->y * 256;
     m->dx = (LONG)dx * 768 / distance; m->dy = (LONG)dy * 768 / distance;
     m->type = ROCKET_SHOT_MAVERICK_GUIDED;

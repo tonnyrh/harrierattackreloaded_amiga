@@ -1,14 +1,25 @@
 #include "carrier_gunnery_tests.h"
 #include "carrier_revision_tests.h"
+#include "carrier_submarine_tests.h"
 #if HAR_HEADLESS_CLASSIC_CONTRACT_TEST
 static UBYTE referenceCarrierDefenceMatches(void) {
+    UBYTE towerResult=referenceCarrierPickupTowerMatches();
+    if(towerResult) return towerResult;
+    UBYTE deckReadyResult=referenceCarrierDeckReadyMatches();
+    if(deckReadyResult) return deckReadyResult;
+#if HAR_HEADLESS_CARRIER_DECK_TEST_ONLY
+    return 0;
+#endif
+#if HAR_HEADLESS_CARRIER_SUBMARINE_TEST_ONLY
+    return referenceCarrierSubmarineMatches();
+#endif
     static GameState g;
     UBYTE* buffers[GAME_WORLD_BUFFER_COUNT] = {0};
     UBYTE oldMod = modPlaying; modPlaying = 1;
     initGameState(&g, 12040, 12040, 1);
     g.gameMode = GAME_MODE_ENHANCED; g.levelDifficulty = 1;
     g.defence.phase = DEFENCE_WAVE; g.defence.hull = 100;
-    for (UBYTE i = 0; i < 12; i++) carrierDefenceImpact(&g, 80, CARRIER_BOMB_HULL_DAMAGE);
+    for (UBYTE i = 0; i < 8; i++) carrierDefenceImpact(&g, 80, CARRIER_BOMB_HULL_DAMAGE);
     if (g.defence.hull != 4 || g.defence.phase != DEFENCE_WAVE) return 1;
     carrierDefenceImpact(&g, 80, CARRIER_BOMB_HULL_DAMAGE);
     if (g.defence.hull || g.defence.phase != DEFENCE_SINKING) return 2;
@@ -37,6 +48,10 @@ static UBYTE referenceCarrierDefenceMatches(void) {
     InputState in = {0}, prev = {0}; Player2InputState in2 = {0};
     UBYTE sawJet = 0, sawHeli = 0, sawLull = 0;
     for (UWORD t = 0; t < 7000 && g.defence.phase != DEFENCE_SECURE; t++) {
+        if(g.defence.subState==CARRIER_SUB_SURFACED) {
+            WeaponState testBomb={0}; testBomb.active=1; testBomb.x=g.defence.subX+8; testBomb.y=SEA_SURFACE_Y-4;
+            carrierBombHitsSubmarine(&g,&testBomb); testBomb.active=1; carrierBombHitsSubmarine(&g,&testBomb);
+        }
         memset(g.defence.bombs, 0, sizeof(g.defence.bombs));
         g.enemyMissile.active = 0; g.respawnSafeTimer = 2;
         updateCarrierDefence(&g, &in, &prev, &in2, buffers);
@@ -63,19 +78,20 @@ static UBYTE referenceCarrierDefenceMatches(void) {
     /* Regression: the real parked X=81 must lift straight up beside the island. */
     memset(&in, 0, sizeof(in)); in.up = 1;
     g.playerX = 81; g.playerY = 102; g.defence.landed = 0;
-    carrierMoveVtol(&g, &in);
-    if (g.playerX != 81 || g.playerY != 100) return 32;
-    in.right = 1; carrierMoveVtol(&g, &in);
-    if (g.playerX != 83 || g.playerY != 98) return 33;
+    carrierResetVtol(&g.defence);
+    carrierMoveVtol(&g,&in);
+    if(g.playerX!=81 || g.playerY!=102 || g.defence.vtolVY>=0) return 32;
+    for(UBYTE t=0;t<16;t++) carrierMoveVtol(&g,&in);
+    if(g.playerX!=81 || g.playerY>=102) return 33;
     static const WORD pads[] = {64, 81, 82, 128, 144};
     in.up = in.right = 0; in.down = 1;
     for (UBYTE i = 0; i < 5; i++) {
-        g.playerX = pads[i]; g.playerY = 104; g.defence.landed = 0;
+        g.playerX = pads[i]; g.playerY = 104; g.defence.landed = 0; carrierResetVtol(&g.defence);
         carrierMoveVtol(&g, &in);
         if (!g.defence.landed || g.playerY != TAKEOFF_PLAYER_DECK_Y) return 34;
     }
     g.playerX = 104; g.playerY = 88; g.defence.landed = 0; g.respawnSafeTimer = 0;
-    carrierMoveVtol(&g, &in);
+    for(UBYTE t=0;t<24 && !g.crashTimer;t++) carrierMoveVtol(&g,&in);
     if (!g.crashTimer || !g.crashEndsGame || g.defence.landed) return 35;
     /* The generated reverse pose is an exact pixel mirror, not a recolour. */
     for (UBYTE y = 0; y < 8; y++) for (UBYTE x = 0; x < 16; x++) {
@@ -139,11 +155,11 @@ static UBYTE referenceCarrierDefenceMatches(void) {
         carrierDropBomb(&g, 72, 101, t); carrierDefenceBombs(&g);
         if (g.defence.gunHealth[0] != 1 - t || carrierBombsActive(&g)) return 47;
     }
-    if (g.defence.hull != 76 || g.defence.gunHeight[0] || g.defence.gunHealth[1] != 2) return 48;
-    carrierDeliverRepair(&g, 76, 0);
+    if (g.defence.hull != 64 || g.defence.gunHeight[0] || g.defence.gunHealth[1] != 2) return 48;
+    carrierDeliverRepair(&g, 64, 0);
     if (g.defence.gunHealth[0] || g.defence.gunHealth[1] != 2) return 49;
-    carrierDeliverRepair(&g, 76, 20);
-    if (g.defence.gunHealth[0] != 2 || g.defence.gunHealth[1] != 2 || g.defence.hull != 96 || g.defence.cargo) return 50;
+    carrierDeliverRepair(&g, 64, 20);
+    if (g.defence.gunHealth[0] != 2 || g.defence.gunHealth[1] != 2 || g.defence.hull != 84 || g.defence.cargo) return 50;
     g.defence.gunHeight[1] = 8; g.playerX = 144; g.playerY = 100;
     g.respawnSafeTimer = 0; carrierUpdateGuns(&g);
     if (g.defence.gunHealth[1] || g.defence.gunHeight[1] || g.armour != 67 || g.missileDamageThirds != 100) return 51;
@@ -206,19 +222,19 @@ static UBYTE referenceCarrierDefenceMatches(void) {
     }
     FreeMem(gunPixels, GAME_WORLD_BITMAP_BYTES);
     carrierDefenceGunMask = carrierDefenceGunHeight[0] = carrierDefenceGunHeight[1] = 0;
-    memset(&in, 0, sizeof(in)); g.defence.facing = MAVERICK_DIRECTION_LEFT; g.defence.turnTicks = 0;
-    carrierUpdateHeading(&g.defence, &in);
-    if (g.defence.vtolPose != 2 || g.defence.facing != MAVERICK_DIRECTION_LEFT) return 61;
-    in.up = 1; carrierUpdateHeading(&g.defence, &in);
-    if (g.defence.vtolPose != 2 || g.defence.facing != MAVERICK_DIRECTION_LEFT) return 62;
-    in.right = 1; carrierUpdateHeading(&g.defence, &in);
-    if (!g.defence.turnTicks || g.defence.vtolPose) return 63;
-    in.right = 0; /* Middle remains stable on release, even with altitude input. */
-    for (UBYTE t = 0; t < 40; t++) carrierUpdateHeading(&g.defence, &in);
-    if (g.defence.turnTicks != 12 || g.defence.vtolPose) return 64;
-    in.right = 1;
-    for (UBYTE t = 0; t < 12; t++) carrierUpdateHeading(&g.defence, &in);
-    if (g.defence.turnTicks || g.defence.vtolPose != 1 || g.defence.facing != MAVERICK_DIRECTION_RIGHT) return 64;
+    memset(&in,0,sizeof(in)); carrierResetVtol(&g.defence);
+    g.defence.phase=DEFENCE_WAVE;
+    carrierUpdateHeading(&g.defence,&in);
+    g.defence.facing=MAVERICK_DIRECTION_RIGHT; g.defence.vtolVX=384;
+    in.left=1;
+    for(UBYTE t=0;t<9;t++) {
+        carrierVtolAxis(&g.defence.vtolVX,&g.defence.vtolAX,&g.defence.vtolSubX,-1);
+        carrierUpdateHeading(&g.defence,&in);
+    }
+    if(g.defence.vtolPose!=2 || g.defence.facing!=MAVERICK_DIRECTION_LEFT || g.defence.vtolVX<=0) return 62;
+    in.left=0; carrierUpdateHeading(&g.defence,&in);
+    if(g.defence.facing!=MAVERICK_DIRECTION_LEFT || g.defence.vtolPose!=2) return 63;
+    g.defence.facing=MAVERICK_DIRECTION_RIGHT;
     carrierDefenceLaunch(&g, &g.rocketShot, 100, 40, g.defence.facing);
     if (g.rocketShot.dx != 4 || g.rocketShot.dy) return 65;
     g.defence.alarmPlayed = 0; modPlaying = 1; stopAllSfx();
@@ -293,7 +309,7 @@ static UBYTE referenceCarrierDefenceMatches(void) {
     g.takeoffState = TAKEOFF_STATE_AIRBORNE; g.playerX = 220;
     g.playerY = SEA_SURFACE_Y - 9; g.lives = 3; g.respawnSafeTimer = 0;
     memset(&in, 0, sizeof(in)); in.down = 1;
-    updateCarrierDefence(&g, &in, &prev, &in2, buffers);
+    for(UBYTE t=0;t<24 && !g.crashTimer;t++) updateCarrierDefence(&g,&in,&prev,&in2,buffers);
     if (!g.crashTimer || !g.crashEndsGame || g.defence.landed) return 87;
     memset(&in, 0, sizeof(in));
     for (UWORD tick = 0; tick <= PLAYER_CRASH_FRAMES && !g.gameOver; tick++)
@@ -344,13 +360,19 @@ static UBYTE referenceCarrierDefenceMatches(void) {
         carrierDefenceLaunch(&g, &g.rocketShot, side ? 136 : 80, 100,
             side ? MAVERICK_DIRECTION_LEFT : MAVERICK_DIRECTION_RIGHT);
         for (UBYTE tick = 0; tick < 15 && g.rocketShot.active; tick++) carrierDefenceShot(&g, &g.rocketShot);
-        if (g.rocketShot.active || g.defence.hull != 100 - (side + 1) * CARRIER_BOMB_HULL_DAMAGE) return 97;
+        if (g.rocketShot.active || g.defence.hull != 100 - (side + 1) * CARRIER_ROCKET_HULL_DAMAGE) return 97;
     }
     carrierDefenceLaunch(&g, &g.rocketShot, 80, 80, MAVERICK_DIRECTION_RIGHT);
     for (UBYTE tick = 0; tick < 20; tick++) carrierDefenceShot(&g, &g.rocketShot);
     if (!g.rocketShot.active || g.defence.hull != 84) return 98;
+    UBYTE ejectResult=referenceMissileDamageEjectMatch();
+    if(ejectResult) return 220+ejectResult;
     UBYTE gunneryResult = referenceCarrierGunneryMatches();
     if (!gunneryResult) gunneryResult = referenceCarrierRevisionMatches();
+    if (!gunneryResult) gunneryResult = referenceLandingVtolMatches();
+    if (!gunneryResult) gunneryResult = referenceCarrierSubmarineMatches();
+    if (!gunneryResult) gunneryResult = referenceCarrierBomberEdges();
+    if (!gunneryResult) gunneryResult = referenceCarrierBlitterMatches();
     modPlaying = oldMod; return gunneryResult;
 }
 #endif

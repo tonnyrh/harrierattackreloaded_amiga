@@ -52,6 +52,7 @@ static UBYTE referenceCarrierGunneryMatches(void) {
     carrierAdvanceBullet(&g, b);
     if (b->active || g.enemyMissile.active) return 112;
     g.defence.aimX = 160; g.defence.aimY = 48; g.respawnSafeTimer = 0;
+    g.defence.missileHeight = 8;
     carrierLaunchMissile(&g); WeaponState* m = &g.wingman.rocket;
     g.playerX = m->x + (m->dx >> 8); g.playerY = m->y + (m->dy >> 8);
     carrierAdvanceMissile(&g);

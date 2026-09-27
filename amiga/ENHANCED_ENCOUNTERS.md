@@ -47,9 +47,9 @@ Performance and detailed behavior logs are local under `.tmp/tempo-isolated-*`. 
 
 Enhanced Harrier armour now loses exactly one third of full health per ordinary enemy/silo missile, or one half per Missile Tank missile. Fractional damage is retained internally (300 units of full health); the cockpit rounds remaining health upward, so ordinary hits show 67, 34, then 0. Flak and missile damage accumulate together. Health pickups, servicing and respawning clear both damage sources. Classic missile collisions retain the original fatal behavior. Wingman still dies from one missile hit.
 
-When the E lamp is lit in Enhanced, hold the player's rocket and bomb buttons together for 12 simulation steps (0.24 seconds at 100% tempo) to eject. Releasing either button or cancelling resets the hold. Pause/interpolation cannot advance the counter. The existing E key and its control binding remain available.
+When the E lamp is lit in Enhanced, press primary fire once to eject. No hold or second button is required. A button held before E lights must be released and pressed again. Cancel and unsafe/non-flight states remain gated. The existing E key and its control binding remain available.
 
-Validation: `run-amiga-classic-contract.ps1 -ExtraCcFlags '-DHAR_HEADLESS_MISSILE_DAMAGE_EJECT_TEST_ONLY=1'` checks damage, fractional exhaustion, flak interaction, health reset, respawn protection, silo consumption, Wingman destruction and the gated eject hold.
+Validation: `run-amiga-classic-contract.ps1 -ExtraCcFlags '-DHAR_HEADLESS_MISSILE_DAMAGE_EJECT_TEST_ONLY=1'` checks damage, fractional exhaustion, flak interaction, health reset, respawn protection, silo consumption, Wingman destruction and the gated primary-fire eject.
 
 
 ## A500 hardware feedback adjustments
@@ -121,3 +121,10 @@ checks identical horizontal speed in both modes, camera speeds 0..3, both
 starting-column parities, occupied-missile-slot retreat and terrain blocking.
 
 Validation: the focused enemy-flight contract passed; interactive build `BETA 4 DEV2` includes the earlier F-depot aiming assistance.
+
+
+Flak balance (2026-09-27): Enhanced skips one in four town-column spawn
+opportunities and one in eight land-column opportunities. This creates regular
+breathing room in dense city flak without changing damage, terrain RNG, or the
+existing four-column ground-gun burst progression. Actual reductions vary with
+sky-cell eligibility and the route seed. Classic flak remains unchanged.
