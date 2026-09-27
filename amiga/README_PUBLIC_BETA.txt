@@ -1,7 +1,7 @@
-HARRIER ATTACK RELOADED - AMIGA PUBLIC BETA 4
+HARRIER ATTACK RELOADED - AMIGA PUBLIC BETA 5
 ===========================================
 
-Version: v0.9.0-beta.4 (prerelease)
+Version: v0.9.0-beta.5 (prerelease)
 
 Thank you for trying this unofficial, non-commercial Amiga port.
 
@@ -40,8 +40,25 @@ Classic mode preserves the CPC gameplay contract. Enhanced mode keeps that
 foundation while adding Amiga presentation and gameplay extensions such as
 smooth scrolling, terrain radar and aircraft rescue.
 
-BETA 4
-----------
+BETA 5 - A RADICAL STEP
+----------------------
+
+This is a rather radical beta :-) Enhanced mode has taken a big step with
+carrier defence, new enemies and momentum-based VTOL flight. It still needs
+some polish, balancing and more real-hardware testing. Expect rough edges!
+
+Defend the carrier against fighters, helicopters, bombers and a submarine.
+Intercept the submarine's returning parachute missile; two Harrier bombs
+sink its exposed tower. Collect R repair kits and land to repair the carrier.
+CPU/P2 operates the carrier weapons during raids; Wingman joins over land.
+
+Carrier VTOL keeps momentum when you release the stick. Countersteer to brake.
+Heading changes independently of drift, and dropped bombs inherit your speed.
+Land to refuel; after the raid, land before departing for the terrain mission.
+
+This beta also improves bomber rendering, restores carrier graphics behind
+falling pickups, shows ready Wingmen on deck and reduces Enhanced flak density.
+Busy carrier scenes can still slow down on A500; a stable 50 FPS is not promised.
 
 Enhanced adds Missile Silos and terrain-following helicopters from mission 2.
 Helicopters take two missile hits and fire small machine-gun rounds. Missile
@@ -52,8 +69,8 @@ Destroy an F depot for 20% fuel. Longer routes carry a larger fuel reserve.
 Fuel is turquoise; Armour is yellow. Parachutes do not supply fuel.
 
 Ordinary missiles remove one third of Harrier armour; tank missiles remove
-one half. Wingman is destroyed by one missile. Hold rocket and bomb together
-when the E lamp lights to eject; the E key remains available.
+one half. Wingman is destroyed by one missile. Press primary fire after the E
+lamp lights to eject; release a held button first. The E key remains available.
 
 Wingman sprite updates now publish at vertical blank to address the reported
 A500 corruption. Please confirm this on real hardware, especially Kickstart
