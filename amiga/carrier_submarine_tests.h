@@ -7,13 +7,20 @@ static UBYTE referenceCarrierSubmarineMatches(void) {
     g.gameMode=GAME_MODE_CLASSIC; carrierUpdateSubmarine(&g,buffers);
     if(g.defence.subState) return 180;
     g.gameMode=GAME_MODE_ENHANCED; g.respawnSafeTimer=255;
+    for(UBYTE mission=1;mission<3;mission++) {
+        g.missionNumber=mission; carrierUpdateSubmarine(&g,buffers);
+        if(g.defence.subState || g.defence.subUsed) return 178;
+    }
+    g.missionNumber=3;
     g.playerX=8; g.playerY=8;
+    for(UBYTE t=0;t<CARRIER_SUB_BUBBLE_LEAD;t++) carrierUpdateSubmarine(&g,buffers);
+    if(g.defence.subHeight || !carrierSubBubbleFrame || g.defence.subState!=CARRIER_SUB_RISING) return 179;
     for(UBYTE t=0;t<24;t++) carrierUpdateSubmarine(&g,buffers);
     if(g.defence.subHeight!=2 || g.defence.subState!=CARRIER_SUB_RISING) return 181;
     for(UBYTE t=0;t<45;t++) carrierUpdateSubmarine(&g,buffers);
     if(g.defence.subHeight!=2 || g.defence.ballistic.active) return 181;
     for(UBYTE t=0;t<72;t++) carrierUpdateSubmarine(&g,buffers);
-    if(g.defence.subState!=CARRIER_SUB_SURFACED || g.defence.subHeight!=8 || !g.defence.subUsed) return 181;
+    if(carrierSubBubbleFrame || g.defence.subState!=CARRIER_SUB_SURFACED || g.defence.subHeight!=8 || !g.defence.subUsed) return 181;
     WeaponState shot={0}; shot.active=1; shot.x=g.defence.subX+8; shot.y=SEA_SURFACE_Y-8;
     carrierDefenceShot(&g,&shot);
     if(g.defence.subHits || g.defence.subState!=CARRIER_SUB_SURFACED) return 182;
@@ -41,10 +48,19 @@ static UBYTE referenceCarrierSubmarineMatches(void) {
         if(g.defence.ballistic.x!=targetX) return 188;
     }
     if(g.defence.ballisticPhase || g.defence.hull!=76) return 189;
+    g.rocketHeightLock=0; /* Fixed interception coordinates, independent of Harrier altitude. */
     for(UBYTE pass=0;pass<2;pass++) {
         g.defence.ballistic.active=1; g.defence.ballistic.x=200; g.defence.ballistic.y=52;
         g.defence.ballisticPhase=pass ? CARRIER_BALLISTIC_DESCENT : CARRIER_BALLISTIC_ASCENT;
+        g.defence.ballistic.guidanceDistance=0;
         WeaponState* missile=pass ? &g.wingman.rocket : &g.rocketShot;
+        memset(missile,0,sizeof(*missile)); missile->active=1; missile->x=200; missile->y=60;
+        carrierDefenceShot(&g,missile);
+        if(missile->active || !g.defence.ballistic.active || g.defence.ballistic.guidanceDistance!=1) return 190;
+        missile=pass ? &g.rocketShot : &g.wingman.rocket;
+        memset(missile,0,sizeof(*missile)); missile->active=1; missile->x=200; missile->y=60;
+        carrierDefenceShot(&g,missile);
+        if(missile->active || !g.defence.ballistic.active || g.defence.ballistic.guidanceDistance!=2) return 190;
         memset(missile,0,sizeof(*missile)); missile->active=1; missile->x=200; missile->y=60;
         carrierDefenceShot(&g,missile);
         if(missile->active || g.defence.ballistic.active || g.defence.ballisticPhase) return 190;
@@ -55,7 +71,7 @@ static UBYTE referenceCarrierSubmarineMatches(void) {
     g.defence.ballistic.active=0; bomb.active=1;
     if(!carrierBombHitsSubmarine(&g,&bomb) || g.defence.subState!=CARRIER_SUB_SINKING) return 192;
     for(UBYTE t=0;t<48;t++) carrierUpdateSubmarine(&g,buffers);
-    if(g.defence.subState || g.defence.subHeight || !g.defence.ballisticPhase) return 193;
+    if(carrierSubBubbleFrame || g.defence.subState || g.defence.subHeight || !g.defence.ballisticPhase) return 193;
     /* A launched missile survives sinking its boat; only one boat per raid. */
     for(UBYTE t=0;t<102;t++) carrierUpdateSubmarine(&g,buffers);
     if(g.defence.subState || g.defence.ballisticPhase!=CARRIER_BALLISTIC_DESCENT) return 194;

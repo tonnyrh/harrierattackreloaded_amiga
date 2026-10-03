@@ -139,6 +139,27 @@ static __attribute__((noinline, optimize("Os"))) WORD helicopterTerrainY(GameSta
     return game->helicopterTerrainTarget;
 }
 
+/* Fractional terrain following: ease velocity rather than jumping directly
+ * by the tile-height error. dy is fixed point only while the helicopter flies;
+ * the crash path explicitly replaces it with its integer falling speed. */
+static void easeHelicopterHeight(WeaponState* heli, WORD targetY) {
+    LONG error=(LONG)(targetY-heli->y)*256-heli->targetY;
+    WORD wanted=error/12;
+    if(wanted>256) wanted=256;
+    if(wanted< -256) wanted=-256;
+    if(heli->dy<wanted) { heli->dy+=16; if(heli->dy>wanted) heli->dy=wanted; }
+    if(heli->dy>wanted) { heli->dy-=16; if(heli->dy<wanted) heli->dy=wanted; }
+    if((error>=0 && heli->dy>=error) || (error<=0 && heli->dy<=error)) {
+        heli->y=targetY; heli->targetY=heli->dy=0; return;
+    }
+    heli->targetY+=heli->dy;
+    WORD pixels=heli->targetY/256;
+    heli->targetY-=pixels*256; heli->y+=pixels;
+    if(error>-12 && error<12 && heli->dy>-12 && heli->dy<12) {
+        heli->y=targetY; heli->targetY=heli->dy=0;
+    }
+}
+
 static __attribute__((noinline, optimize("Os"))) void updateHelicopterBullets(GameState* game) {
     for (UBYTE i = 0; i < HELICOPTER_BULLET_MAX; i++) {
         HelicopterBullet* b = &game->helicopterBullets[i];
@@ -227,8 +248,7 @@ static __attribute__((noinline, optimize("Os"))) void updateHelicopter(GameState
             else if (x < desired) heli->worldX++;
         }
         WORD targetY = helicopterTerrainY(game, heli->worldX);
-        WORD dy = targetY - heli->y;
-        heli->y += encounterClampVelocity(dy);
+        easeHelicopterHeight(heli,targetY);
         heli->x = (WORD)(heli->worldX - game->scrollX);
         /* Two aimed points per burst, a strict two-slot cap and no
          * object-map flak edits. Aim once; do not home after firing. */

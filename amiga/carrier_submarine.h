@@ -2,11 +2,14 @@
 
 static DEFENCE_SMALL void carrierSyncSubmarine(GameState* g, UBYTE** buffers) {
     UBYTE height=g->defence.phase==DEFENCE_SINKING ? 0 : g->defence.subHeight;
-    if(height==carrierSubHeight && g->defence.subX==carrierSubX) return;
-    WORD oldX=carrierSubX; UBYTE oldHeight=carrierSubHeight;
-    carrierSubHeight=height; carrierSubX=g->defence.subX;
+    UBYTE bubbles=g->defence.phase!=DEFENCE_SINKING &&
+        (g->defence.subState==CARRIER_SUB_RISING || g->defence.subState==CARRIER_SUB_SINKING) ?
+        1+((g->defence.subClock/6)&7) : 0;
+    if(height==carrierSubHeight && bubbles==carrierSubBubbleFrame && g->defence.subX==carrierSubX) return;
+    WORD oldX=carrierSubX; UBYTE oldVisible=carrierSubHeight || carrierSubBubbleFrame;
+    carrierSubHeight=height; carrierSubX=g->defence.subX; carrierSubBubbleFrame=bubbles;
     if(!buffers[0]) return;
-    if(oldHeight && oldX!=carrierSubX) {
+    if(oldVisible && oldX!=carrierSubX) {
         for(UBYTE row=14;row<=15;row++) {
             for(UBYTE c=0;c<4;c++) retireImpactProjectiles(buffers[0],oldX/8+c,row);
             bobCompositorErase(buffers[0],oldX/8,row,4);
@@ -38,7 +41,13 @@ static DEFENCE_SMALL UBYTE carrierInterceptBallistic(GameState* g, WeaponState* 
     WeaponState* m=&g->defence.ballistic;
     if(!shot->active || !m->active ||
         !rectsOverlap(shot->x,shot->y,8,8,m->x,m->y,8,16)) return 0;
-    shot->active=m->active=0; g->defence.ballisticPhase=0;
+    shot->active=0;
+    /* Launch clears this otherwise unused field; damage survives the
+     * offscreen wait and parachute deployment. */
+    if(++m->guidanceDistance<3) {
+        playSfxAt(SFX_IMPACT,m->x); return 1;
+    }
+    m->active=0; g->defence.ballisticPhase=0;
 #if HAR_DEBUG_PERF_LOG
     carrierSubStats[4]++;
 #endif
@@ -53,7 +62,7 @@ static DEFENCE_SMALL void carrierUpdateSubmarine(GameState* g, UBYTE** buffers) 
         d->subState=d->subHeight=d->ballisticPhase=d->ballistic.active=0;
         carrierSyncSubmarine(g,buffers); return;
     }
-    if(d->phase==DEFENCE_WAVE && d->waves && d->wave==d->waves && d->spawned && !d->subUsed) {
+    if(g->missionNumber>=3 && d->phase==DEFENCE_WAVE && d->waves && d->wave==d->waves && d->spawned && !d->subUsed) {
         d->subUsed=1; d->subState=CARRIER_SUB_RISING; d->subHits=d->subHeight=0;
         d->subX=216+((g->missionNumber&1)*32); d->subClock=0;
         playSfxAt(SFX_BOMB,d->subX);
@@ -65,10 +74,10 @@ static DEFENCE_SMALL void carrierUpdateSubmarine(GameState* g, UBYTE** buffers) 
     if(d->subState) {
         d->subClock++;
         if(d->subState==CARRIER_SUB_RISING) {
-            /* First two art rows are the periscope. Pause there before the hull
-             * emerges; keep the bottom anchored to the actual sea surface. */
-            d->subHeight=d->subClock<=24 ? d->subClock/12 :
-                d->subClock<=69 ? 2 : 2+(d->subClock-69)/12;
+            /* Bubbles warn before the periscope, then pause its first two art
+             * rows before the tower rises; anchor its bottom to the water. */
+            UWORD rise=d->subClock>CARRIER_SUB_BUBBLE_LEAD ? d->subClock-CARRIER_SUB_BUBBLE_LEAD : 0;
+            d->subHeight=rise<=24 ? rise/12 : rise<=69 ? 2 : 2+(rise-69)/12;
             if(d->subHeight>=8) { d->subHeight=8; d->subState=CARRIER_SUB_SURFACED; d->subClock=0; }
         } else if(d->subState==CARRIER_SUB_SINKING && !(d->subClock%6)) {
             if(d->subHeight) d->subHeight--;

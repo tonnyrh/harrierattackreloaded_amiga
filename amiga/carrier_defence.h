@@ -1,4 +1,5 @@
 /* Stationary Enhanced carrier defence. No dynamic allocations or sample synthesis. */
+#define CARRIER_REPAIR_TICKS 75
 #define CARRIER_BOMB_HULL_DAMAGE 12
 #define CARRIER_ROCKET_HULL_DAMAGE 8
 #define CARRIER_HEAVY_BOMB_HULL_DAMAGE 24
@@ -7,10 +8,31 @@
 
 #define DEFENCE_SMALL __attribute__((noinline, optimize("Os")))
 
+/* missionNumber is the upcoming terrain mission: 2 means after level 1. */
+static void carrierBeginDefence(GameState* g) {
+    if(g->gameMode!=GAME_MODE_ENHANCED || g->missionNumber<2) return;
+    CarrierDefenceState* d=&g->defence;
+    d->phase=DEFENCE_ALARM; d->phaseTicks=150;
+    d->waves=2+(g->missionNumber>=8 ? 2 : (g->missionNumber-2)/3);
+    d->landed=1; d->facing=MAVERICK_DIRECTION_RIGHT; d->vtolPose=1;
+    d->aimX=160; d->aimY=48;
+}
+
 static DEFENCE_SMALL void carrierDeliverRepair(GameState* g, UBYTE hull, UBYTE cargo) {
     g->defence.hull = hull + cargo > 100 ? 100 : hull + cargo;
     g->defence.cargo = 0;
     if (cargo >= 20) g->defence.gunHealth[0] = g->defence.gunHealth[1] = 2;
+}
+
+/* One kit per uninterrupted deck service interval. Never waste a kit. */
+static DEFENCE_SMALL void carrierServiceRepair(GameState* g, UBYTE departing) {
+    CarrierDefenceState* d=&g->defence;
+    if (d->phase==DEFENCE_SINKING || g->gameOver || !d->landed || departing || g->crashTimer || g->ejectState || d->cargo<20 ||
+        (d->hull==100 && d->gunHealth[0]==2 && d->gunHealth[1]==2)) { d->service=0; return; }
+    if (++d->service<CARRIER_REPAIR_TICKS) return;
+    UBYTE remaining=d->cargo-20;
+    carrierDeliverRepair(g,d->hull,20); d->cargo=remaining; d->service=0;
+    playSfxAt(SFX_PICKUP_POWERUP,112);
 }
 
 static DEFENCE_SMALL UBYTE carrierHullOverlap(WORD x, WORD y, UBYTE width, UBYTE height);
@@ -54,6 +76,7 @@ static DEFENCE_SMALL void carrierDropBomb(GameState* g, WORD x, WORD y, UBYTE he
 static DEFENCE_SMALL void carrierDefenceImpact(GameState* g, WORD x, UBYTE damage) {
     CarrierDefenceState* d = &g->defence;
     if (d->phase == DEFENCE_SINKING || !d->hull) return;
+    if (damage) d->raidDamaged = 1;
     d->hull = d->hull > damage ? d->hull - damage : 0;
     startWorldImpact(g, x, 108);
     if (!d->hull) {
@@ -115,7 +138,7 @@ static DEFENCE_SMALL void carrierUpdateGuns(GameState* g) {
         if (d->gunHealth[i] && height && !g->crashTimer && !g->ejectState &&
             !g->respawnSafeTimer && !g->aircraftFailureState &&
             rectsOverlap(g->playerX + 2, g->playerY, 12, 8, x, 112 - height, 8, height)) {
-            d->gunHealth[i] = 0;
+            d->gunHealth[i] = 0; d->raidDamaged = 1;
             startWorldImpact(g, x, 104); applyPlayerMissileDamage(g, 0);
         }
         if (!d->gunHealth[i]) { d->gunHeight[i] = d->gunFlash[i] = 0; continue; }
@@ -134,6 +157,7 @@ static DEFENCE_SMALL UBYTE carrierWeaponHitsGun(GameState* g, WORD x, WORD y, UB
         UBYTE height = g->defence.gunHeight[i];
         if (g->defence.gunHealth[i] && height &&
             rectsOverlap(x, y, size, size, gunX, 112 - height, 8, height)) {
+            g->defence.raidDamaged = 1;
             if (!--g->defence.gunHealth[i]) {
                 g->defence.gunHeight[i] = g->defence.gunFlash[i] = 0;
             }
@@ -186,10 +210,12 @@ static DEFENCE_SMALL UBYTE carrierHullOverlap(WORD x, WORD y, UBYTE width, UBYTE
 static DEFENCE_SMALL void carrierDefenceShot(GameState* g, WeaponState* shot) {
     if (!shot->active) return;
     shot->x += shot->dx; shot->y += shot->dy; shot->worldX = g->scrollX + shot->x;
+    if(shot==&g->rocketShot && g->rocketHeightLock && !shot->dy && !g->ejectState && !g->crashTimer)
+        shot->y=g->playerY+2;
     shot->timer++;
     if (carrierInterceptBallistic(g,shot)) return;
     if (shot->x < -8 || shot->x > SCREEN_WIDTH || shot->y < 0 || shot->y > 112) { shot->active = 0; return; }
-    if (shot != &g->wingman.rocket && (carrierWeaponHitsGun(g, shot->x, shot->y, 8) || carrierHullOverlap(shot->x, shot->y, 8, 8))) {
+    if (g->friendlyFire && shot != &g->wingman.rocket && (carrierWeaponHitsGun(g, shot->x, shot->y, 8) || carrierHullOverlap(shot->x, shot->y, 8, 8))) {
         shot->active = 0; carrierDefenceImpact(g, shot->x, CARRIER_ROCKET_HULL_DAMAGE); return;
     }
     for (UBYTE i = 0; i < CARRIER_DEFENCE_BOMBS; i++) {
@@ -226,6 +252,10 @@ static DEFENCE_SMALL void carrierDefenceAircraft(GameState* g) {
     else if (g->enemyPlane.active) {
         WeaponState* p = &g->enemyPlane; d->jetAge++;
         p->x += (p->direction ? 1 : -1) * (d->jetType == 1 ? 2 : 1); p->worldX = p->targetWorldX = p->x;
+        if(d->jetType==2 && d->jetHits && !(d->jetAge&15)) {
+            WORD target=20+(d->wave&1)*8+d->jetHits*7;
+            if(p->y<target) p->y++;
+        }
         if (d->jetType == 1) {
             if (!(d->jetAge & 3) && (p->direction ? p->x < 50 : p->x > 170)) p->y += p->y < g->playerY ? 1 : (p->y > g->playerY ? -1 : 0);
             if (d->jetAge == 48 && !g->enemyMissile.active) {
@@ -274,7 +304,10 @@ static DEFENCE_SMALL void carrierDefenceAircraft(GameState* g) {
     }
     if (d->phase != DEFENCE_WAVE || d->spawned >= d->quota) return;
     if (d->spawnDelay) { d->spawnDelay--; return; }
-    UBYTE kind = (d->spawned + d->wave - 1) % 3;
+    UBYTE boss=d->wave==d->waves && d->spawned+1==d->quota;
+    if (boss && (g->enemyPlane.active || g->helicopter.active || g->enemyMissile.active ||
+        carrierBombsActive(g) || d->subState || d->ballisticPhase)) return;
+    UBYTE kind = boss ? 0 : (d->spawned + d->wave - 1) % 3;
     UBYTE fromLeft = (d->spawned + d->wave + g->missionNumber) & 1;
     if (kind == 2) {
         if (g->helicopter.active) return;
@@ -290,7 +323,7 @@ static DEFENCE_SMALL void carrierDefenceAircraft(GameState* g) {
         g->enemyPlane.x = g->enemyPlane.worldX = g->enemyPlane.targetWorldX = fromLeft ? 0 : 312;
         g->enemyPlane.y = 24 + ((d->spawned + d->wave) & 3) * 12;
         g->enemyPlaneDamageState = ENEMY_PLANE_DAMAGE_NORMAL;
-        d->jetType = kind == 0 && ((g->missionNumber + d->spawned + d->wave) & 1) ? 2 : kind;
+        d->jetType = boss ? 2 : kind;
         if (d->jetType == 2) g->enemyPlane.y = 20 + (d->wave & 1) * 8;
         d->jetAge = d->jetTurnTicks = 0; d->jetBulletHits = d->jetHits = 0;
     }
@@ -497,9 +530,11 @@ static DEFENCE_SMALL void updateCarrierDefence(GameState* g, const InputState* i
     const InputState* previous, const Player2InputState* in2, UBYTE** buffers) {
     CarrierDefenceState* d = &g->defence; d->clock++;
     if (d->bomberBlastTicks) d->bomberBlastTicks--;
+    if (d->perfectTicks) d->perfectTicks--;
     g->wingman.active = 0;
     if (g->bombLaunchCooldown) g->bombLaunchCooldown--;
     carrierUpdateHeading(d, in);
+    carrierServiceRepair(g,in->up);
     if (d->phase == DEFENCE_SINKING) {
         carrierUpdateSubmarine(g,buffers);
         carrierSyncGuns(g, buffers);
@@ -526,6 +561,12 @@ static DEFENCE_SMALL void updateCarrierDefence(GameState* g, const InputState* i
         }
         updateAbandonedAircraft(g);
         if (g->crashTimer) updatePlayerCrash(g);
+        /* Change canopy descent before the normal deck collision check.
+         * Up slows the fall, Down accelerates; neutral uses normal descent. */
+        if(g->ejectState==2) {
+            if(in->down && !in->up && (g->ejectTimer+1)%3==1) g->ejectY++;
+            if(in->up && !in->down && (g->ejectTimer+1)%6==3) g->ejectY--;
+        }
         UBYTE rescue = updatePlayerEject(g);
         if (rescue == EJECT_UPDATE_CARRIER_RESTART && !g->gameOver) {
             respawnPlayer(g); g->scrollX = 0; g->playerX = 80; g->playerY = TAKEOFF_PLAYER_DECK_Y;
@@ -555,7 +596,7 @@ static DEFENCE_SMALL void updateCarrierDefence(GameState* g, const InputState* i
         if (g->respawnSafeTimer) g->respawnSafeTimer--;
         if (d->landed) {
             carrierResetVtol(d);
-            if (d->cargo) carrierDeliverRepair(g, d->hull, d->cargo);
+
             g->playerY = TAKEOFF_PLAYER_DECK_Y;
             if (!(d->clock & 7)) carrierServiceAircraft(g);
             if (in->up) { d->landed = 0; g->playerY -= 3; startEngineSound(1); }
@@ -595,6 +636,7 @@ static DEFENCE_SMALL void updateCarrierDefence(GameState* g, const InputState* i
         } else if (carrierWeaponHitsGun(g, g->bombShot.x, g->bombShot.y, 8)) {
             carrierDefenceImpact(g, g->bombShot.x, CARRIER_BOMB_HULL_DAMAGE); g->bombShot.active = 0;
         } else if (g->bombShot.y >= 110 && g->bombShot.x >= 64 && g->bombShot.x < 160) {
+            /* Player bombs always endanger the carrier, even with friendly fire off. */
             carrierDefenceImpact(g, g->bombShot.x, CARRIER_BOMB_HULL_DAMAGE);
             g->bombShot.active = 0;
         } else if (g->bombShot.y >= SEA_SURFACE_Y) {
@@ -611,11 +653,18 @@ static DEFENCE_SMALL void updateCarrierDefence(GameState* g, const InputState* i
         g->helicopterSmoke.x = g->helicopterSmoke.worldX = g->helicopter.x + 6;
         g->helicopterSmoke.y = g->helicopter.y;
     }
+    if (!g->helicopterSmoke.active && g->enemyPlane.active && d->jetType==2 &&
+        d->jetHits>=2 && !(d->clock&63)) {
+        memset(&g->helicopterSmoke,0,sizeof(g->helicopterSmoke));
+        g->helicopterSmoke.active=1; g->helicopterSmoke.x=g->helicopterSmoke.worldX=g->enemyPlane.x+12;
+        g->helicopterSmoke.y=g->enemyPlane.y+6;
+    }
     if (!g->helicopterSmoke.active && d->hull < 50 && !(d->clock % 48)) {
         memset(&g->helicopterSmoke, 0, sizeof(g->helicopterSmoke));
         g->helicopterSmoke.active = 1; g->helicopterSmoke.x = 116; g->helicopterSmoke.worldX = 116; g->helicopterSmoke.y = 98;
     }
     carrierDefenceAircraft(g);
+    serviceBomberDrone(g);
     carrierUpdateSubmarine(g,buffers);
     /* Resolve enemy ordnance reaching Harrier/deck before interception.
      * Otherwise a missile can erase a bomb already overlapping the aircraft,
@@ -644,12 +693,15 @@ static DEFENCE_SMALL void updateCarrierDefence(GameState* g, const InputState* i
         else { d->phase = DEFENCE_WAVE; d->wave++; d->spawned = 0; d->quota = 3 + (g->levelDifficulty - 1) / 2; d->spawnDelay = 15; }
     } else if (d->phase == DEFENCE_WAVE && d->spawned >= d->quota && !g->enemyPlane.active && !g->helicopter.active && !g->enemyMissile.active && !carrierBombsActive(g) && !d->subState && !d->ballisticPhase) {
         d->phase = d->wave < d->waves ? DEFENCE_LULL : DEFENCE_SECURE; d->phaseTicks = 150; d->alarmPlayed = 0;
-        playSfxAt(SFX_PICKUP_POWERUP, 112);
+        if(d->phase==DEFENCE_SECURE && d->hull==100) {
+            d->raidBonus=d->raidDamaged ? 1 : 2;
+            awardGameScore(g,d->raidBonus==2 ? 2000 : 1000); d->perfectTicks=100;
+        }
     } else if (d->phase == DEFENCE_SECURE && d->landed) { d->phase = DEFENCE_DEPART; d->phaseTicks = 0; }
     else if (d->phase == DEFENCE_DEPART) {
         if (d->phaseTicks) d->phaseTicks--;
         else if (in->up && (!carrierParkedWingmanVisible || !carrierWingmanLiftDepth || g->wingman.destroyed)) {
-            d->phase = 0; d->landed = 0; carrierDefenceGunMask = 0;
+            d->phase = 0; d->landed = 0; d->perfectTicks=0; carrierDefenceGunMask = 0;
             d->gunHeight[0] = d->gunHeight[1] = 0;
             carrierDefenceGunHeight[0] = carrierDefenceGunHeight[1] = 0;
             d->missileHeight = carrierMissileHeight = 0;
@@ -664,4 +716,16 @@ static DEFENCE_SMALL void updateCarrierDefence(GameState* g, const InputState* i
             hudRenderState[0].valid = 0;
         }
     }
+}
+
+static DEFENCE_SMALL void carrierSyncSceneStatus(const GameState* g, UBYTE** buffers) {
+    UBYTE hull=g->defence.phase && g->defence.phase!=DEFENCE_SINKING ? g->defence.hull : 255;
+    UBYTE old=carrierSceneHull;
+    if ((old==255)!=(hull==255)) {
+        if(buffers && buffers[0]) eraseSeaWaves(buffers[0],0);
+        seaWaveCandidatesValid=0;
+    }
+    carrierSceneHull=hull; carrierSceneCargo=g->defence.cargo;
+    if(!buffers || !buffers[0]) return;
+    if(old!=hull) bobCompositorErase(buffers[0],8,16,12);
 }

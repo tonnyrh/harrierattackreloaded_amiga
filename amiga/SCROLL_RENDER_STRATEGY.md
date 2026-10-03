@@ -2053,3 +2053,51 @@ only the three Public Beta projectile/debris flags enabled. Release source
 and graphics hashes were checked against the tested inputs before packaging.
 The package uses `package-amiga.ps1 -Version 0.9.0-beta.3-rc.1 -NoBuild` and
 contains ADF, HD ZIP and SHA-256 checksums; no ROMs or debug dumps.
+
+
+## Classic scrolling audit — 2026-10-03
+
+Classic already shares the adaptive row-budget streamer, cached column build,
+16-bit ring arithmetic, Copper fine-scroll calculation, and PAL frame pacing
+with Enhanced. No mode-dependent camera stepping was found. A configuration
+gap did exist: normal/F5 compilation defaulted to software projectiles while
+recent beta builds explicitly enabled the hardware chain and debris BOBs.
+These tested options are now source defaults for both modes, still overridable
+for A/B diagnostics. Disabling the hardware player rocket also defaults its
+projectile chain off. README build instructions match the new defaults.
+
+Cycle-exact PAL A500, Kickstart 1.2, 512K Chip + 512K Slow, tempo 100%, skill 1,
+world seed 12040, maximum cruise, no Wingman; CIA TOD and actual Copper operands:
+
+| Run | Scroll submissions | Extra PAL fields | Worst interval |
+| --- | ---: | ---: | ---: |
+| Classic, normal flight | 1228 | 0 | 1 field |
+| Enhanced, matching terrain flight | 1228 | 9 | 2 fields |
+| Classic, continuous bombs/rockets, old defaults | 1228 | 17 | 2 fields |
+| Classic, continuous bombs/rockets, beta flags | 1228 | 15 | 2 fields |
+| Classic, longer route with continuous bombs/rockets | 2253 | 39 | 2 fields |
+
+All 128 sampled Copper pointer/fine-scroll combinations in each run passed
+check-scroll-presentation.py, across all sixteen fine-scroll phases. These are
+submission/deadline measurements, not proof of host-monitor presentation.
+Separately, WinUAE native per-field PNG capture recorded 125 consecutive Classic
+frames: all 124 transitions moved six capture pixels (three game pixels) with
+zero mismatched pixels in the terrain crop (100,164,470,100). This capture was
+separate from timing tests; screenshot disk I/O can affect the host.
+
+The old/new flags comparison gives only a small gain in this workload. It does
+not explain a large persistent judder complaint. Continuous-fire stress still
+occasionally repeats a PAL field; the exact user's scene, machine and tempo are
+not yet confirmed. No claim of universally flawless 50 Hz or real-hardware
+validation is made. Tests deliberately enter terrain directly and do not spend
+the measurement interval in Enhanced's initial carrier defence.
+
+Local evidence: .tmp/classic-scroll-baseline.log, enhanced-scroll-compare.log,
+classic-scroll-combat.log, classic-scroll-legacy.log, classic-scroll-full-combat.log;
+trace files in their tempo-isolated-* directories. Visual evidence:
+.tmp/classic-frame-capture2-oct3/001, checked with tools/check-scroll-frames.py.
+
+A final Classic stress build with no explicit projectile/debris flags reproduced
+the beta-flag result exactly: 1228 submissions, 15 extra fields, maximum two
+fields, all Copper checks passed. Evidence: .tmp/classic-scroll-default.log.
+The interactive EXE/ADF is rebuilt without EXTRA_CCFLAGS as a default-build check.

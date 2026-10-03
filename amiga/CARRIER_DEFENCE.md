@@ -4,15 +4,18 @@ Local BETA5DEV2 work. Classic retains its original mission cycle.
 
 ## Flight and mission cycle
 
-An air-raid klaxon opens each Enhanced mission. Up lifts off. Move around the
+Enhanced starts with a normal deck departure for terrain mission 1. After
+returning, an air-raid klaxon opens the defence before mission 2 and each later
+mission. Up lifts off. Move around the
 stationary carrier in VTOL. Harrier keeps its last heading; reversing takes twelve
 logical ticks with a front-facing hover pose. Release horizontal input during
 the turn to remain centred. Missiles fire horizontally. Bombs can hit enemy
 planes and helicopters, or your own carrier.
 
 Bombers attack the carrier, fighters fire at Harrier and bomb the deck if they reach it, and helicopters hover and
-bomb before leaving. Aircraft and helicopters enter from either side. The occasional grey heavy bomber and helicopters take two missile hits. A falling helicopter explodes on another bullet or missile hit, without another kit or score award. Missions 1-3 have two
-waves, 4-6 three, then four. Effective Skill selects 3-5 aircraft per wave.
+bomb before leaving. Aircraft and helicopters enter from either side. The grey heavy bomber takes four missile hits; helicopters take two. A falling helicopter explodes on another bullet or missile hit, without another kit or score award. Defences before missions 2-4 have two
+waves, 5-7 three, then four. Submarines first appear before mission 3
+(between terrain levels 2 and 3). Effective Skill selects 3-5 aircraft per wave.
 After the final wave, LAND NOW remains until touchdown. Up then departs for the
 terrain mission. Over land, ordinary scrolling and Wingman controls remain;
 the experimental terrain full-VTOL stops and R buildings are no longer used.
@@ -360,3 +363,158 @@ the existing master's periscope/cabin colours without exposing the hull.
 Emergence again takes 141 ticks with the same periscope pause. Carrier VTOL
 turns take nine ticks (0.18 seconds at 50 Hz), keeping three visible front-facing
 ticks between the angled poses; heading remains independent of momentum.
+
+
+Submarine missile armour: three rocket hits are required to destroy each ballistic
+missile. The first two consume the attacking rocket and play an impact sound;
+the third removes the missile and awards the interception score. Harrier/carrier
+hits combine, and accumulated damage survives ascent, the offscreen wait and
+parachute descent. Launching the next missile resets its hit count.
+
+
+Friendly fire is a main-menu option, off by default, shared by Classic and
+Enhanced sessions. Off protects Wingman from Harrier weapons, Harrier from
+CPU/P2 carrier missiles, and friendly carriers/guns from player rockets.
+Harrier bombs always damage the carrier and exposed guns.
+On restores the previous damage rules; carrier bullets remain harmless to
+Harrier in either setting. Enemy weapons and physical collisions are unchanged.
+The option is retained across retries and missions for the current app session.
+
+High-score entry now presents the battlefield once after game over, then keeps
+it frozen while servicing input, HUD and music. It no longer repeatedly erases
+and redraws stationary encounter BOBs or waits for their raster rows. This avoids
+spending additional display fields on the frozen carrier battle on a stock A500.
+HAR_HEADLESS_CARRIER_HIGHSCORE_TEST measures music ticks against CIA VSync fields
+and counts unexpected world redraws while the name editor is active.
+
+Validation: cycle-exact A500/OCS, Kickstart 1.2, 512 KB Chip + 512 KB Slow,
+with retained helicopter, smoke, four bombs and descending ballistic missile:
+250 music services over 250 hardware VSync fields while entering a high-score
+name; zero repeated world presentations during that interval. These are emulator
+measurements; listening on physical hardware remains the final audio check.
+
+The complete carrier-defence-and-repair contract passes with friendly-fire
+On/Off collision checks in both modes, hostile bomb contact/interception ordering,
+menu labels/session defaults, landing, gunnery, submarine and rendering checks.
+
+Submarine bubbles: four tiny hollow white bubbles/glints animate beside the
+conning tower every six simulation ticks. A 24-tick warning precedes the original
+141-tick periscope/tower rise; bubbles continue during rising and sinking and
+clear when surfaced or gone. They are composited into the existing four-column,
+two-row submarine region, with projectile retirement before each dirty redraw;
+no hardware sprites, collision slots or additional BOB backgrounds are used.
+
+Carrier refinements (2026-10-01): Down with the canopy deployed doubles its
+descent from one to two pixels per three simulation ticks. Up halves normal
+descent. The normal touchdown/rescue collision check still runs after movement. Terrain ejection is unchanged. Carrier missile
+reload is now 45 rather than 100 ticks, retaining the single active projectile
+limit for both P2 and CPU.
+
+The four-hit bomber is reserved for the last slot of the final wave and waits
+for earlier aircraft, hostile ordnance and the submarine sequence to clear.
+Each surviving hit adds engine scorch/fire marks in both directions. Marks are
+packed into the existing blitter image on a pose change; the CPU fallback uses
+the same masks. No extra aircraft graphics bank or sprite channel is allocated.
+A badly damaged bomber shares the existing sparse smoke slot.
+
+A 96-pixel framed hull line now sits at y=129..133 below the carrier, green,
+yellow or red by health, with the R-parachute icon and cargo count in the right HUD panel. The world compositor draws it on changes/restoration, not every frame.
+Sea-wave candidates avoid that area while visible, and departure/sinking
+restore the sea. The original instrument panel remains available over land.
+
+One repair kit takes 75 uninterrupted landed simulation ticks, adds 20 hull
+points (capped at 100), repairs both AA guns and plays the pickup sound. Takeoff
+resets progress without consuming cargo. Full hull with healthy guns keeps
+spare kits; terrain-return cargo is now delivered through the same timed deck
+service instead of being consumed instantly at the next mission transition.
+
+Validation: carrier-defence-and-repair passes timed/interrupted repair, full
+hull cargo preservation, canopy descent, reload, boss scheduling and the
+existing collision/rescue/landing checks. The blitter/reference test now covers
+all six damaged bomber poses as well as intact aircraft and explosions, across
+all 16 horizontal shifts, including background restoration. The separate
+carrier-status-compositor test verifies hull pixels, colour thresholds, wave
+exclusion and removal, and exports an actual framebuffer preview.
+A cycle-exact A500, Kickstart 1.2, 512 KiB Chip + 512 KiB Slow completed the
+1200-field carrier autoplay smoke run with CPU gunnery. The heavier timing-log
+build exceeded this memory budget; smoke uses no performance logging, and no
+new universal frame-rate claim is made. Normal EXE/ADF rebuilt afterwards.
+
+
+Refinements (2026-10-01):
+- Perfect awards 1,000 base points through the existing skill/tempo multiplier
+  exactly once when the final enemy is cleared and hull is 100. Repairs count.
+  A short PERFECT BONUS message then gives way to LAND NOW.
+- Canopy Down doubles descent; Up halves normal descent; Fire has no effect.
+- Player horizontal missiles honour Lock Height just as terrain missiles do.
+  Carrier weapons and diagonal shots keep their own trajectories.
+- The full white hull frame occupies y=129..133. Both tile restoration and
+  full-column streaming reapply it. The R crate/count is in the right HUD panel.
+- Wave completion no longer plays an unrelated pickup cue. Kit collection and
+  actual deck repair still do.
+- Bomber damage is grey/black, with gradual height loss and sparse shared smoke.
+  A 256-byte precomputed two-tone sawtooth sample loops on one low-priority Paula
+  voice; damaged engines briefly cut out. There is no runtime sample synthesis.
+- Attract mode has its own carrier VTOL controller, submarine bombing and
+  landing/departure logic, with a bounded extra time allowance. Terrain flight
+  starts its normal demo clock after defence.
+
+Validation of these refinements: the full carrier-defence-and-repair contract
+passes, including all damaged bomber blitter poses and restoration. Separate
+contracts pass depot chain/restoration (including fuel without chain damage),
+Paula reload/loop scheduling, and the actual attract controller from the opening
+alarm through two waves, submarine, landing and departure (1,168 simulation
+steps; hull 100). The attract check exposed an island collision during descent;
+the controller now crosses above the mast before descending onto the left pad.
+A cycle-exact A500 KS1.2, 512 KiB Chip + 512 KiB Slow, completed a 1,200-step
+rendered carrier smoke test with CPU gunnery. The normal EXE/ADF were rebuilt.
+
+The final normal 627,892-byte executable (not the smaller autoplay binary) was
+also booted under KS1.2/512 KiB Chip + 512 KiB Slow. Its required runtime
+allocations succeeded; the game logged 5,560 free Chip bytes before the optional
+1,440-byte bomber blitter workspace. Native WinUAE capture confirmed the live
+field-guide screen. Keep this small remaining Chip budget in mind for assets.
+
+### Super defence bonus
+
+An attack completed at 100% hull without any hull or AA-gun damage during
+its waves earns SUPER BONUS: 2,000 base points. Damage history survives repairs
+and the lull between waves, and resets for the next defence run. A carrier
+repaired to 100% instead earns PERFECT BONUS: 1,000 base points. The bonuses
+are alternatives, awarded once at the end of the final wave, with the normal
+skill/tempo score multiplier. Damage to Harrier does not disqualify the carrier.
+
+### Deck rescue continuity
+
+Rescuing an ejected pilot during carrier defence replaces Harrier without
+clearing enemy aircraft, their damage state, missiles or spawn timing. The
+ongoing raid continues normally. Terrain respawn behaviour is unchanged.
+The focused WinUAE contract compares a rescue tick with an ordinary raid tick
+for both a fighter and a damaged bomber, and checks the lost aircraft count.
+
+Bomber damage uses sparse, irregular dark-grey engine scars at each damage
+stage, preserving the original aircraft shading instead of flat black blocks.
+The ballistic missile survives two rocket hits and is destroyed by the third,
+verified during both ascent and parachute descent in the WinUAE contract.
+
+Harrier bombs are an explicit Friendly Fire exception: they always damage
+the carrier hull and exposed AA guns, including during LAND NOW. Each bomb
+deals the existing 12 hull damage and disqualifies SUPER for that raid.
+Friendly rockets and aircraft-versus-Wingman rules still obey the menu option.
+Validated with Friendly Fire both off and on in the WinUAE collision contract.
+
+### Campaign defence scheduling
+
+Normal Enhanced play has no opening raid on level 1. startGameSession uses
+carrierBeginDefence for mission 2 onward. Existing effective difficulty grows
+with selected Skill plus mission number (capped at 5): quota rises from 3 to 5
+per wave and spawn delay falls from 120 to 80 simulation ticks. Later raids
+increase from two to three to four waves, with the existing bounded enemy slots.
+Submarine spawning requires upcoming mission 3 or later, even in a final wave.
+Dedicated raid diagnostics explicitly choose a qualifying mission so they cannot
+silently exercise ordinary terrain after this scheduling change. Classic is unchanged.
+
+The WinUAE progression contract checks mission 1 through 10 at all five Skill
+settings, both modes, real alarm/wave and aircraft spawn updates, and the early
+submarine exclusion followed by the complete submarine/interception lifecycle.
+The obsolete DOS startup sprint banner has been removed.

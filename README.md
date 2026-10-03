@@ -102,6 +102,12 @@ display updates per second; the heavy A500 stress route still drops frames.
 At 100%, the existing simulation cadence is retained. Settings currently
 last for the running program; high scores are not separated by tempo.
 
+**Friendly fire: Off / On** defaults to Off. It protects Wingman from
+Harrier weapons, Harrier from CPU/P2 carrier missiles, and the carrier from
+your bombs/rockets. The setting applies to carrier defence and normal flight
+in both modes, and lasts for the running program. On restores the previous
+friendly damage rules; enemy attacks and physical collisions remain dangerous.
+
 ## Scores and leaderboards
 
 Classic and Enhanced have independent leaderboards. Changing Mode selects
@@ -163,17 +169,16 @@ configuration with F5.
 .\amiga-build.ps1
 ```
 
-To reproduce the experimental sprite-multiplexing and crash-debris BOB
-configuration used in recent A500 playtests, build in a separate PowerShell
-session with:
+Normal builds (including F5) enable the hardware projectile chain and crash-debris
+BOBs used in the beta builds. Both Classic and Enhanced use these defaults.
+No extra environment flags are needed. For an explicit legacy comparison only:
 
 ```powershell
-$env:EXTRA_CCFLAGS = '-DHAR_HARDWARE_PLAYER_ROCKET=1 -DHAR_HARDWARE_PROJECTILE_CHAIN=1 -DHAR_CRASH_DEBRIS_BOBS=1'
+$env:EXTRA_CCFLAGS = '-DHAR_HARDWARE_PLAYER_ROCKET=0 -DHAR_HARDWARE_PROJECTILE_CHAIN=0 -DHAR_CRASH_DEBRIS_BOBS=0'
 .\amiga-build.ps1
 ```
 
-These three options remain disabled in default builds while beta testing
-continues. The bomb and power-up changes are included in both configurations.
+Remove that environment variable before returning to the normal build.
 
 Outputs are written under `amiga/out`:
 

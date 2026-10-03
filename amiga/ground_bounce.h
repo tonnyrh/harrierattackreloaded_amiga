@@ -34,6 +34,7 @@ static UBYTE handleEnhancedGroundBounce(GameState* g, UBYTE** buffers,
     UBYTE target = cell.id == HAR_OBJ_GROUND_TARGET;
     if (target) {
         LONG anchor = groundTargetAnchorColumn(column);
+        startAmmoDepotBlast(g, anchor);
         markTargetDestroyedAtColumn(anchor);
         if (g->targetLock.active && groundTargetAnchorColumn(g->targetLock.worldX / GAME_TILE_WIDTH) == anchor)
             clearTargetLockWithTelemetry(g, cell.id);

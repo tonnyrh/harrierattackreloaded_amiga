@@ -1,4 +1,42 @@
 #if HAR_HEADLESS_CLASSIC_CONTRACT_TEST
+static UBYTE carrierTestPixel(const UBYTE* pixels,UWORD x,UWORD y) {
+    x+=GAME_WORLD_BUFFER_MARGIN_PIXELS;
+    UBYTE pen=0, bit=0x80>>(x&7);
+    for(UBYTE p=0;p<4;p++) if(pixels[(ULONG)y*SCREEN_PLANES*GAME_WORLD_ROW_BYTES+p*GAME_WORLD_ROW_BYTES+(x>>3)]&bit) pen|=1<<p;
+    return pen;
+}
+static UBYTE referenceCarrierSceneStatusMatches(void) {
+    UBYTE* pixels=AllocMem(GAME_WORLD_BITMAP_BYTES,MEMF_PUBLIC|MEMF_CLEAR);
+    if(!pixels) return 210;
+    UBYTE* buffers[GAME_WORLD_BUFFER_COUNT]={pixels};
+    static GameState g; initGameState(&g,12040,12040,1); g.gameMode=GAME_MODE_ENHANCED;
+    UBYTE oldMode=currentWorldPresentationMode; currentWorldPresentationMode=GAME_MODE_ENHANCED;
+    resetRocketShotPixelBobFootprints(); resetBombShotPixelBobFootprints();
+    carrierSceneHull=255; carrierDefenceSinkPixels=0;
+    for(UBYTE c=0;c<40;c++) renderRingWorldColumn(pixels,c);
+    g.defence.phase=DEFENCE_WAVE; g.defence.hull=60; g.defence.cargo=40;
+    carrierSyncSceneStatus(&g,buffers);
+    UBYTE result=0;
+    if(carrierTestPixel(pixels,80,129)!=GAME_COLOR_WHITE ||
+       carrierTestPixel(pixels,80,131)!=GAME_COLOR_POWERUP_GREEN ||
+       carrierTestPixel(pixels,150,131)!=GAME_COLOR_BLACK) result=211;
+    renderRingWorldColumn(pixels,10); /* Full-column streaming must preserve the frame. */
+    if(carrierTestPixel(pixels,80,129)!=GAME_COLOR_WHITE) result=215;
+    /* Visual fixture from the actual compositor, not a separate mock-up. */
+    BPTR f=Open((CONST_STRPTR)"DH1:carrier-status-preview.bpl",MODE_NEWFILE);
+    if(f) {
+        UBYTE header[6]={GAME_WORLD_BUFFER_WIDTH>>8,GAME_WORLD_BUFFER_WIDTH&255,GAME_WORLD_HEIGHT>>8,GAME_WORLD_HEIGHT&255,SCREEN_PLANES,GAME_WORLD_BUFFER_MARGIN_PIXELS};
+        Write(f,header,6); Write(f,pixels,GAME_WORLD_BITMAP_BYTES); Close(f);
+    }
+    g.defence.hull=20; g.defence.cargo=20; carrierSyncSceneStatus(&g,buffers);
+    if(carrierTestPixel(pixels,80,131)!=GAME_COLOR_RED || carrierTestPixel(pixels,100,131)!=GAME_COLOR_BLACK) result=212;
+    ensureSeaWaveCandidates(&g);
+    for(UBYTE n=0;n<seaWaveCandidateCount;n++) if(seaWaveCandidates[n].column>=7 && seaWaveCandidates[n].column<20 && seaWaveCandidates[n].y>=128 && seaWaveCandidates[n].y<136) result=213;
+    g.defence.phase=0; carrierSyncSceneStatus(&g,buffers);
+    if(carrierSceneHull!=255 || carrierTestPixel(pixels,80,129)==GAME_COLOR_WHITE) result=214;
+    currentWorldPresentationMode=oldMode; FreeMem(pixels,GAME_WORLD_BITMAP_BYTES); return result;
+}
+
 /* Exercise real OCS DMA against the independent CPU tile renderer, including
  * shifter carry, every pose, the fifth plane, fallback and padded overlaps. */
 static UBYTE referenceCarrierBlitterMatches(void) {
@@ -12,7 +50,7 @@ static UBYTE referenceCarrierBlitterMatches(void) {
         OwnBlitter(); WaitBlit();
         UWORD oldDma=custom->dmaconr;
         custom->dmacon=DMAF_SETCLR|DMAF_MASTER|DMAF_BLITTER;
-        for(UBYTE pose=0;pose<5 && !result;pose++) for(UBYTE shift=0;shift<16 && !result;shift++) {
+        for(UBYTE pose=0;pose<11 && !result;pose++) for(UBYTE shift=0;shift<16 && !result;shift++) {
             UBYTE pattern=shift&1 ? 0xa5 : 0x5a;
             for(UBYTE pass=0;pass<2;pass++) {
                 UBYTE* pixels=pass ? actual : expected;
@@ -25,7 +63,9 @@ static UBYTE referenceCarrierBlitterMatches(void) {
                 state.enemyPlane.active=1; state.enemyPlane.direction=pose;
                 state.enemyPlane.x=state.enemyPlane.worldX=shift<16 ? 80+shift : (shift==16 ? -9 : SCREEN_WIDTH-17);
                 state.enemyPlane.y=24;
-                if(pose>=2) {
+                if(pose>=5) {
+                    state.defence.jetHits=1+(pose-5)/2; state.enemyPlane.direction=(pose-5)&1;
+                } else if(pose>=2) {
                     state.defence.bomberBlastTicks=24-(pose-2)*8;
                     state.defence.bomberBlastX=state.enemyPlane.x; state.defence.bomberBlastY=24;
                 }
@@ -263,6 +303,7 @@ static UBYTE referenceCarrierRevisionMatches(void) {
     if (g.helicopter.active || bullet->active || g.defence.repairDropPending || g.hitsCount != 2) return 144;
     g.helicopter.active = 1; g.helicopter.type = 2;
     memset(&g.rocketShot,0,sizeof(g.rocketShot));
+    g.rocketHeightLock=0; /* Fixed trajectory fixture intersects the falling helicopter. */
     g.rocketShot.active = 1; g.rocketShot.x = 182; g.rocketShot.y = 41;
     carrierDefenceShot(&g,&g.rocketShot);
     if (g.helicopter.active || g.rocketShot.active || g.defence.repairDropPending) return 145;
@@ -270,7 +311,7 @@ static UBYTE referenceCarrierRevisionMatches(void) {
     g.defence.phase = DEFENCE_WAVE; g.defence.wave = 1; g.defence.quota = 3;
     carrierDefenceAircraft(&g);
     if (g.defence.jetType == 2) return 146;
-    g.enemyPlane.active = 0; g.defence.wave = 2; g.defence.spawned = 2; g.defence.spawnDelay = 0;
+    g.enemyPlane.active = 0; g.defence.wave = g.defence.waves = 2; g.defence.spawned = 2; g.defence.spawnDelay = 0;
     carrierDefenceAircraft(&g);
     if (g.defence.jetType != 2 || g.enemyPlane.y > 28) return 147;
     /* High bomber reverses at both edges without healing or ending its wave. */
@@ -426,6 +467,7 @@ static UBYTE referenceCarrierRevisionMatches(void) {
     for (UBYTE tick=0; tick<8; tick++) updateEncounterSmoke(&g);
     if (g.helicopterSmoke.active) return 170;
     /* Deck elevator takes 48 logical ticks in either direction, never a pop. */
+    g.wingmanControl = WINGMAN_CONTROL_CPU;
     g.wingman.destroyed = 0; g.defence.phase = DEFENCE_ALARM;
     carrierWingmanLiftDepth = 0; carrierParkedWingmanVisible = 1;
     for (UBYTE tick=1; tick<=48; tick++) {
@@ -706,7 +748,9 @@ static UBYTE referenceCarrierRevisionMatches(void) {
     if (g.rockets != 8 || !g.rocketShot.active) return 189;
     /* A bomb already touching Harrier cannot be rescued by a same-tick
      * interception from a player/carrier missile. Resolve contact first. */
+    for (UBYTE friendly=0; friendly<2; friendly++)
     for (UBYTE carrierShot=0; carrierShot<3; carrierShot++) {
+
         initGameState(&g,12040,12040,2); g.gameMode = GAME_MODE_ENHANCED;
         g.missionNumber = g.levelDifficulty = 2;
         g.defence.phase = DEFENCE_WAVE; g.defence.hull = 100;
@@ -723,10 +767,10 @@ static UBYTE referenceCarrierRevisionMatches(void) {
             g.helicopterBullets[0].active = 1;
             g.helicopterBullets[0].worldX = 123; g.helicopterBullets[0].y = 70;
         }
-        /* Carrier missiles also inflict their own 33% friendly-fire damage;
-         * carrier bullets are harmless to Harrier. */
+        /* Enemy bomb contact always hurts; carrier missile damage is opt-in. */
+        g.friendlyFire = friendly;
         updateCarrierDefence(&g,&idle,&idle,&idle2,noBuffers);
-        if (g.armour != (carrierShot == 1 ? 17 : 50) || g.defence.bombs[0].active) return 192;
+        if (g.armour != (friendly && carrierShot == 1 ? 17 : 50) || g.defence.bombs[0].active) return 192;
     }
     /* Level-two enemy bombs: full tick, including CPU interception/service. */
     for (UBYTE landed=0; landed<2; landed++) {

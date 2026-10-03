@@ -71,7 +71,7 @@ static DEFENCE_SMALL void carrierLaunchMissile(GameState* g) {
     m->direction = carrierAbs(dx) < carrierAbs(dy) / 2 ? MAVERICK_DIRECTION_UP :
         (dx < 0 ? (carrierAbs(dy) < carrierAbs(dx) / 2 ? MAVERICK_DIRECTION_LEFT : MAVERICK_DIRECTION_UP_LEFT) :
         (carrierAbs(dy) < carrierAbs(dx) / 2 ? MAVERICK_DIRECTION_RIGHT : MAVERICK_DIRECTION_UP_RIGHT));
-    g->defence.missileCooldown = 100;
+    g->defence.missileCooldown = 45;
     playSfxAt(SFX_FIRE, 112);
 }
 
@@ -81,7 +81,7 @@ static DEFENCE_SMALL void carrierAdvanceMissile(GameState* g) {
     m->targetWorldX += m->dx; m->targetY += m->dy;
     m->x = m->targetWorldX >> 8; m->y = m->targetY >> 8; m->worldX = m->x;
     if (m->x < -8 || m->x > SCREEN_WIDTH || m->y < 0 || m->y > 112 || ++m->timer > 150) { m->active = 0; return; }
-    if (!g->crashTimer && !g->ejectState && !g->respawnSafeTimer &&
+    if (g->friendlyFire && !g->crashTimer && !g->ejectState && !g->respawnSafeTimer &&
         rectsOverlap(m->x, m->y, 8, 8, g->playerX, g->playerY, 16, 8)) {
         m->active = 0; applyPlayerMissileDamage(g, 0); return;
     }

@@ -128,3 +128,137 @@ opportunities and one in eight land-column opportunities. This creates regular
 breathing room in dense city flak without changing damage, terrain RNG, or the
 existing four-column ground-gun burst progression. Actual reductions vary with
 sky-cell eligibility and the route seed. Classic flak remains unchanged.
+
+
+Terrain helicopter smoothing: use fractional vertical velocity with gradual
+acceleration/deceleration toward the existing look-ahead terrain height. Live
+terrain flight moves at most one vertical pixel per update and settles without
+oscillating; reversing slope direction changes velocity gradually. Carrier
+helicopter flight and the explicit crash fall remain on their existing paths.
+
+Carrier/heli machine-gun bullets now use playfield pen 1, set to pure OCS white
+($FFF) in Enhanced instead of light-grey pen 2 ($CCC). The shared white accents
+also become neutral white. HUD white is restored at its Copper split. Bullet
+size, count, motion and four-plane save/restore cost are unchanged.
+
+Terrain frame pacing (2026-09-30): falling pickups retire the union of old/new
+scanlines once for vertical movement. Empty encounter footprints are rejected
+before calling the general overlap helper. The vertical compositor reuses tile
+sources and destination addresses across scanlines; background restoration,
+ring mirrors and promoted carrier/ship overlays remain intact. Empty encounter
+retirement and absent carrier bombers return before their per-object work.
+The isolated terrain timing flag HAR_HEADLESS_TERRAIN_PERF skips the opening
+raid only in an autoplay build; normal gameplay and Tempo are unchanged.
+
+Measured with cycle-exact WinUAE A500, Kickstart 1.2, 512 KiB chip + 512 KiB
+slow RAM, skill 1, Tempo 100%, cruise 15, seed 12040, no weapon stress and
+HAR_HEADLESS_MAX_FRAMES=1800. Lightweight timing (stage tracing disabled):
+PAL fields 500..1500 recorded 23 missed display deadlines before, 9 after
+(977 vs 991 gameplay loops in 1000 fields). Startup/menu time is excluded.
+The deterministic route still has brief two-field frames; this is reduced
+stutter, not a claim of uninterrupted 50 Hz. Fine-grained attribution used
+extra slow RAM for diagnostic buffers only, not for the final comparison.
+Validation: powerup drift/pixel-reference tests and carrier overlay/submarine
+checks pass, as does the carrier blitter/reference-restoration contract.
+Normal Tempo and simulation rules are unchanged.
+
+Enhanced terrain art (2026-09-30): 18 prebaked 8x8 tiles add a grass/root rim,
+sparse earth marks and muted stones. Original slope/crater opacity is preserved
+exactly; Classic and collision tiles are untouched. Ground pen 5 still follows
+mission lighting, with restrained existing pens 8/11/4/10 for detail. No palette
+registers, sprite channels, BOBs, planes or animation are added. The 720-byte bank
+is appended after the city tiles by tools/enhanced_terrain.py through the normal
+packer. Terrain choices become ordinary cached render-column IDs and use the
+existing budgeted streaming/restoration paths; no random gameplay state is used.
+
+Validation: OCS indexed atlas valid; terrain-art-silhouettes-and-collision contract
+passes across real route columns. Cycle-exact A500/Kickstart 1.2, 512+512 KiB,
+Tempo 100%, skill 1, seed 12040: art ON and OFF both produced 991 loops and 9
+missed deadlines in PAL fields 500..1500, with identical stream counters. The
+16-row deferred diagnostic log (instead of its normal 128 rows) fits these tests
+in stock memory; both sides use that same capacity. Normal release has no timing
+log. This confirms no measured regression in that sequence, not universal 50 Hz.
+
+Enhanced ammunition depots (2026-09-30): rare A-marked 8x8 bunkers replace
+selected radar/launcher/gun artwork, with at least 160 columns between depots.
+Selection has its own deterministic seed and does not advance the CPC RNG.
+Classic renders and plays the original target. A weapon hit in Enhanced starts
+a 36-tick, 32x16 three-pose blast, reusing the existing bomber explosion art
+and its otherwise unused land-side retained backgrounds. No sprite channel or
+new audio buffer is allocated. The ordinary hit sound accompanies ignition.
+
+The chain examines at most two columns per tick, destroys at most one target
+per tick and four targets total within eight columns and 24 pixels vertically.
+Fuel depots are protected, explosions do not recursively start more blasts,
+and victims use normal difficulty/tempo scoring. Rendering retains the world
+position while scrolling and only changes the pose when required or after an
+overlapping background mutation. Byte-aligned encounter tiles use an unrolled
+save/mask/draw path; shifted tiles retain the general renderer.
+
+Validation: ammunition-depot-chain-and-restoration passes Classic exclusion,
+spacing, fuel protection, bounded kills, lifecycle reset and byte-for-byte
+comparison with the general renderer for aligned/shifted/ring-seam positions,
+all three poses and final background restoration.
+
+Measured forced detonations: cycle-exact A500/Kickstart 1.2, 512+512 KiB,
+Tempo 100%, skill 1, seed 12040, 1800 simulation ticks, eight-row deferred
+log. Three depot explosions destroyed seven neighbours. PAL fields 500..1500
+recorded 978 loops, 21 delayed frames and a maximum three-field frame (60 ms).
+The byte-aligned path reduced the maximum measured explosion draw from 219
+to 162 raster lines. This remains a visible transient cost versus the earlier
+terrain-only route (991 loops); uninterrupted 50 Hz is not yet achieved.
+A further restore optimization was discarded because its diagnostic build
+exceeded stock-memory availability. Release contains the tested aligned-draw
+path, without performance logging or forced detonations.
+
+Depot cost reduction (2026-10-01): the land explosion now draws only the
+central 16x16 core of each existing animation pose (four tiles instead of
+eight), and its chain can destroy at most two neighbours. The three poses
+and 36-tick lifetime remain. Carrier bombers retain their full-size artwork.
+The updated reference contract passes all three poses, shifted and aligned
+positions, ring-seam restoration, Classic exclusion and the two-victim cap.
+
+Measured on the same stock A500/Kickstart 1.2 route with four deferred log
+rows: three detonations, six chain victims, maximum draw cost 86 raster lines
+versus 162 for the previous full blast (47% reduction). Fields 500..1500
+recorded 981 loops and 18 delayed frames versus 978/21 previously; a three-
+field worst-case remains. The compact aligned path reserves 128 PAL lines
+before the next affected scanline, avoiding the unnecessarily narrow legacy
+start window. Normal EXE/ADF rebuilt without instrumentation.
+
+
+Further refinement (2026-10-01): the compact depot explosion now has three
+complete rounded 16x16 poses instead of cropping the middle of a wider burst.
+Fuel depots use it too, without ammunition chain damage. Rendering still uses
+four tiles and the same bounded lifetime. Paula plays the first third of the
+existing ground-impact sample and immediately reloads the full sample at
+volume 64. No second audio buffer or software mixer is needed.
+The lower grass fill now uses 75% solid green tiles and sparse dark-green
+clusters; the established grass-edge silhouettes are unchanged.
+
+Scrolling check (2026-10-01): a separate bounded HAR_SCROLL_PRESENT_TRACE avoids
+the large timing-log build. It samples CIA-A TOD at presentation and reads the
+actual patched Copper bitplane/fine-scroll operands from memory. The stock
+A500 KS1.2 route at Tempo 100, skill 1, seed 12040, Wingman off recorded 1,128
+terrain updates and nine extra PAL fields, worst interval two fields. A stock
+A1200 run of the same route recorded zero extra fields. The 128 sampled Copper
+transitions agree at every fine-scroll phase, including word boundaries. The
+analyser is tools/check-scroll-presentation.py. A diagnostic injection of two
+extra fields was detected as exactly two missed fields and a three-field gap.
+
+This does not prove tear-free output or host-display smoothness, and it is not
+a busy-combat frame-rate guarantee. Windows reported 59/60 Hz displays during
+this investigation. A 50 Hz PAL presentation on those displays is a plausible
+source of regular host judder; no speculative rewrite of scrolling maths was
+made. Compare against a 50 Hz display or real hardware before treating that as
+the confirmed cause. Coarse/fine interpretation was cross-checked against the
+Commodore Hardware Reference Manual horizontal-scrolling description:
+https://www.ikod.se/wp-content/uploads/2020/08/Amiga_Hardware_Reference_Manual_3rd_Edition.pdf
+
+Actual display-output cross-check: WinUAE native multiscreenshot captured 149
+consecutive rendered fields on the stock A500 route. Offline comparison of
+three terrain bands found a constant six-screen-pixel (= three game-pixel) step
+for all 148 transitions, crossing many 16-pixel word boundaries. The bottom
+terrain band matched pixel-for-pixel (zero residual); higher bands contained
+small moving-object differences. tools/check-scroll-frames.py reproduces the
+independent pixel check. This short sample does not cover every combat load.

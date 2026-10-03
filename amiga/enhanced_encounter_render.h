@@ -32,8 +32,8 @@ static __attribute__((noinline, optimize("Os"))) void drawHelicopterBullets(UBYT
             UBYTE* dest = bitmap + (ULONG)b->y * SCREEN_PLANES * GAME_WORLD_ROW_BYTES + fp->byteX[copy];
             for (UBYTE plane = 0; plane < 4; plane++, dest += GAME_WORLD_ROW_BYTES) {
                 fp->old[copy][plane] = *dest & fp->mask;
-                /* Stable light grey pen 2, independent of the scene palette. */
-                *dest = (*dest & ~fp->mask) | (plane == 1 ? fp->mask : 0);
+                /* Carrier and helicopter share the stable white playfield pen. */
+                *dest = (*dest & ~fp->mask) | ((GAME_COLOR_WHITE & (1 << plane)) ? fp->mask : 0);
             }
         }
     }
@@ -147,6 +147,8 @@ static __attribute__((noinline, optimize("Os"))) void retireEncounterTransientBo
             lastY = encounterFootprints[i][bufferIndex].y;
     if (helicopterFootprints[bufferIndex].valid && helicopterFootprints[bufferIndex].y > lastY)
         lastY = helicopterFootprints[bufferIndex].y;
+    /* No saved pixels exist: avoid the per-layer retirement calls on land. */
+    if (lastY < 0) return;
 #if !HAR_HEADLESS_CLASSIC_CONTRACT_TEST
     if (lastY >= 0) {
         UWORD target = SCREEN_DIWSTRT_Y + lastY + 8;
@@ -182,6 +184,26 @@ static UBYTE carrierCanBlit(const WeaponState* tile) {
         tile->x < SCREEN_WIDTH && tile->y >= 0 && tile->y + 16 <= GAME_WORLD_HEIGHT;
 }
 
+/* Damage is a pose change, not an animated overlay. Apply small scorch/
+ * burning-engine masks while packing; no extra resident aircraft bank. */
+static UBYTE carrierBomberScar(UBYTE pose,UBYTE column,UBYTE y) {
+    if(pose<8) return 0;
+    UBYTE damage=1+(pose-8)/2, mirror=pose&1;
+    if(mirror) column=3-column;
+    /* Sparse, irregular engine scars leave the original shading visible.
+     * Never replace a solid rectangle of fuselage with a flat black pen. */
+    static const UBYTE engineScar[7]={0x00,0x08,0x14,0x0c,0x10,0x08,0x00};
+    static const UBYTE heavyScar[7]={0x02,0x00,0x03,0x01,0x02,0x00,0x01};
+    UBYTE bits=0;
+    if(y>=5 && y<=11) {
+        if(column==1 || (damage>=2 && column==2)) bits=engineScar[y-5];
+        if(damage>=3 && column==1) bits|=heavyScar[y-5];
+    }
+    if(mirror) {bits=(bits>>4)|(bits<<4); bits=((bits&0xcc)>>2)|((bits&0x33)<<2); bits=((bits&0xaa)>>1)|((bits&0x55)<<1);}
+    return bits;
+}
+static UBYTE carrierBomberDamagePen(UBYTE pose) {(void)pose; return 4;}
+
 static void prepareCarrierBlitPose(UBYTE pose, const UBYTE* art, WORD x) {
     UBYTE clip=x < -GAME_WORLD_BUFFER_MARGIN_PIXELS ? -x-GAME_WORLD_BUFFER_MARGIN_PIXELS : 0;
     if (carrierBlitPose != pose || carrierBlitClip != clip) {
@@ -196,6 +218,10 @@ static void prepareCarrierBlitPose(UBYTE pose, const UBYTE* art, WORD x) {
                 const UBYTE* a=art+((y>>3)*4+half*2)*40+(y&7)*5;
                 mask[half]=((UWORD)a[4]<<8)|a[44];
                 image[half]=(((UWORD)a[p]<<8)|a[40+p])&mask[half];
+                if(pose>=8) {
+                    UWORD scar=(((UWORD)carrierBomberScar(pose,half*2,y)<<8)|carrierBomberScar(pose,half*2+1,y))&mask[half];
+                    image[half]=(image[half]&~scar)|((carrierBomberDamagePen(pose)&(1<<p)) ? scar : 0);
+                }
             }
             if(clip) {
                 ULONG bits=(((ULONG)image[0]<<16)|image[1])<<clip;
@@ -270,7 +296,7 @@ static __attribute__((noinline, optimize("Os"))) void retireEncounterTransientRe
     if(heli->valid && y<heli->y+8 && y+h>heli->y && (x>>3)<=((heli->worldX+15)>>3) && ((x+w-1)>>3)>=(heli->worldX>>3)) {
         retireEncounterTransientBobs(bitmap,index); return;
     }
-    for(UBYTE i=0;i<ENCOUNTER_TILE_LAYERS;i++) if((i<6 || i>=14) && encounterRegionHits(&encounterFootprints[i][index],x,y,w,h)) {
+    for(UBYTE i=0;i<ENCOUNTER_TILE_LAYERS;i++) if((i<6 || i>=14) && encounterFootprints[i][index].valid && encounterRegionHits(&encounterFootprints[i][index],x,y,w,h)) {
         retireEncounterTransientBobs(bitmap,index); return;
     }
 }
@@ -284,10 +310,25 @@ static __attribute__((noinline, optimize("Os"))) void retireEncounterRegion(UBYT
             retireEncounterBobs(bitmap,index); return;
         }
     }
-    for(UBYTE i=6;i<14;i++) if(encounterRegionHits(&encounterFootprints[i][index],x,y,w,h)) {
+    for(UBYTE i=6;i<14;i++) if(encounterFootprints[i][index].valid && encounterRegionHits(&encounterFootprints[i][index],x,y,w,h)) {
         retireEncounterBobs(bitmap,index); return;
     }
     retireEncounterTransientRegion(bitmap,index,x,y,w,h);
+}
+
+/* Byte-aligned terrain blasts need no shifts or second-byte branches. */
+static __attribute__((noinline, optimize("O2"))) void drawAlignedEncounterRows(
+    UBYTE* dest, UBYTE* saved, const UBYTE* source) {
+    for (UBYTE y=0;y<8;y++) {
+        UBYTE keep=~source[4];
+#define AMMO_PLANE(p) do { \
+    saved[(p)*2]=dest[(p)*GAME_WORLD_ROW_BYTES]; \
+    dest[(p)*GAME_WORLD_ROW_BYTES]=(dest[(p)*GAME_WORLD_ROW_BYTES]&keep)|(source[p]&~keep); \
+} while(0)
+        AMMO_PLANE(0); AMMO_PLANE(1); AMMO_PLANE(2); AMMO_PLANE(3);
+#undef AMMO_PLANE
+        dest+=SCREEN_PLANES*GAME_WORLD_ROW_BYTES; saved+=8; source+=5;
+    }
 }
 
 static __attribute__((noinline, optimize("Os"))) void drawEncounterTile(UBYTE* bitmap, UBYTE bufferIndex, const WeaponState* pose,
@@ -309,26 +350,43 @@ static __attribute__((noinline, optimize("Os"))) void drawEncounterTile(UBYTE* b
     for (UBYTE i = 0; i < saved->placementCount; i++) {
         UWORD pixelX = x + (i ? page : 0);
         saved->byteX[i] = pixelX >> 3;
-        saved->byteCount[i] = drawEnhancedWeaponRows(bitmap,
+        if (!(pixelX & 7)) {
+            saved->byteCount[i] = 1;
+            drawAlignedEncounterRows(bitmap+(ULONG)pose->y*SCREEN_PLANES*GAME_WORLD_ROW_BYTES+(pixelX>>3),
+                (UBYTE*)&saved->background[i],source);
+        } else saved->byteCount[i] = drawEnhancedWeaponRows(bitmap,
             (UBYTE*)&saved->background[i], pixelX, pose->y, source, 8, 8);
     }
 }
 
 static __attribute__((noinline, optimize("Os"))) void updateCarrierBomberBob(UBYTE* bitmap, UBYTE index, const GameState* game) {
     if(index>=GAME_WORLD_BUFFER_COUNT) return;
-    UBYTE live=game->gameMode==GAME_MODE_ENHANCED && game->defence.phase &&
-        (game->defence.bomberBlastTicks || (game->defence.jetType==2 && game->enemyPlane.active));
+    UBYTE depot = game->gameMode==GAME_MODE_ENHANCED && !game->defence.phase && game->ammoBlast.active;
+    UBYTE live=depot || (game->gameMode==GAME_MODE_ENHANCED && game->defence.phase &&
+        (game->defence.bomberBlastTicks || (game->defence.jetType==2 && game->enemyPlane.active)));
+    /* Terrain frames normally have neither a bomber nor a retained background.
+     * Do not copy its pose or resolve explosion art in that common case. */
+    if (!live && !bomberValid[index]) return;
     WeaponState tile=game->enemyPlane;
     UBYTE pose=tile.direction ? 1 : 0;
     if(game->defence.bomberBlastTicks) {
         tile.x=game->defence.bomberBlastX; tile.worldX=tile.x; tile.y=game->defence.bomberBlastY;
         pose=2+(24-game->defence.bomberBlastTicks)/8;
     }
+    if (depot) {
+        tile = game->ammoBlast;
+        tile.x = tile.worldX - game->scrollX;
+        pose = 5 + (36 - tile.timer) / 12;
+    }
+    if (!depot && live && !game->defence.bomberBlastTicks && game->defence.jetHits)
+        pose=8+(game->defence.jetHits-1)*2+(tile.direction&1);
     /* Retain no empty footprint while the bomber turns offscreen. */
     live = live && tile.x>-32 && tile.x<SCREEN_WIDTH;
     if(live && bomberValid[index] && bomberWorldX[index]==tile.worldX && bomberY[index]==tile.y && bomberPose[index]==pose) return;
     if(!live && !bomberValid[index]) return;
-    const UBYTE* art=pose<2 ? carrierBomberTiles+pose*320 : carrierBomberBlast+(pose-2)*320;
+    const UBYTE* art=depot ? ammunitionDepotBlast+(pose-5)*160 :
+        pose>=8 ? carrierBomberTiles+(pose&1)*320 :
+        pose<2 ? carrierBomberTiles+pose*320 : carrierBomberBlast+(pose-2)*320;
     /* Pack a changed pose before the beam-synchronised erase/draw window. */
     if(live && carrierCanBlit(&tile)) prepareCarrierBlitPose(pose,art,tile.x);
     /* Update high-flying bomber early, before waiting for unrelated low
@@ -370,6 +428,11 @@ static __attribute__((noinline, optimize("Os"))) void updateCarrierBomberBob(UBY
      * beam next reaches the FIRST affected row.
      * Avoid an unnecessary extra field merely because end+48 has passed. */
     UWORD latest=end+48;
+    /* The compact, aligned depot path measures <=86 PAL lines including
+     * restoration. Reserve 128 before the next first affected row rather
+     * than waiting a whole field after the old 48-line start window. */
+    if ((depot && !(tile.worldX&7)) || (!live && bomberValid[index] && bomberPose[index]>=5 && bomberPose[index]<8))
+        latest=312+SCREEN_DIWSTRT_Y+top-128;
     if(carrierBlitMemory && (!live || carrierCanBlit(&tile)) &&
         (!bomberValid[index] || bomberBlitValid[index]))
         latest=312+SCREEN_DIWSTRT_Y+top-96;
@@ -393,9 +456,24 @@ static __attribute__((noinline, optimize("Os"))) void updateCarrierBomberBob(UBY
         carrierRenderStats[3]++;
 #endif
     WORD x=tile.x,y=tile.y; LONG world=tile.worldX;
-    for(UBYTE n=0;n<8;n++) {
-        tile.x=x+(n&3)*8; tile.worldX=world+(n&3)*8; tile.y=y+(n>>2)*8;
-        drawEncounterTile(bitmap,index,&tile,6+n,0,art+n*40);
+    /* A complete 16x16 depot burst keeps the four-tile rendering budget. */
+    for(UBYTE n=0;n<(depot ? 4 : 8);n++) {
+        UBYTE column=depot ? (n&1) : (n&3);
+        UBYTE row=depot ? (n>>1) : (n>>2);
+        UBYTE source=n;
+        tile.x=x+column*8; tile.worldX=world+column*8; tile.y=y+row*8;
+        const UBYTE* pixels=art+source*40;
+        UBYTE damaged[40];
+        if(!depot && pose>=8) {
+            memcpy(damaged,pixels,40);
+            for(UBYTE y=0;y<8;y++) {
+                UBYTE scar=carrierBomberScar(pose,column,row*8+y)&damaged[y*5+4];
+                for(UBYTE p=0;p<4;p++) damaged[y*5+p]=(damaged[y*5+p]&~scar)|
+                    ((carrierBomberDamagePen(pose)&(1<<p)) ? scar : 0);
+            }
+            pixels=damaged;
+        }
+        drawEncounterTile(bitmap,index,&tile,6+n,0,pixels);
     }
     }
 #if HAR_HEADLESS_CLASSIC_CONTRACT_TEST

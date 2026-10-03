@@ -40,6 +40,8 @@ static UBYTE referenceCarrierGunneryMatches(void) {
     g.powerup.active = 0; g.helicopter.active = 0;
     g.defence.landed = 1; g.playerX = 80; g.playerY = TAKEOFF_PLAYER_DECK_Y; g.defence.wave = 2;
     memset(&p2, 0, sizeof(p2)); updateCarrierDefence(&g, &in, &prev, &p2, buffers);
+    if(g.defence.hull!=40 || g.defence.cargo!=20) return 209;
+    for(UBYTE tick=1;tick<CARRIER_REPAIR_TICKS;tick++) updateCarrierDefence(&g,&in,&prev,&p2,buffers);
     if (g.defence.hull != 60 || g.defence.cargo || g.defence.wave != 2 || g.defence.phase != DEFENCE_WAVE) return 109;
     g.defence.landed = 0; g.playerX = 100; g.playerY = 40; g.armour = 100;
     memset(b, 0, sizeof(*b)); b->active = 1; b->worldX = 104; b->y = 43;
@@ -53,7 +55,9 @@ static UBYTE referenceCarrierGunneryMatches(void) {
     if (b->active || g.enemyMissile.active) return 112;
     g.defence.aimX = 160; g.defence.aimY = 48; g.respawnSafeTimer = 0;
     g.defence.missileHeight = 8;
+    g.friendlyFire = 1;
     carrierLaunchMissile(&g); WeaponState* m = &g.wingman.rocket;
+    if(g.defence.missileCooldown!=45) return 208;
     g.playerX = m->x + (m->dx >> 8); g.playerY = m->y + (m->dy >> 8);
     carrierAdvanceMissile(&g);
     if (m->active || g.armour != 67) return 113;

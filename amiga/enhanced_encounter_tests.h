@@ -221,7 +221,28 @@ static UBYTE referenceHardwareFeedbackMatch(void) {
     return 0;
 }
 
+static UBYTE referenceHelicopterHeightMatches(void) {
+    WeaponState h={0}; h.y=100;
+    for(UWORD t=0;t<200;t++) {
+        WORD old=h.y; easeHelicopterHeight(&h,64);
+        if(h.y>old || old-h.y>1 || h.y<64) return 71;
+    }
+    if(h.y!=64 || h.dy || h.targetY) return 72;
+    for(UBYTE t=0;t<20;t++) easeHelicopterHeight(&h,30);
+    WORD oldVelocity=h.dy;
+    easeHelicopterHeight(&h,100);
+    if(h.dy<=oldVelocity || h.dy>=0) return 73;
+    for(UWORD t=0;t<220;t++) {
+        WORD old=h.y; easeHelicopterHeight(&h,100);
+        if(h.y-old>1 || old-h.y>1 || h.y>100) return 74;
+    }
+    return h.y==100 && !h.dy && !h.targetY ? 0 : 75;
+}
+
 static UBYTE referenceEnhancedEncountersMatch(void) {
+    UBYTE smoothResult=referenceHelicopterHeightMatches();
+    if(smoothResult) return smoothResult;
+
     static GameState game;
     memset(&game, 0xa5, sizeof(game));
     initGameState(&game, 12040, 12040, 2);
