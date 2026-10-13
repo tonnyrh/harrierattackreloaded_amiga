@@ -53,7 +53,7 @@ static DEFENCE_SMALL void carrierServiceAircraft(GameState* g) {
     }
     if (g->armour < 100) g->armour = g->armour > 98 ? 100 : g->armour + 2;
     g->flakDamageCount = 0; g->missileDamageThirds = (100 - g->armour) * 3;
-    UBYTE bombs, rockets; ammoForSkill(g->levelDifficulty, &bombs, &rockets);
+    UBYTE bombs, rockets; ammoForGame(g, &bombs, &rockets);
     if (g->rockets < rockets) g->rockets++;
     if (g->bombs < bombs) g->bombs++;
 }
@@ -76,6 +76,9 @@ static DEFENCE_SMALL void carrierDropBomb(GameState* g, WORD x, WORD y, UBYTE he
 static DEFENCE_SMALL void carrierDefenceImpact(GameState* g, WORD x, UBYTE damage) {
     CarrierDefenceState* d = &g->defence;
     if (d->phase == DEFENCE_SINKING || !d->hull) return;
+    /* The platform cannot be repaired: give it a little more endurance.
+     * Round up so even a small hit still counts; carrier damage is unchanged. */
+    if (oil.active) damage = ((UWORD)damage * 4 + 4) / 5;
     if (damage) d->raidDamaged = 1;
     d->hull = d->hull > damage ? d->hull - damage : 0;
     startWorldImpact(g, x, 108);
@@ -104,10 +107,13 @@ static DEFENCE_SMALL UBYTE carrierGunAimPose(WORD dx, WORD rise, UBYTE previous)
 
 static DEFENCE_SMALL void carrierSyncGuns(GameState* g, UBYTE** buffers) {
     UBYTE height = g->defence.phase == DEFENCE_SINKING ? 0 : g->defence.missileHeight;
-    UBYTE pose = carrierGunAimPose(g->defence.aimX-116, 96-g->defence.aimY, carrierMissilePose);
+    UBYTE pose = carrierGunAimPose(g->defence.aimX-119, 93-g->defence.aimY, carrierMissilePose);
     UBYTE changed = height != carrierMissileHeight || (height && pose != carrierMissilePose);
     carrierMissileHeight = height; carrierMissilePose = pose;
-    if (changed && buffers[0]) bobCompositorErase(buffers[0], 14, 12, 1);
+    if (changed && buffers[0]) {
+        bobCompositorErase(buffers[0], 14, 11, 2);
+        bobCompositorErase(buffers[0], 14, 12, 2);
+    }
     for (UBYTE i = 0; i < 2; i++) {
         UBYTE height = g->defence.phase == DEFENCE_SINKING ? 0 : g->defence.gunHeight[i];
         UBYTE pose = carrierGunAimPose(g->defence.aimX - (i ? 148 : 76),
@@ -195,6 +201,7 @@ static DEFENCE_SMALL void carrierDefenceKillHeli(GameState* g) {
 /* Test the actual ship silhouette, so shots above the deck or beside the
  * island remain clear. Transparent source pixels are not solid hull. */
 static DEFENCE_SMALL UBYTE carrierHullOverlap(WORD x, WORD y, UBYTE width, UBYTE height) {
+    if(oil.scene) return oilHullOverlap(x,y,width,height);
     WORD left = x < 64 ? 64 : x, right = x + width > 160 ? 160 : x + width;
     WORD top = y < 96 ? 96 : y, bottom = y + height > 120 ? 120 : y + height;
     for (WORD py = top; py < bottom; py++) for (WORD px = left; px < right; px++) {
@@ -285,7 +292,7 @@ static DEFENCE_SMALL void carrierDefenceAircraft(GameState* g) {
         }
     }
     if (g->helicopter.active) {
-        WeaponState* h = &g->helicopter; d->heliAge++; g->helicopterAge++;
+        WeaponState* h = &g->helicopter; WORD previousX=h->x; d->heliAge++; g->helicopterAge++;
         if (h->type == 2) {
             if (!(d->heliAge & 7) && h->dy < 4) h->dy++;
             h->y += h->dy;
@@ -300,6 +307,8 @@ static DEFENCE_SMALL void carrierDefenceAircraft(GameState* g) {
             if (!(d->heliAge % (g->helicopterHits ? 14 : 10)))
                 playSfxAtTuned(SFX_HELICOPTER, h->x, 20, g->helicopterHits ? 560 : 443);
         }
+        if(h->type!=2 && h->x!=previousX) h->direction=h->x>previousX;
+        updateHelicopterHeading(g);
         h->worldX = h->x;
     }
     if (d->phase != DEFENCE_WAVE || d->spawned >= d->quota) return;
@@ -316,6 +325,7 @@ static DEFENCE_SMALL void carrierDefenceAircraft(GameState* g) {
         g->helicopter.x = g->helicopter.worldX = fromLeft ? 0 : 300;
         g->helicopter.y = 24 + (d->wave & 1) * 12;
         g->helicopterHits = d->heliBulletHits = 0; g->helicopterAge = d->heliAge = 0;
+        updateHelicopterHeading(g);
     } else {
         if (g->enemyPlane.active) return;
         memset(&g->enemyPlane, 0, sizeof(g->enemyPlane));
@@ -328,6 +338,7 @@ static DEFENCE_SMALL void carrierDefenceAircraft(GameState* g) {
         d->jetAge = d->jetTurnTicks = 0; d->jetBulletHits = d->jetHits = 0;
     }
     d->spawned++; d->spawnDelay = 130 - g->levelDifficulty * 10;
+    if (oil.active) d->spawnDelay += d->spawnDelay / 4;
 }
 
 static DEFENCE_SMALL void carrierDefenceBombs(GameState* g) {
@@ -343,11 +354,11 @@ static DEFENCE_SMALL void carrierDefenceBombs(GameState* g) {
             applyPlayerMissileDamage(g, 1); continue;
         }
         if (g->wingman.active && rectsOverlap(b->x, b->y, 6, 6, wingmanScreenX(g), g->wingman.screenY, 16, 8)) {
-            b->active = 0; g->wingman.active = 0; g->wingman.destroyed = 1; continue;
+            b->active = 0; if(oil.active) oilDamageP2(g,38); else {g->wingman.active = 0; g->wingman.destroyed = 1;} continue;
         }
         if (carrierWeaponHitsGun(g, b->x, b->y, 6)) {
             b->active = 0; carrierDefenceImpact(g, b->x, b->type ? CARRIER_HEAVY_BOMB_HULL_DAMAGE : CARRIER_BOMB_HULL_DAMAGE);
-        } else if (b->y + 6 >= CARRIER_DECK_PIXEL_Y && b->x >= 64 && b->x < 160) {
+        } else if ((oil.active ? oilHullOverlap(b->x,b->y,6,6) : b->y + 6 >= CARRIER_DECK_PIXEL_Y && b->x >= 64 && b->x < 160)) {
             b->active = 0; carrierDefenceImpact(g, b->x, b->type ? CARRIER_HEAVY_BOMB_HULL_DAMAGE : CARRIER_BOMB_HULL_DAMAGE);
         } else if (b->y >= SEA_SURFACE_Y) { b->active = 0; startWaterSplash(g, b->x); }
     }
@@ -358,7 +369,7 @@ static DEFENCE_SMALL void carrierDefenceBombs(GameState* g) {
         else if (!g->crashTimer && !g->respawnSafeTimer && rectsOverlap(m->x, m->y, 8, 8, g->playerX, g->playerY, 16, 8)) {
             m->active = 0; applyPlayerMissileDamage(g, 0);
         } else if (g->wingman.active && rectsOverlap(m->x, m->y, 8, 8, wingmanScreenX(g), g->wingman.screenY, 16, 8)) {
-            m->active = 0; g->wingman.active = 0; g->wingman.destroyed = 1;
+            m->active = 0; if(oil.active) oilDamageP2(g,26); else {g->wingman.active = 0; g->wingman.destroyed = 1;}
         }
     }
 }
@@ -398,6 +409,17 @@ static DEFENCE_SMALL void carrierVtolStep(GameState* g, const InputState* in, WO
     *nextX=x; *nextY=y;
 }
 
+#define CARRIER_SAFE_LANDING_VY 256
+static UBYTE carrierHardLanding(GameState* g,WORD* y) {
+ CarrierDefenceState* d=&g->defence;
+ if(d->vtolVY<=CARRIER_SAFE_LANDING_VY)return 0;
+ d->landed=0;d->vtolVY=-320;d->vtolAY=d->vtolSubY=0;*y-=3;
+ UBYTE grace=g->respawnSafeTimer;g->respawnSafeTimer=0;
+ applyPlayerDamageThirds(g,90);g->respawnSafeTimer=grace;
+ playSfxAt(SFX_GROUND_BOUNCE,g->playerX);
+ return 1;
+}
+
 static DEFENCE_SMALL void carrierMoveVtol(GameState* g, const InputState* in) {
     CarrierDefenceState* d=&g->defence;
     WORD x,y; carrierVtolStep(g,in,&x,&y);
@@ -410,7 +432,8 @@ static DEFENCE_SMALL void carrierMoveVtol(GameState* g, const InputState* in) {
         return;
     }
     if (y >= TAKEOFF_PLAYER_DECK_Y && g->playerY <= TAKEOFF_PLAYER_DECK_Y && carrierDefenceOnDeck(x, TAKEOFF_PLAYER_DECK_Y)) {
-        y = TAKEOFF_PLAYER_DECK_Y; g->defence.landed = 1; carrierResetVtol(d);
+        y = TAKEOFF_PLAYER_DECK_Y;
+        if(!carrierHardLanding(g,&y)) {g->defence.landed = 1; carrierResetVtol(d);}
     }
     g->playerX = x; g->playerY = y;
 }
@@ -476,7 +499,8 @@ static DEFENCE_SMALL void updateEnhancedLandingVtol(GameState* g, const InputSta
         WORD oldY=g->playerY;
         carrierVtolStep(g,in,&g->playerX,&g->playerY);
         if (g->playerY>=oldY && playerOnNativeCarrierDeckPixels(g)) {
-            g->playerY=playerCarrierDeckY(g); d->landed=1; carrierResetVtol(d);
+            g->playerY=playerCarrierDeckY(g);
+            if(!carrierHardLanding(g,&g->playerY)) {d->landed=1;carrierResetVtol(d);}
         }
     }
     carrierUpdateVtolHeading(d,in);
@@ -523,12 +547,23 @@ static DEFENCE_SMALL void carrierUpdateDeckLift(GameState* g, UBYTE** buffers) {
     carrierParkedWingmanVisible=ready && (raising || carrierWingmanLiftDepth<8);
     if (buffers[0] && (oldVisible != carrierParkedWingmanVisible ||
         (carrierParkedWingmanVisible && oldDepth != carrierWingmanLiftDepth)))
-        for (LONG column = 17; column <= 19; column++) dirtyRedrawWorldColumn(buffers, column);
+        /* The lift is clipped by the deck at y=112. Only row 13 (104..111)
+         * changes; repainting three complete sky/sea columns every sixth
+         * tick stalled the entire VTOL scene while this animation ran. */
+        bobCompositorErase(buffers[0], 17, 13, 3);
+}
+
+static UBYTE carrierReadyForDeparture(const GameState* g) {
+    const CarrierDefenceState* d=&g->defence;
+    return !d->gunHeight[0] && !d->gunHeight[1] && !d->missileHeight &&
+        (g->wingmanControl==WINGMAN_CONTROL_OFF || g->wingman.destroyed || !carrierWingmanLiftDepth);
 }
 
 static DEFENCE_SMALL void updateCarrierDefence(GameState* g, const InputState* in,
     const InputState* previous, const Player2InputState* in2, UBYTE** buffers) {
-    CarrierDefenceState* d = &g->defence; d->clock++;
+    CarrierDefenceState* d = &g->defence;
+    UBYTE departRequested=d->phase==DEFENCE_DEPART && d->landed && in->up;
+    d->clock++;
     if (d->bomberBlastTicks) d->bomberBlastTicks--;
     if (d->perfectTicks) d->perfectTicks--;
     g->wingman.active = 0;
@@ -581,7 +616,7 @@ static DEFENCE_SMALL void updateCarrierDefence(GameState* g, const InputState* i
         }
     } else if (g->aircraftFailureState) {
         if (in->eject) startPlayerEject(g);
-        else {
+        if (!g->ejectState) {
             updateAircraftFailure(g, in); g->scrollX = 0;
             if (!g->crashTimer && g->playerY >= 105) {
                 d->landed = 0; startPlayerCrash(g, g->playerX, g->playerY);
@@ -599,7 +634,7 @@ static DEFENCE_SMALL void updateCarrierDefence(GameState* g, const InputState* i
 
             g->playerY = TAKEOFF_PLAYER_DECK_Y;
             if (!(d->clock & 7)) carrierServiceAircraft(g);
-            if (in->up) { d->landed = 0; g->playerY -= 3; startEngineSound(1); }
+            if (in->up && (d->phase!=DEFENCE_DEPART || carrierReadyForDeparture(g))) { d->landed = 0; g->playerY -= 3; startEngineSound(1); }
         } else {
             InputState movement = *in;
             carrierMoveVtol(g, &movement);
@@ -648,20 +683,16 @@ static DEFENCE_SMALL void updateCarrierDefence(GameState* g, const InputState* i
     updateEncounterSmoke(g);
     if (!g->helicopterSmoke.active && g->helicopter.active && g->helicopter.type != 2 &&
         g->helicopterHits == 1 && !(d->clock & 63)) {
-        memset(&g->helicopterSmoke, 0, sizeof(g->helicopterSmoke));
-        g->helicopterSmoke.active = 1;
-        g->helicopterSmoke.x = g->helicopterSmoke.worldX = g->helicopter.x + 6;
-        g->helicopterSmoke.y = g->helicopter.y;
+        startEncounterSmoke(&g->helicopterSmoke, g->helicopter.x + 6,
+            g->helicopter.x + 6, g->helicopter.y);
     }
     if (!g->helicopterSmoke.active && g->enemyPlane.active && d->jetType==2 &&
         d->jetHits>=2 && !(d->clock&63)) {
-        memset(&g->helicopterSmoke,0,sizeof(g->helicopterSmoke));
-        g->helicopterSmoke.active=1; g->helicopterSmoke.x=g->helicopterSmoke.worldX=g->enemyPlane.x+12;
-        g->helicopterSmoke.y=g->enemyPlane.y+6;
+        startEncounterSmoke(&g->helicopterSmoke, g->enemyPlane.x + 12,
+            g->enemyPlane.x + 12, g->enemyPlane.y + 6);
     }
     if (!g->helicopterSmoke.active && d->hull < 50 && !(d->clock % 48)) {
-        memset(&g->helicopterSmoke, 0, sizeof(g->helicopterSmoke));
-        g->helicopterSmoke.active = 1; g->helicopterSmoke.x = 116; g->helicopterSmoke.worldX = 116; g->helicopterSmoke.y = 98;
+        startEncounterSmoke(&g->helicopterSmoke, 116, 116, 98);
     }
     carrierDefenceAircraft(g);
     serviceBomberDrone(g);
@@ -684,13 +715,13 @@ static DEFENCE_SMALL void updateCarrierDefence(GameState* g, const InputState* i
             }
             contact = 1;
         }
-        if (contact) { startWorldImpact(g, g->playerX, g->playerY); applyPlayerMissileDamage(g, 1); }
+        if (contact) { startWorldImpact(g, g->playerX, g->playerY); applyPlayerAircraftCollision(g); }
     }
     if (d->phase == DEFENCE_SINKING || g->gameOver) return;
     if (d->phase == DEFENCE_ALARM || d->phase == DEFENCE_LULL) {
         carrierTryAlarm(d);
         if (d->phaseTicks) d->phaseTicks--;
-        else { d->phase = DEFENCE_WAVE; d->wave++; d->spawned = 0; d->quota = 3 + (g->levelDifficulty - 1) / 2; d->spawnDelay = 15; }
+        else { d->phase = DEFENCE_WAVE; d->wave++; d->spawned = 0; d->quota = 3 + (g->levelDifficulty - 1) / 2 + (g->missionNumber>6 ? 2 : (g->missionNumber-1)/3); d->spawnDelay = 15; }
     } else if (d->phase == DEFENCE_WAVE && d->spawned >= d->quota && !g->enemyPlane.active && !g->helicopter.active && !g->enemyMissile.active && !carrierBombsActive(g) && !d->subState && !d->ballisticPhase) {
         d->phase = d->wave < d->waves ? DEFENCE_LULL : DEFENCE_SECURE; d->phaseTicks = 150; d->alarmPlayed = 0;
         if(d->phase==DEFENCE_SECURE && d->hull==100) {
@@ -700,20 +731,17 @@ static DEFENCE_SMALL void updateCarrierDefence(GameState* g, const InputState* i
     } else if (d->phase == DEFENCE_SECURE && d->landed) { d->phase = DEFENCE_DEPART; d->phaseTicks = 0; }
     else if (d->phase == DEFENCE_DEPART) {
         if (d->phaseTicks) d->phaseTicks--;
-        else if (in->up && (!carrierParkedWingmanVisible || !carrierWingmanLiftDepth || g->wingman.destroyed)) {
+        else if (departRequested && carrierReadyForDeparture(g)) {
+            /* Keep the live scene and aircraft position. Guns have already
+             * retracted pixel by pixel while the deck elevator was moving. */
             d->phase = 0; d->landed = 0; d->perfectTicks=0; carrierDefenceGunMask = 0;
-            d->gunHeight[0] = d->gunHeight[1] = 0;
-            carrierDefenceGunHeight[0] = carrierDefenceGunHeight[1] = 0;
-            d->missileHeight = carrierMissileHeight = 0;
-            if (buffers[0]) { dirtyRedrawWorldColumn(buffers, 9); dirtyRedrawWorldColumn(buffers, 18); }
             g->rocketShot.active = g->wingman.rocket.active = g->bombShot.active = 0;
             memset(g->helicopterBullets, 0, sizeof(g->helicopterBullets));
-            g->playerX = TAKEOFF_PLAYER_DECK_X; g->playerY = TAKEOFF_PLAYER_DECK_Y - 2;
+            if(g->playerY>TAKEOFF_PLAYER_DECK_Y-2) g->playerY=TAKEOFF_PLAYER_DECK_Y-2;
             g->wingman.active = 0; g->wingman.mode = WINGMAN_ON_DECK;
             g->wingman.interceptScreenX = WINGMAN_TAKEOFF_DECK_X;
             g->wingman.screenY = WINGMAN_TAKEOFF_DECK_Y;
             g->takeoffState = TAKEOFF_STATE_LIFTING; g->lowSpeedLanding = 0; g->speedLevel = GAME_SPEED_LEVEL_DEFAULT;
-            hudRenderState[0].valid = 0;
         }
     }
 }

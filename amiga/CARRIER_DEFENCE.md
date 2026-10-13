@@ -61,7 +61,7 @@ An intact Harrier crashing into the sea is also fatal.
 ## Presentation and budget
 
 Original instruments remain visible. Under LV, CARRIER shows HULL and REPAIR
-count. AIR RAID SCRAMBLE accompanies the 4.2-second klaxon; LAND NOW persists
+count. AIR RAID SCRAMBLE accompanies the 5-second procedural Paula siren; LAND NOW persists
 until landing. The engine stops on deck. Gulls may appear at UP: DEPART.
 
 The ship reuses two bullet slots, Wingman's rocket slot and its sprite channel
@@ -204,7 +204,8 @@ Eight logical recoil ticks lift 16 pixels after surface separation and override
 vertical input; continuing contact during those ticks cannot apply damage again.
 Existing missile/flak damage still counts. Exhausted armour triggers normal
 failure/eject handling. Classic, sea and carrier collision rules are unchanged.
-The new AudioGen ground_boing sample is precomputed signed 8-bit Paula data.
+The unused boing recording has been removed; the ground-impact replacement
+is described below.
 
 Ground impact feedback now uses a short metallic thud/rattle sample instead of
 the boing. During recoil the Harrier sprite alternates horizontally by two,
@@ -518,3 +519,46 @@ The WinUAE progression contract checks mission 1 through 10 at all five Skill
 settings, both modes, real alarm/wave and aircraft spawn updates, and the early
 submarine exclusion followed by the complete submarine/interception lifecycle.
 The obsolete DOS startup sprint banner has been removed.
+
+### Post-raid departure continuity
+
+Departure retains Harrier's actual landing X instead of snapping to the original
+start position. UP waits for both AA guns and the missile launcher to retract
+and for an available Wingman to finish rising, then begins the ordinary climb.
+No forced full HUD invalidation or instant gun deletion occurs at that handoff.
+The mission, score, hull and repair cargo are retained.
+
+A Wingman lost over terrain remains lost: only the red pickup restores it.
+An intact CPU/P2 Wingman rises from the hangar; CPU launches automatically on
+Harrier's climb, while P2 retains its normal manual launch control. The focused
+WinUAE departure contract covers CPU, P2 and Off, each with intact/lost Wingman,
+including early UP during turret retraction, elevator completion and a landing
+away from the original start X.
+
+### Title loading and siren memory (October 2026)
+
+The bootable ADF runs `harrier_loader.exe` and `harrier_amiga.exe` sequentially.
+The title program reads the 320x200 five-plane picture from disk into an
+Intuition screen, shows it for three seconds, closes the screen and libraries,
+prints LOADING, and exits. AmigaDOS then loads the game; no title bitmap or
+launcher process remains resident. The game displays LOADING during runtime
+initialisation. Direct EXE/debug launches skip the separate title stage.
+
+The 50 KiB menu/debug screen buffer is still required separately and remains
+allocated; this change does not reclaim that buffer. The carrier siren now uses
+a 32-byte signed waveform loop with frame-rate pitch/envelope changes on one
+Paula channel instead of the 8400-byte recording (8368 Chip bytes saved before
+allocation effects). No live PCM synthesis or software mixing is used.
+
+`tools/patch-adf-startup.py` installs the two sequential commands into the
+existing OFS startup block and recalculates both checksums. It rejects unexpected
+formats/scripts instead of changing arbitrary disk contents.
+
+Validation: cold ADF boot at normal floppy speed reached the menu on cycle-exact
+A500, 512 KiB Chip + 512 KiB Slow, Kickstart 1.3. The final title-palette fix was
+also cold-booted on Kickstart 1.2 through title, LOADING and the menu/field guide.
+Captures are in `.tmp/boot-oct5/` and `.tmp/boot-oct5-final/`. Siren waveform zero
+DC and all 250 period/volume steps were checked; its subjective sound has not
+been auditioned on real hardware. OFS startup patch idempotence and rejection of
+unsupported disk format were checked. No automatic gameplay flags are enabled
+in the delivered ADF.

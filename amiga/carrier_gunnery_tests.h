@@ -60,7 +60,7 @@ static UBYTE referenceCarrierGunneryMatches(void) {
     if(g.defence.missileCooldown!=45) return 208;
     g.playerX = m->x + (m->dx >> 8); g.playerY = m->y + (m->dy >> 8);
     carrierAdvanceMissile(&g);
-    if (m->active || g.armour != 67) return 113;
+    if (m->active || g.armour != 75) return 113;
     g.playerX = 260; g.playerY = 20;
     carrierLaunchMissile(&g); WORD dx = m->dx, dy = m->dy;
     for (UBYTE t = 0; t < 20; t++) carrierAdvanceMissile(&g);

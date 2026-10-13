@@ -22,6 +22,35 @@ missing. Exact-data PC previews are generated under
 `.tmp/amiga-sfx-preview`. For ADPCM assets, the preview is reconstructed after
 compression and therefore represents the bytes produced by the Amiga decoder.
 
+### Memory profile (October 2026)
+
+`sfx/profile.json` selects the recorded effects' sample rate: currently **8820
+Hz**, previously 11025 Hz. The converter filters before resampling and generates
+`sfx/sample_config.h` with the matching Paula period (402) and ambience decode
+capacity (35280 bytes). Change the profile back to 11025 and rebuild to restore
+the old rate. Original WAVs, generated motor/alarm waveforms and MOD music are
+unchanged. Ground scrape (`sfx/ground_impact_source.wav`, maximum 450 ms) now
+uses this same pipeline.
+
+The ground-target bank has three variants. The fourth master, `ground_hit_3.wav`,
+is retained in Git but no longer converted or embedded. The two flak-gun sounds
+and separate flak-hit cue remain.
+
+Fixed gameplay PCM falls from 107784 to 80160 bytes: **27624 Chip bytes saved**.
+The two packed ambience assets save another 8820 stored bytes, and their optional
+decode buffer shrinks by 8820 Chip bytes. The latter is not an additional saving
+on machines where that buffer was already omitted. All 18 WAV masters were
+hash-verified unchanged; playback-duration differences are under 1.3 ms.
+Reduced high-frequency bandwidth is the intentional quality tradeoff.
+
+Validation: the native audio contract passes all three depot half/full pairs,
+Paula period, reload-to-silence and bomber loop checks. Both ADF variants boot
+to the menu, and the standalone oil-platform disk enters gameplay, on a muted
+A500 KS1.3 512K Chip + 512K Slow test. In the full build
+with DH0/DH1 mounted, both optional ambience buffers now allocate successfully;
+after the carrier blitter allocation, 5552 Chip bytes and 15080 Slow bytes remain.
+Tests were muted as requested; tonal preference still needs the user's audition.
+
 ## Gameplay sound effects
 
 | WAV master | Paula runtime asset | Used for |
@@ -38,7 +67,7 @@ compression and therefore represents the bytes produced by the Amiga decoder.
 | `ground_hit_0.wav` | `ground_target_hit_1.raw` | Random destructive hit variant for an actual ground target, enemy ship or town block. |
 | `ground_hit_1.wav` | `ground_target_hit_2.raw` | Random destructive hit variant for an actual ground target, enemy ship or town block. |
 | `ground_hit_2.wav` | `ground_target_hit_3.raw` | Random destructive hit variant for an actual ground target, enemy ship or town block. |
-| `ground_hit_3.wav` | `ground_target_hit_4.raw` | Random destructive hit variant for an actual ground target, enemy ship or town block. |
+| `ground_hit_3.wav` | Archived master only | Fourth variant retained for restoration; no runtime allocation. |
 | `ground_miss_0.wav` | `ground_miss_1.raw` | Bomb/rocket hit on bare land that is not a real target - a "miss". Previously reused a random `ground_target_hit_*` variant; now its own dedicated sound. |
 | `WaterSplash.wav` | `water_splash.raw` | Played when a player or Wingman bomb reaches open water; accompanies the temporary white Smoke 1/Smoke 2 spray animation. |
 | `idle_0.wav` | `carrier_idle_1.adpcm` | Random carrier-deck ambience while the Harrier has not taken off and no MOD music is playing. |
@@ -50,7 +79,7 @@ target/ship/town block, `ground_miss_1.raw` for bare land) - never both. This
 deliberately avoids also playing `impact.raw` for the same hit.
 
 The runtime mix attenuates MOD music, the synthesized engine, carrier ambience
-and all one-shot effects by approximately 15 percent. The four
+and all one-shot effects by approximately 15 percent. The three
 `ground_target_hit_*` effects are the sole exception and retain their authored
 Paula volume so their bass-heavy impact remains prominent. WAV masters and
 converted sample bytes are not altered by this mix adjustment.
@@ -61,9 +90,9 @@ creating a dense rhythmic burst under heavy fire without consuming additional
 voices. It may interrupt only those two firing sounds; `flak_hit` and every
 other gameplay or music voice remain protected.
 
-These five masters receive a mild low-shelf boost during Paula conversion.
+The three target-hit masters and bare-earth miss receive a mild low-shelf boost during Paula conversion.
 That preserves their bass body after peak normalization to signed 8-bit,
-11025 Hz data without changing playback pitch.
+8820 Hz data without changing playback pitch.
 
 Carrier ambience alternates the two idle variants. A new cue starts after a
 random 15-20 second delay, producing
@@ -72,7 +101,7 @@ Each cue fades in and out over about half a second. Taking off, pausing, leaving
 gameplay, reaching Game Over, or starting MOD music triggers an early fade-out.
 
 The two long idle masters use four-bit IMA ADPCM in the executable. They are
-decoded on demand into one shared 44,100-byte chip-RAM buffer while the Harrier
+decoded on demand into one shared 35,280-byte chip-RAM buffer while the Harrier
 is stationary on the carrier. This approximately halves their stored size and
 removes four permanent PCM copies from chip RAM. Short, latency-sensitive and
 overlapping gameplay effects remain direct PCM until decode cost has been
@@ -110,3 +139,15 @@ When audio behavior changes:
    `.tmp/amiga-sfx-preview`.
 5. Build with F5 and test the sound in the Shift+D sound browser and in its
    real gameplay event.
+
+## October 2026 asset cleanup
+
+Removed the obsolete recorded carrier klaxon, rejected ground-boing source/runtime
+and unused flak_pop.raw. Carrier alarms use short inline Paula waveforms;
+ground bounce uses ground_impact.raw. Active WAV masters and MOD files are retained.
+
+Depot double hit: no dedicated recording. Paula plays 50% (word-aligned) of
+one existing ground_target_hit variant, followed immediately by the next
+variant in full, at volume 64. Three pairs rotate; the old one-third ground-miss
+replay is removed. tools/generate-bomber-drone.py writes a listening preview
+only; no concatenated audio buffer is loaded by the game.

@@ -44,7 +44,7 @@ static UBYTE referenceFriendlyFireMatches(void) {
         memset(m, 0, sizeof(*m)); m->active = 1;
         m->targetWorldX = 200L * 256; m->targetY = 40 * 256;
         carrierAdvanceMissile(&g);
-        if (g.armour != (enabled ? 67 : 100) || m->active != !enabled) return 203;
+        if (g.armour != (enabled ? 75 : 100) || m->active != !enabled) return 203;
         g.rocketHeightLock=0; /* Test fixed trajectory into the carrier. */
         carrierDefenceLaunch(&g, &g.rocketShot, 80, 100, MAVERICK_DIRECTION_RIGHT);
         for (UBYTE t = 0; t < 15 && g.rocketShot.active; t++) carrierDefenceShot(&g, &g.rocketShot);

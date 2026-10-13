@@ -1,6 +1,7 @@
 """Rebuild the tiny Paula bomber loop and optional listening previews."""
 from pathlib import Path
 import wave
+import json
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -19,8 +20,11 @@ if __name__ == "__main__":
     with wave.open(str(preview/"bomber-drone-preview.wav"),"wb") as out:
         out.setparams((1,1,round(3546895/700),0,"NONE","not compressed"))
         out.writeframes(bytes(128+round((v if v<128 else v-256)*10/64) for v in samples)*40)
-    raw=(ROOT/"amiga/assets/sfx/ground_miss_1.raw").read_bytes()
-    burst=raw[:len(raw)//6*2]+raw
-    with wave.open(str(preview/"depot-bo-boom-preview.wav"),"wb") as out:
-        out.setparams((1,1,11025,0,"NONE","not compressed"))
+    # Listening preview only; runtime reuses these two existing Paula buffers.
+    first=(ROOT/"amiga/assets/sfx/ground_target_hit_1.raw").read_bytes()
+    second=(ROOT/"amiga/assets/sfx/ground_target_hit_2.raw").read_bytes()
+    burst=first[:(len(first)//2)&~1]+second
+    with wave.open(str(preview/"depot-double-hit-preview.wav"),"wb") as out:
+        rate=json.loads((ROOT/"amiga/assets/sfx/profile.json").read_text())["sample_rate"]
+        out.setparams((1,1,rate,0,"NONE","not compressed"))
         out.writeframes(bytes(v^128 for v in burst))

@@ -91,32 +91,36 @@ static UBYTE referenceMissileDamageEjectMatch(void) {
     static GameState g;
     memset(&g, 0, sizeof(g));
     g.gameMode = GAME_MODE_ENHANCED; g.takeoffState = TAKEOFF_STATE_AIRBORNE;
-    g.armour = 100; g.fuel = 100; g.playerY = 40; g.playerX = 100;
+    g.lives=3; g.armour = 100; g.fuel = 100; g.playerY = 40; g.playerX = 100;
     g.levelDifficulty = 1;
     UBYTE oldMod = modPlaying; modPlaying = 1;
     applyPlayerMissileDamage(&g, 0);
-    if (g.armour != 67 || g.aircraftFailureState) return 1;
+    if (g.armour != 75 || g.aircraftFailureState) return 1;
     applyPlayerMissileDamage(&g, 0);
-    if (g.armour != 34 || g.aircraftFailureState) return 2;
+    if (g.armour != 49 || g.aircraftFailureState) return 2;
     applyPlayerMissileDamage(&g, 0);
+    if(g.armour!=23 || g.aircraftFailureState)return 3;
+    applyPlayerMissileDamage(&g,0);
     if (g.armour || g.aircraftFailureState != AIRCRAFT_FAILURE_DESCENT) return 3;
     g.aircraftFailureState = 0; g.missileDamageThirds = 0; g.armour = 100;
     applyPlayerMissileDamage(&g, 1);
-    if (g.armour != 50 || g.aircraftFailureState) return 4;
+    if (g.armour != 62 || g.aircraftFailureState) return 4;
     applyPlayerMissileDamage(&g, 1);
+    if(g.armour!=24 || g.aircraftFailureState)return 5;
+    applyPlayerMissileDamage(&g,1);
     if (g.armour || g.aircraftFailureState != AIRCRAFT_FAILURE_DESCENT) return 5;
     g.aircraftFailureState = 0; g.missileDamageThirds = 0; g.armour = 100;
     applyPlayerMissileDamage(&g, 0); applyPlayerFlakDamage(&g);
-    if (g.armour >= 67 || g.armour == 0) return 6;
+    if (g.armour >= 75 || g.armour == 0) return 6;
     activatePowerup(&g, POWERUP_HEALTH);
     if (g.armour != 100 || g.missileDamageThirds || g.flakDamageCount) return 7;
     UBYTE hud = 0, weapon = 0, wing = 0;
     UBYTE* buffers[GAME_WORLD_BUFFER_COUNT] = {0};
     g.siloMissile.active = 1; g.siloMissile.x = g.playerX; g.siloMissile.y = g.playerY;
     collideEnhancedEncounters(&g, buffers, &hud, &weapon, &wing);
-    if (g.armour != 67 || g.siloMissile.active || !hud) return 16;
+    if (g.armour != 75 || g.siloMissile.active || !hud) return 16;
     collideEnhancedEncounters(&g, buffers, &hud, &weapon, &wing);
-    if (g.armour != 67) return 17; /* consumed missile cannot hit twice */
+    if (g.armour != 75) return 17; /* consumed missile cannot hit twice */
     activatePowerup(&g, POWERUP_HEALTH);
     g.wingman.active = 1; g.wingman.mode = WINGMAN_FORMATION;
     g.wingman.screenY = 80; g.wingman.interceptScreenX = 60;
@@ -274,6 +278,10 @@ static UBYTE referenceEnhancedEncountersMatch(void) {
     game.scrollX = 0;
     if (!siloWouldIntercept(&game, 104, 140, 100, 60, 0, 0) ||
         siloWouldIntercept(&game, 104, 140, 100, 60, 4, 0)) return 8;
+    /* Fast closing aircraft: the old swept-Y prediction claimed a hit one
+     * update after the missile had already passed above the aircraft. */
+    if (siloWouldIntercept(&game, 231, 140, 100, 60, 5, 0) ||
+        !siloWouldIntercept(&game, 225, 140, 100, 60, 5, 0)) return 8;
     /* Placement must never alias a truck or put two silos on one screen. */
     LONG previous = -1000; UWORD count = 0;
     for (UWORD i = 0; i < cpcLandProceduralLength; i++) {
@@ -444,3 +452,26 @@ static UBYTE referenceEnhancedEncountersMatch(void) {
     return ok ? 0 : failure;
 }
 #endif
+
+/* Compare launch prediction with discrete collision positions, independently
+ * integrating the missile acceleration instead of reusing its lookup table. */
+static UBYTE referenceSiloTiming(void) {
+    GameState g; memset(&g,0,sizeof(g));
+    if(siloWouldIntercept(&g,231,140,100,60,5,0)) return 1;
+    if(!siloWouldIntercept(&g,225,140,100,60,5,0)) return 2;
+    for(WORD y=20;y<=120;y+=20) for(WORD vx=0;vx<=7;vx++)
+    for(WORD vy=-2;vy<=2;vy+=2) for(WORD d=-40;d<=160;d++) {
+        if(!siloWouldIntercept(&g,100+d,140,100,y,vx,vy)) continue;
+        WORD my=140,dy=-1; UBYTE hit=0;
+        for(UBYTE t=1;t<=64;t++) {
+            if(!(t&3) && dy>-6) dy--;
+            my+=dy;
+            WORD tx=100+vx*t,ty=y+vy*t;
+            if(my<0)break;
+            if(ty>=PLAYER_MIN_Y && ty<=PLAYER_MAX_Y &&
+               rectsOverlap(tx,ty,16,8,100+d,my,8,8)) {hit=1;break;}
+        }
+        if(!hit)return 3;
+    }
+    return 0;
+}

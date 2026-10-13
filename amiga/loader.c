@@ -10,60 +10,40 @@
 #include <proto/intuition.h>
 #include <string.h>
 
-/* Tiny resident bootstrap.  AmigaDOS must load an executable completely
- * before its main() can run, so the full game cannot show its own bitmap
- * during that load.  This small program gets on screen first, then Execute()
- * loads/runs the large game while this two-plane page remains visible.
- * Two planes retain the title art while using 16 KiB rather than the normal
- * five-plane page's 40 KiB of precious A500 chip RAM. */
-
+/* Separate title stage: its file-backed bitmap and Intuition screen are
+ * released BEFORE DOS loads the game. This process exits completely. */
 #define LOADER_WIDTH 320
 #define LOADER_HEIGHT 200
-#define LOADER_PLANES 2
+#define LOADER_PLANES 5
 #define LOADER_ROW_BYTES (LOADER_WIDTH / 8)
-#define LOADER_BITMAP_BYTES \
-	(LOADER_HEIGHT * LOADER_PLANES * LOADER_ROW_BYTES)
+#define LOADER_BITMAP_BYTES (LOADER_HEIGHT * LOADER_PLANES * LOADER_ROW_BYTES)
 
 struct ExecBase* SysBase;
 struct DosLibrary* DOSBase;
 struct GfxBase* GfxBase;
 struct IntuitionBase* IntuitionBase;
 
-static const UBYTE loaderBitmap[LOADER_BITMAP_BYTES] = {
-	#embed "assets/loading_screen_2plane.bpl"
-};
-
-static const UWORD loaderPalette[4] = {
-	0x100, 0xf00, 0xfff, 0x57c
-};
-
-static void copyLoaderBitmap(struct Screen* screen) {
-	struct BitMap* bitmap = screen->RastPort.BitMap;
-	for (UWORD y = 0; y < LOADER_HEIGHT; y++) {
-		const UBYTE* sourceRow = loaderBitmap +
-			y * LOADER_PLANES * LOADER_ROW_BYTES;
-		for (UBYTE plane = 0; plane < LOADER_PLANES; plane++) {
-			UBYTE* destination = bitmap->Planes[plane] +
-				y * bitmap->BytesPerRow;
-			memcpy(destination,
-				sourceRow + plane * LOADER_ROW_BYTES,
-				LOADER_ROW_BYTES);
-		}
-	}
-}
-
-static LONG runGame(void) {
-	static const char* const commands[] = {
-		"harrier_amiga.exe",
-		"DH1:harrier_amiga.exe",
-		"DF0:harrier_amiga.exe"
-	};
-	for (UBYTE index = 0;
-		index < (UBYTE)(sizeof(commands) / sizeof(commands[0])); index++) {
-		if (Execute((CONST_STRPTR)commands[index], Input(), Output()))
-			return 1;
-	}
-	return 0;
+static UBYTE loadTitle(struct Screen* screen) {
+    UBYTE row[LOADER_PLANES * LOADER_ROW_BYTES];
+    UBYTE paletteBytes[64];
+    UWORD palette[32];
+    BPTR file = Open((CONST_STRPTR)"loading_screen.pal", MODE_OLDFILE);
+    if (!file) return 0;
+    LONG count = Read(file, paletteBytes, sizeof(paletteBytes));
+    Close(file);
+    if (count != sizeof(paletteBytes)) return 0;
+    for (UWORD i=0; i<32; i++) palette[i]=(paletteBytes[i*2]<<8)|paletteBytes[i*2+1];
+    file = Open((CONST_STRPTR)"loading_screen.bpl", MODE_OLDFILE);
+    if (!file) return 0;
+    for (UWORD y=0; y<LOADER_HEIGHT; y++) {
+        if (Read(file, row, sizeof(row)) != sizeof(row)) { Close(file); return 0; }
+        for (UBYTE plane=0; plane<LOADER_PLANES; plane++)
+            memcpy(screen->RastPort.BitMap->Planes[plane] + y*screen->RastPort.BitMap->BytesPerRow,
+                   row + plane*LOADER_ROW_BYTES, LOADER_ROW_BYTES);
+    }
+    Close(file);
+    LoadRGB4(&screen->ViewPort, palette, 32);
+    return 1;
 }
 
 int main(void) {
@@ -82,17 +62,21 @@ int main(void) {
 		0, 0, 0, 0
 	};
 	struct Screen* screen = OpenScreen(&newScreen);
-	if (screen) {
-		copyLoaderBitmap(screen);
-		LoadRGB4(&screen->ViewPort, loaderPalette, 4);
-		ScreenToFront(screen);
-		ShowTitle(screen, FALSE);
-		runGame();
-		CloseScreen(screen);
-	} else {
-		/* Low-memory fallback still launches the game. */
-		runGame();
-	}
+    if (screen) {
+        UWORD black[32] = {0};
+        LoadRGB4(&screen->ViewPort, black, 32);
+        ShowTitle(screen, FALSE);
+        if (loadTitle(screen)) {
+            ScreenToFront(screen);
+            ShowTitle(screen, FALSE);
+            Delay(150);
+        }
+        CloseScreen(screen);
+    }
+    /* No title pixels, bitmap, palette allocation or title screen survives. */
+    CloseLibrary((struct Library*)IntuitionBase); IntuitionBase=0;
+    CloseLibrary((struct Library*)GfxBase); GfxBase=0;
+    Write(Output(), (APTR)"\nLOADING...\n", 12);
 
 cleanup:
 	if (IntuitionBase)

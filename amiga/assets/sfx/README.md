@@ -9,7 +9,7 @@ and is decoded before Paula playback:
 
 - mono
 - signed 8-bit PCM
-- 11025 Hz
+- 8820 Hz (selected in `profile.json`; 11025 remains supported)
 - even byte length
 - direct PCM is embedded into chip RAM with `#embed`
 - ADPCM is embedded in ordinary memory and decoded to a shared chip buffer
@@ -32,7 +32,7 @@ silently replaced. Missing, changed, or stale runtime samples are converted
 with:
 
 ```powershell
-python .\tools\wav_to_amiga_sfx.py <input.wav> amiga\assets\sfx\<name>.raw --rate 11025 --max-ms <duration>
+python .\tools\wav_to_amiga_sfx.py <input.wav> amiga\assets\sfx\<name>.raw --rate 8820 --max-ms <duration>
 ```
 
 The converter removes DC offset, applies a Blackman-windowed low-pass filter
@@ -56,11 +56,12 @@ Additional user-created variants integrated in Sprint 15.23:
 
 - `flak_gun_1.raw` and `flak_gun_2.raw`: selected when a runtime flak
   emplacement fires, with distance-based volume and subtle pitch variation.
-- `ground_target_hit_1.raw` ... `ground_target_hit_4.raw`: randomly selected
+- `ground_target_hit_1.raw` ... `ground_target_hit_3.raw`: randomly selected
   for destructive hits on ground targets, buildings, land and enemy ships.
 
-Their source WAV files are kept in the repository-local `.tmp` working folder.
-Runtime copies use 11025 Hz and at most 700 ms each to limit chip-RAM use on a
+Their source WAV files are versioned under `../sfx-sourcefiles`; the unused
+fourth master `ground_hit_3.wav` is retained there. Runtime copies use 8820 Hz
+and at most 700 ms each to limit chip-RAM use on a
 1 MiB Amiga 500.
 
 Sprint 15.25 regenerated the gameplay bank under

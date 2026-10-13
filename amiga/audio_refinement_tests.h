@@ -7,20 +7,32 @@ static UBYTE referenceAudioRefinements(void) {
     volatile struct Custom* hardware=custom;
     UBYTE oldMod=modPlaying, result=0;
     stopAllSfx(); custom=&registers; modPlaying=0;
-    playSfxAt(SFX_DEPOT_BOOM,160);
-    UBYTE c=0; while(c<4 && sfxChannelCurrentId[c]!=SFX_DEPOT_BOOM) c++;
-    if(c==4) result=1;
-    if(!result) {
+    UBYTE savedVariant=depotBoomVariant, c=0;
+    depotBoomVariant=0;
+    /* All three pairs, including wrapping 2 -> 0. Rate changes must leave
+     * the half-first/full-second reload and final silence intact. */
+    for(UBYTE variant=0;variant<3 && !result;variant++) {
+        stopAllSfx();
+        playSfxAt(SFX_DEPOT_BOOM,160);
+        c=0; while(c<4 && sfxChannelCurrentId[c]!=SFX_DEPOT_BOOM) c++;
+        if(c==4) { result=1; break; }
+        const SfxSample* first=&sfxSamples[SFX_GROUND_TARGET_HIT_1+variant];
+        const SfxSample* second=&sfxSamples[SFX_GROUND_TARGET_HIT_1+(variant+1)%3];
         updateSfx();
-        if(custom->aud[c].ac_len!=sizeof(sfxGroundMissSample)/6 || custom->aud[c].ac_vol!=64) result=2;
+        if(custom->aud[c].ac_len!=((first->byteLength/2)&~1U)/2 ||
+            custom->aud[c].ac_ptr!=(volatile UWORD*)first->data ||
+            custom->aud[c].ac_per!=SFX_PAULA_PERIOD || custom->aud[c].ac_vol!=64) result=2;
         updateSfx();
-        if(custom->aud[c].ac_len!=sizeof(sfxGroundMissSample)/2 || depotBoomReload[c]) result=3;
+        if(custom->aud[c].ac_len!=second->byteLength/2 ||
+            custom->aud[c].ac_ptr!=(volatile UWORD*)second->data || depotBoomReload[c]) result=3;
         UBYTE ticks=sfxChannelSilenceQueueDelay[c];
         for(UBYTE i=0;i<ticks;i++) updateSfx();
         if(custom->aud[c].ac_len!=1 || custom->aud[c].ac_ptr!=(volatile UWORD*)sfxSilenceLoop) result=4;
         for(UWORD i=0;i<200;i++) updateSfx();
         if(sfxChannelFrames[c]) result=5;
     }
+    if(depotBoomVariant!=0) result=11;
+    depotBoomVariant=savedVariant;
     static GameState g; memset(&g,0,sizeof(g));
     g.defence.phase=DEFENCE_WAVE; g.defence.jetType=2; g.enemyPlane.active=1;
     serviceBomberDrone(&g); updateSfx();

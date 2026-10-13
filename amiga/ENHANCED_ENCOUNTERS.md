@@ -230,9 +230,9 @@ start window. Normal EXE/ADF rebuilt without instrumentation.
 Further refinement (2026-10-01): the compact depot explosion now has three
 complete rounded 16x16 poses instead of cropping the middle of a wider burst.
 Fuel depots use it too, without ammunition chain damage. Rendering still uses
-four tiles and the same bounded lifetime. Paula plays the first third of the
-existing ground-impact sample and immediately reloads the full sample at
-volume 64. No second audio buffer or software mixer is needed.
+four tiles and the same bounded lifetime. Paula plays the first half of one of the three existing ground-target
+hits, then immediately reloads a different complete ground-target hit at
+volume 64. Pairs rotate 1+2, 2+3, 3+4, 4+1. No second audio buffer or software mixer is needed.
 The lower grass fill now uses 75% solid green tiles and sparse dark-green
 clusters; the established grass-edge silhouettes are unchanged.
 
@@ -262,3 +262,87 @@ for all 148 transitions, crossing many 16-pixel word boundaries. The bottom
 terrain band matched pixel-for-pixel (zero residual); higher bands contained
 small moving-object differences. tools/check-scroll-frames.py reproduces the
 independent pixel check. This short sample does not cover every combat load.
+
+### Damaged sea gunship silhouette
+
+Enhanced gunships retain their opaque silhouette after individual collision cells
+are destroyed. Damaged cells receive dark grey scars; logical damage and wreck
+smoke are unchanged. Classic still removes each destroyed 8x8 presentation tile.
+The scar is produced only during cached world tile redraw, not as another animated
+object. The focused WinUAE contract checks both modes against the destroyed cells
+(50,14) and (51,13) decoded from 04.10.2026.uss and verifies every silhouette pixel.
+
+### Gentle Enhanced armour and ammunition tuning (October 2026)
+
+Enhanced adds 15 percent to the flak/contact hit budget before difficulty scaling
+and integer rounding: Skill 1..5 now allows 27/24/21/19/16 small hits. Missile,
+bomb and ground impact damage retain their established values. Classic is unchanged.
+Enhanced ammo capacity is 85 percent of the CPC inventory, rounded to nearest:
+bombs 51/64/77/89/102, rockets 26/26/38/38/51. Session start, HUD capacity, pickups,
+ordinary deck rearming and raid deck servicing all use ammoForGame. Successful
+launches still cost exactly one shot; blocked launches cost nothing. Pickups still
+refill the appropriate weapon, and debug infinite-ammo options remain explicit cheats.
+The focused WinUAE balance contract checks both modes at all skills, exhausting
+both real launch paths, rejecting shots at zero and verifying pickup capacities,
+small-hit exhaustion and difficulty progression.
+
+## Enhanced land pursuer (2026-10-04)
+
+Radar admission can replace the ordinary fighter with a right-facing pursuer,
+limited to one appearance per mission. Selection rises with board progress and
+becomes certain in the final third, at the next eligible radar trigger. It still
+requires a clear rear approach, free aircraft/missile slots, and airborne play;
+a player who never triggers radar will not be forced into this encounter.
+Classic and carrier raids retain their existing admission rules.
+
+The fighter holds roughly 64 pixels behind Harrier, follows altitude slowly,
+and fires one right-going missile at a time (100 simulation ticks of initial
+warning, then at least 125 ticks between shots). Braking below speed 5 causes
+it to overtake and continue ahead, exposing it to forward rockets. Terrain or
+buildings destroy it. Missile and aircraft rendering reuse existing slots.
+
+A weapon kill releases a white parachute with a red pilot only if a normal
+land fighter was already shot down earlier on this mission. Collecting this
+pilot grants one aircraft, subject to the existing aircraft cap. Terrain crashes
+and aircraft collisions do not qualify. Existing pickups/repair drops retain
+priority; the rescue waits at its ejection position until the slot is free or
+that position leaves the screen. Mission initialization resets the admission
+and kill-history flags; ordinary deaths do not grant another pursuer.
+
+Validation: `tools/test-land-pursuer-host.cmd` compiles the actual gameplay
+header with bounded world/audio stubs and AddressSanitizer. Tests cover mode,
+radar, blockers, probability progression, one-per-board admission, trailing,
+braking/overtaking, shot cadence, terrain collision, rescue qualification and
+pickup arbitration. Native Amiga build is also checked. Real-time A500 pacing
+and play feel still require emulator/hardware playtesting.
+
+Startup memory fallback (2026-10-04): sea ambience and decoded carrier idle cues
+are optional when Chip RAM is exhausted; they no longer cause a silent return
+to AmigaDOS. Essential display, engine and combat resources remain mandatory.
+Allocation failures and optional-audio availability are reported in the emulator
+debug log. Crash-debris save/restore also explicitly bounds both placement slots.
+
+Pursuer refinement: admission now requires at least one successful ordinary
+fighter spawn on the same terrain mission (`ordinaryPlaneSeen`, reset with the
+mission state). A blocked/failed normal spawn does not qualify; killing that
+fighter remains a separate requirement for the rescue-pilot reward. The pursuer
+fires plain right-facing rockets at fixed release height, without homing. Its
+broken aircraft is a pre-mirrored 16x8 copy of the original CPC wreck with the
+same pens, and the hit transition moves right rather than left. Classic fighter
+art, missile guidance and admission remain unchanged.
+
+
+### 6 October: Harrier survivability and feedback
+
+Enhanced ordinary missiles now cost 77/3 armour points (about 25.7%), tank/heavy
+hits 115/3 (38.3%). Flak hit budgets are about 30% larger than the previous build;
+ground contact costs 115/3, destructible ground targets 92/3. Classic is unchanged.
+Aircraft contact instead costs exactly 50 points, with a short 20-tick protection
+window against duplicate contact. Depleted armour still starts failure descent.
+L is yellow for deployed wheels and red during active full VTOL (including carrier
+hover/landing); parked aircraft show yellow. Enhanced hits on Harrier, enemy planes
+and helicopters can use the existing single impact effect without adding draw slots.
+At 1–10% armour, an airborne Harrier emits one 2–3 pixel smoke puff every 96–127
+rendered fields. Each lasts 20 fields; parking, repairs, death/eject stop emission.
+
+8 October: attack-helicopter artwork refreshed in both 16x8 rotor masters; mirrored and preshifted banks repacked with unchanged sizes and collision footprint.

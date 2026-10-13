@@ -3,7 +3,8 @@
 param(
     [ValidateSet("build", "clean")]
     [string]$Target = "build",
-    [string]$Program = "out/harrier_amiga"
+    [string]$Program = "out/harrier_amiga",
+    [string]$ExtraCcFlags = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -154,6 +155,10 @@ if ($LASTEXITCODE -ne 0) {
 if ($LASTEXITCODE -ne 0) {
     throw "Enhanced-grafikk kunne ikke valideres eller pakkes."
 }
+& $Python.Source @PythonArguments (Join-Path $Root "tools/pack-mod-music.py")
+if ($LASTEXITCODE -ne 0) {
+    throw "MOD-musikk kunne ikke pakkes tapsfritt."
+}
 
 if (Test-Path -LiteralPath $AmigaSfxPipeline) {
     & $AmigaSfxPipeline
@@ -172,7 +177,8 @@ if (Test-Path -LiteralPath $MainObject) {
     Remove-Item -LiteralPath $MainObject -Force
 }
 
-& $make -C $AmigaDir -j4 "program=$Program"
+Ensure-Directory -Path (Split-Path -Parent (Join-Path $AmigaDir "$Program.exe"))
+& $make -C $AmigaDir -j4 "program=$Program" "EXTRA_CCFLAGS=$ExtraCcFlags" all loader
 $makeExitCode = $LASTEXITCODE
 
 if ($makeExitCode -eq 0) {
@@ -185,9 +191,8 @@ if ($makeExitCode -eq 0) {
     $BuiltIconName = ([IO.Path]::GetFileName($BuiltExe) + ".info")
     $RuntimeWorkbenchIcon = Join-Path $ProgramDir $BuiltIconName
 
-    # Sprint 15.61: the loading bitmap is a runtime file rather than a
-    # permanent 40 KiB EMBED_CHIP object. Keep it beside the executable for
-    # Bartman/F5 (DH1:) and include the same file at the root of the ADF.
+    # The standalone title stage streams this file into a temporary screen.
+    # Keep the source beside the executable and on the bootable ADF.
     Ensure-Directory -Path $ProgramDir
     Copy-Item -LiteralPath $LoadingBpl -Destination $RuntimeLoadingBpl -Force
     Copy-Item -LiteralPath $WorkbenchIcon -Destination $RuntimeWorkbenchIcon -Force
@@ -195,28 +200,21 @@ if ($makeExitCode -eq 0) {
     Copy-Item -LiteralPath $LoadingBpl -Destination (Join-Path $AdfAssetsDir "loading_screen.bpl") -Force
     Copy-Item -LiteralPath $WorkbenchIcon -Destination (Join-Path $AdfAssetsDir $BuiltIconName) -Force
 
-    # Keep the release boot path deliberately simple on a stock 512 KiB Chip
-    # + 512 KiB Slow machine: AmigaDOS loads the game directly, and main()
-    # displays loading_screen.bpl after startup. A separate loader would keep
-    # its process/stack resident while LoadSeg allocates the game hunks and can
-    # make an otherwise valid 1 MiB build fail or return to the CLI.
-    foreach ($staleAdfAsset in @(
-        "harrier_amiga.exe",
-        "harrier_loader.exe",
-        "loading_screen_2plane.bpl",
-        "run_harrier"
-    )) {
-        $stalePath = Join-Path $AdfAssetsDir $staleAdfAsset
-        if (Test-Path -LiteralPath $stalePath) {
-            Remove-Item -LiteralPath $stalePath -Force
-        }
-    }
+    # Title pixels are disk-backed and freed by the launcher before game LoadSeg.
+    Copy-Item -LiteralPath $BuiltExe -Destination (Join-Path $AdfAssetsDir "harrier_amiga.exe") -Force
+    Copy-Item -LiteralPath $LoadingPal -Destination (Join-Path $AdfAssetsDir "loading_screen.pal") -Force
+    $BootExe = Join-Path $AmigaDir "out/harrier_loader.exe"
+    $StaleStartup = Join-Path $AdfAssetsDir "S/startup-sequence"
+    if (Test-Path -LiteralPath $StaleStartup) { Remove-Item -LiteralPath $StaleStartup }
 
     if ((Test-Path -LiteralPath $Exe2Adf) -and (Test-Path -LiteralPath $BuiltExe)) {
-        & $Exe2Adf -i $BuiltExe -l "Harrier Attack" -a $AdfPath -d $AdfAssetsDir
+        & $Exe2Adf -i $BootExe -l "Harrier Attack" -a $AdfPath -d $AdfAssetsDir
         if ($LASTEXITCODE -ne 0) {
-            Write-Warning "exe2adf feilet (kode $LASTEXITCODE) - ADF ble ikke generert."
+            throw "exe2adf feilet (kode $LASTEXITCODE) - ADF ble ikke generert."
         }
+        & python (Join-Path $Root "tools/patch-adf-startup.py") $AdfPath
+        if ($LASTEXITCODE -ne 0) { throw "ADF startup patch failed" }
+
     } else {
         Write-Warning "Fant ikke exe2adf.exe eller $BuiltExe - hopper over ADF-generering."
     }

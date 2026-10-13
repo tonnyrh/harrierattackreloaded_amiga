@@ -93,7 +93,8 @@ CARRIER_ASSETS = (AssetSpec("carrier_aa", "Carrier AA turret", "carrier_aa_8x8.p
 MISSILE_TURRET_ASSETS = tuple(AssetSpec("carrier_missile_"+p, "Carrier missile turret "+p, "carrier_missile_"+p+"_8x8.png", 8, 8) for p in ("left", "up", "right"))
 SUBMARINE_ASSETS = (AssetSpec("carrier_submarine", "Carrier attack submarine", "carrier_submarine_32x8.png", 32, 8),
                     AssetSpec("carrier_ballistic", "Submarine ballistic missile", "carrier_ballistic_8x16.png", 8, 16))
-ASSETS = SUBMARINE_ASSETS + MISSILE_TURRET_ASSETS + CARRIER_ASSETS + GROUND_ASSETS + (MISSILE_TANK, REPAIR_DEPOT, HARRIER_FRONT) + ENCOUNTER_ASSETS + PROJECTILE_ASSETS + BOMB_ASSETS + TOWN_ASSETS
+HELICOPTER_FRONT = AssetSpec("helicopter_front", "Helicopter turn / front", "helicopter_front_16x8.png", 16, 8)
+ASSETS = (HELICOPTER_FRONT,) + SUBMARINE_ASSETS + MISSILE_TURRET_ASSETS + CARRIER_ASSETS + GROUND_ASSETS + (MISSILE_TANK, REPAIR_DEPOT, HARRIER_FRONT) + ENCOUNTER_ASSETS + PROJECTILE_ASSETS + BOMB_ASSETS + TOWN_ASSETS
 
 
 def pixel_is_editable(spec: AssetSpec, x: int, y: int) -> bool:
@@ -220,9 +221,7 @@ def encode_tiles(image: Image.Image, origins: Iterable[tuple[int, int]]) -> byte
 
 def build_runtime_banks() -> dict[Path, bytes]:
     images = {spec.key: load_and_validate(spec) for spec in ASSETS}
-    # Rightward runtime heading; keep indexed editing masters intact.
-    for key in ("helicopter_0", "helicopter_1"):
-        images[key] = images[key].transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+    # Editing masters face right; generate left-facing variants below.
     tank = encode_tiles(images["tank"], ((0, 0), (8, 0)))
     ground = b"".join(
         encode_tiles(images[key], ((0, 0),))
@@ -292,6 +291,13 @@ def build_runtime_banks() -> dict[Path, bytes]:
                     masks += [sum(1 << (23 - shift - x) for x, pen in enumerate(pens) if pen & (1 << plane)) for plane in range(4)]
                     for bits in masks:
                         helicopter_shifted.extend(bits.to_bytes(3, "big"))
+    # Only two tiny masked front frames: no additional eight-shift bank.
+    front = images["helicopter_front"]
+    front_b = front.copy()
+    for x in range(16):
+        if x < 3 or x > 12:
+            front_b.putpixel((x, 0), 0)
+    helicopter_front = encode_tiles(front, ((0, 0), (8, 0))) + encode_tiles(front_b, ((0, 0), (8, 0)))
     # Attached aircraft keep their original CPC+ palette, including the
     # runtime hardware-projectile remap. Never quantize the mirrored art.
     original = (ROOT / "amiga/assets/promoted_assets.h").read_text()
@@ -432,6 +438,7 @@ def build_runtime_banks() -> dict[Path, bytes]:
         ASSET_DIR / "ammunition_art.h": ammo_header.encode("ascii"),
         ASSET_DIR / "carrier_art.h": carrier_header.encode("ascii"),
         ASSET_DIR / "harrier_poses.h": aircraft_header.encode("ascii"),
+        ASSET_DIR / "helicopter_front.bpl": helicopter_front,
         ASSET_DIR / "helicopter_mirrored.bpl": bytes(helicopter_mirrored),
         ASSET_DIR / "repair_depot_masked.bpl": encode_tiles(images["repair_depot"], ((0, 0), (8, 0))),
         ASSET_DIR / "helicopter_shifted.bpl": bytes(helicopter_shifted),

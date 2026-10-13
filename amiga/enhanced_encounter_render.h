@@ -91,7 +91,7 @@ static __attribute__((noinline, optimize("Os"))) void drawHelicopterSeam(UBYTE* 
             fp->byteX[slot] = byteX; fp->bytes[slot] = count;
             UBYTE* dest = bitmap + (ULONG)fp->y * SCREEN_PLANES * GAME_WORLD_ROW_BYTES + byteX;
             UBYTE* old = (UBYTE*)&fp->background[slot];
-            const UBYTE* src = (frame >= 2 ? enhancedHelicopterMirrored + (frame - 2) * 80 : enhancedEncounterTiles + 160 + frame * 80) + half * 40;
+            const UBYTE* src = (frame >= 4 ? enhancedHelicopterFront + (frame - 4) * 80 : frame >= 2 ? enhancedHelicopterMirrored + (frame - 2) * 80 : enhancedEncounterTiles + 160 + frame * 80) + half * 40;
             for (UBYTE row = 0; row < 8; row++, src += 5) {
                 UWORD mask = ((UWORD)src[4] << 8) >> shift;
                 for (UBYTE plane = 0; plane < 4; plane++) {
@@ -106,19 +106,26 @@ static __attribute__((noinline, optimize("Os"))) void drawHelicopterSeam(UBYTE* 
     }
 }
 
+static UBYTE helicopterVisualFrame(const GameState* game) {
+ const WeaponState* h=&game->helicopter;
+ UBYTE rotor=game->helicopterHits>=2 ? 0 : (game->helicopterAge>>2)&1;
+ UBYTE hovering=game->defence.phase && h->type==1 &&
+     game->defence.heliAge>=4 && game->defence.heliAge<=180+game->levelDifficulty*20;
+ if(game->helicopterHits<2 && (game->helicopterTurnTicks || hovering)) return 4+rotor;
+ return rotor+(h->direction ? 0 : 2);
+}
+
 static __attribute__((noinline, optimize("Os"))) void drawHelicopterBob(UBYTE* bitmap, UBYTE index,
     const GameState* game) {
     const WeaponState* heli = &game->helicopter;
     if (!heli->active || heli->x <= -16 || heli->x >= SCREEN_WIDTH || heli->y < 0 || heli->y + 8 > GAME_WORLD_HEIGHT) return;
     UWORD local = (UWORD)heli->worldX % (UWORD)(GAME_WORLD_SCROLL_PAGE_BYTES * 8);
     UWORD x = GAME_WORLD_BUFFER_MARGIN_PIXELS + local;
-    UBYTE frame = game->helicopterHits >= 2 ? 0 : (game->helicopterAge >> 2) & 1;
-    /* Packer base frames face right; the mirrored bank faces left. */
-    frame += heli->direction ? 0 : 2;
-    const UBYTE* source = enhancedHelicopterShifted + ((frame * 8 + (x & 7)) * 120);
+    UBYTE frame = helicopterVisualFrame(game);
+    const UBYTE* source = enhancedHelicopterShifted + (((frame < 4 ? frame : 0) * 8 + (x & 7)) * 120);
     HelicopterFootprint* fp = &helicopterFootprints[index];
     fp->valid = 1; fp->y = heli->y; fp->worldX = heli->worldX;
-    if (local >= (GAME_WORLD_SCROLL_PAGE_BYTES - 1) * 8 ||
+    if (frame >= 4 || local >= (GAME_WORLD_SCROLL_PAGE_BYTES - 1) * 8 ||
         (x >> 3) == GAME_WORLD_BUFFER_MARGIN_TILES + GAME_FETCH_BYTES - 1) {
         drawHelicopterSeam(bitmap, fp, frame); return;
     }
@@ -362,7 +369,7 @@ static __attribute__((noinline, optimize("Os"))) void drawEncounterTile(UBYTE* b
 static __attribute__((noinline, optimize("Os"))) void updateCarrierBomberBob(UBYTE* bitmap, UBYTE index, const GameState* game) {
     if(index>=GAME_WORLD_BUFFER_COUNT) return;
     UBYTE depot = game->gameMode==GAME_MODE_ENHANCED && !game->defence.phase && game->ammoBlast.active;
-    UBYTE live=depot || (game->gameMode==GAME_MODE_ENHANCED && game->defence.phase &&
+    UBYTE live=depot || (battleship.active && game->defence.bomberBlastTicks) || (game->gameMode==GAME_MODE_ENHANCED && game->defence.phase &&
         (game->defence.bomberBlastTicks || (game->defence.jetType==2 && game->enemyPlane.active)));
     /* Terrain frames normally have neither a bomber nor a retained background.
      * Do not copy its pose or resolve explosion art in that common case. */
@@ -370,7 +377,7 @@ static __attribute__((noinline, optimize("Os"))) void updateCarrierBomberBob(UBY
     WeaponState tile=game->enemyPlane;
     UBYTE pose=tile.direction ? 1 : 0;
     if(game->defence.bomberBlastTicks) {
-        tile.x=game->defence.bomberBlastX; tile.worldX=tile.x; tile.y=game->defence.bomberBlastY;
+        tile.x=game->defence.bomberBlastX; tile.worldX=tile.x+(battleship.active ? game->scrollX : 0); tile.y=game->defence.bomberBlastY;
         pose=2+(24-game->defence.bomberBlastTicks)/8;
     }
     if (depot) {
@@ -528,7 +535,20 @@ static __attribute__((noinline, optimize("Os"))) void drawEnhancedEncounterBobs(
     drawEncounterTile(bitmap, bufferIndex, &game->helicopterSmoke, 1, 0, smoke[smokeFrame]);
     drawHelicopterBullets(bitmap, bufferIndex, game);
     {
-        for (UBYTE i = 0; i < CARRIER_DEFENCE_BOMBS; i++)
+        if(battleship.active) {
+            for(UBYTE i=0;i<4;i++) if(battleship.flak[i].active) {
+                WeaponState pose=battleship.flak[i];pose.x=pose.worldX-game->scrollX;
+                UBYTE tile[40]={0};
+                const UBYTE* src=gameTiles+(57+(pose.type&1))*GAME_TILE_BYTES;
+                for(UBYTE y=0;y<8;y++) {
+                    UBYTE mask=0;
+                    for(UBYTE plane=0;plane<4;plane++) {tile[y*5+plane]=src[y*GAME_TILE_PLANES+plane];mask|=tile[y*5+plane];}
+                    /* Land flak is black (all four planes set); preserve its silhouette. */
+                    tile[y*5+4]=mask;
+                }
+                drawEncounterTile(bitmap,bufferIndex,&pose,i+2,0,tile);
+            }
+        } else for (UBYTE i = 0; i < CARRIER_DEFENCE_BOMBS; i++)
             drawEncounterTile(bitmap, bufferIndex, &game->defence.bombs[i], i + 2, 0,
                 carrierDefenceBombRows);
 

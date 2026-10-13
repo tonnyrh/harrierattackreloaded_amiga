@@ -61,10 +61,10 @@ static DEFENCE_SMALL void carrierAdvanceBullet(GameState* g, HelicopterBullet* b
 
 static DEFENCE_SMALL void carrierLaunchMissile(GameState* g) {
     WeaponState* m = &g->wingman.rocket;
-    WORD dx = g->defence.aimX - 116, dy = g->defence.aimY - 96;
+    WORD dx = g->defence.aimX - 119, dy = g->defence.aimY - 93;
     WORD distance = carrierAbs(dx); if (carrierAbs(dy) > distance) distance = carrierAbs(dy);
     if (!distance || m->active || g->defence.missileHeight != 8 || g->defence.phase == DEFENCE_SINKING) return;
-    memset(m, 0, sizeof(*m)); m->active = 1; m->x = 112; m->y = 92; m->worldX = 112;
+    memset(m, 0, sizeof(*m)); m->active = 1; m->x = 115; m->y = 89; m->worldX = 115;
     m->targetWorldX = (LONG)m->x * 256; m->targetY = m->y * 256;
     m->dx = (LONG)dx * 768 / distance; m->dy = (LONG)dy * 768 / distance;
     m->type = ROCKET_SHOT_MAVERICK_GUIDED;
@@ -72,7 +72,7 @@ static DEFENCE_SMALL void carrierLaunchMissile(GameState* g) {
         (dx < 0 ? (carrierAbs(dy) < carrierAbs(dx) / 2 ? MAVERICK_DIRECTION_LEFT : MAVERICK_DIRECTION_UP_LEFT) :
         (carrierAbs(dy) < carrierAbs(dx) / 2 ? MAVERICK_DIRECTION_RIGHT : MAVERICK_DIRECTION_UP_RIGHT));
     g->defence.missileCooldown = 45;
-    playSfxAt(SFX_FIRE, 112);
+    playSfxAt(SFX_FIRE, 115);
 }
 
 static DEFENCE_SMALL void carrierAdvanceMissile(GameState* g) {

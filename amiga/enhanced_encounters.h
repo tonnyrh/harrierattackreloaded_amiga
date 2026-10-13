@@ -46,11 +46,13 @@ static __attribute__((noinline, optimize("Os"))) UBYTE siloWouldIntercept(const 
     for (UBYTE t = lo; t <= 64; t++) {
         WORD y = targetY + velocityY * t;
         WORD missileY = launchY - siloRiseByStep[t];
-        WORD previousY = launchY - siloRiseByStep[t - 1];
-        if (previousY + 8 < y) break;
+        /* Collision tests use the missile position after this update, not
+         * its previous position. A swept window here predicts phantom hits
+         * and launches early when the aircraft closes quickly. */
+        if (missileY + 8 <= y) break;
         LONG dx = (LONG)game->scrollX + targetX + 8 + velocityX * t - (launchX + 4);
         if (y >= PLAYER_MIN_Y && y <= PLAYER_MAX_Y && missileY <= y + 7 &&
-            previousY + 8 >= y && dx >= -7 && dx <= 7) return 1;
+            missileY + 8 > y && dx >= -7 && dx <= 7) return 1;
     }
     return 0;
 }
@@ -195,7 +197,37 @@ static __attribute__((noinline, optimize("Os"))) void fireHelicopterBullet(GameS
     }
 }
 
+/* Shared setup only: each caller retains its spawn cadence and priority.
+ * Explicit screen/world positions preserve stationary-carrier and scrolling
+ * terrain coordinates. Inline avoids adding calls to the rendering path. */
+static __attribute__((always_inline)) inline void startEncounterSmoke(
+    WeaponState* smoke, LONG worldX, WORD screenX, WORD y) {
+    memset(smoke, 0, sizeof(*smoke));
+    smoke->active = 1;
+    smoke->worldX = worldX;
+    smoke->x = screenX;
+    smoke->y = y;
+}
+
 /* One bounded cosmetic plume, shared by damaged helicopters and the carrier. */
+/* Brief front pose bridges changes of heading without changing flight physics. */
+static void updateHelicopterHeading(GameState* g) {
+ if(g->helicopterAge<=1) {
+  g->helicopterFacing=g->helicopter.direction;g->helicopterTurnTicks=0;
+ } else if(g->helicopter.direction!=g->helicopterFacing) {
+  g->helicopterFacing=g->helicopter.direction;g->helicopterTurnTicks=6;
+ } else if(g->helicopterTurnTicks) g->helicopterTurnTicks--;
+}
+
+/* Land flight heading follows motion over terrain, not camera-relative drift.
+ * A stationary helicopter keeps its last heading as the Harrier passes it. */
+static void updateHelicopterTravelHeading(GameState* game, LONG previousWorldX) {
+    WeaponState* heli=&game->helicopter;
+    if(game->helicopterHits<2 && heli->worldX!=previousWorldX)
+        heli->direction=heli->worldX>previousWorldX;
+    updateHelicopterHeading(game);
+}
+
 static void updateEncounterSmoke(GameState* game) {
     WeaponState* smoke = &game->helicopterSmoke;
     if (!smoke->active) return;
@@ -261,14 +293,13 @@ static __attribute__((noinline, optimize("Os"))) void updateHelicopter(GameState
             playSfxAtTuned(SFX_HELICOPTER, heli->x, 24, game->helicopterHits ? 560 : 443);
         /* Sparse rising smoke; never an object-map hazard. */
         if (game->helicopterHits == 1 && !smoke->active && !(game->helicopterAge & 63)) {
-            memset(smoke, 0, sizeof(*smoke)); smoke->active = 1; ENCOUNTER_STAT(5);
-            smoke->worldX = heli->worldX + 11; smoke->y = heli->y + 3;
-            smoke->x = (WORD)(smoke->worldX - game->scrollX);
+            startEncounterSmoke(smoke, heli->worldX + 11,
+                (WORD)(heli->worldX + 11 - game->scrollX), heli->y + 3);
+            ENCOUNTER_STAT(5);
         }
     }
-    if (game->helicopterHits < 2 && heli->worldX != previousWorldX)
-        heli->direction = heli->worldX > previousWorldX;
     heli->x = (WORD)(heli->worldX - game->scrollX);
+    updateHelicopterTravelHeading(game, previousWorldX);
     if (heli->x < -16) {
         heli->active = 0; game->helicopterCooldown = 750; stopHelicopterAudio();
     }
@@ -332,6 +363,7 @@ static __attribute__((noinline, optimize("Os"))) void collideEnhancedEncounters(
             shot->active = 0;
             game->helicopterHits = i == 2 ? 2 : game->helicopterHits + 1;
             ENCOUNTER_STAT(3);
+            if(!game->impact.active) startWorldImpactQuiet(game,heli->x+8,heli->y);
             playSfxAt(SFX_HIT, heli->x); *weaponDirty = 1;
             if (game->helicopterHits == 2) {
                 dropCarrierRepair(game);
@@ -354,6 +386,6 @@ static __attribute__((noinline, optimize("Os"))) void collideEnhancedEncounters(
         rectsOverlap(game->playerX, game->playerY, 16, 8, heli->x, heli->y, 16, 8)) {
         game->helicopterHits = 2; heli->dy = 1; stopHelicopterAudio();
         dropCarrierRepair(game);
-        startAircraftFailure(game, AIRCRAFT_FAILURE_CAUSE_AIRCRAFT); *hudDirty = *weaponDirty = 1;
+        applyPlayerAircraftCollision(game); *hudDirty = *weaponDirty = 1;
     }
 }

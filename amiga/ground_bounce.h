@@ -45,12 +45,9 @@ static UBYTE handleEnhancedGroundBounce(GameState* g, UBYTE** buffers,
     }
     /* Reuse the existing single smoke BOB; ground impact takes priority over
      * a distant helicopter puff without adding any draw slots on A500. */
-    memset(&g->helicopterSmoke, 0, sizeof(g->helicopterSmoke));
-    g->helicopterSmoke.active = 1;
-    g->helicopterSmoke.worldX = column * GAME_TILE_WIDTH;
-    g->helicopterSmoke.x = g->helicopterSmoke.worldX - g->scrollX;
-    g->helicopterSmoke.y = top >= 8 ? top - 8 : 0;
-    g->missileDamageThirds += target ? 120 : 150;
+    startEncounterSmoke(&g->helicopterSmoke, column * GAME_TILE_WIDTH,
+        (WORD)(column * GAME_TILE_WIDTH - g->scrollX), top >= 8 ? top - 8 : 0);
+    if (!debugInvulnerable) g->missileDamageThirds += target ? 92 : 115;
     if (g->missileDamageThirds > 300) g->missileDamageThirds = 300;
     updatePlayerDamageArmour(g);
     playSfxAt(SFX_GROUND_BOUNCE, g->playerX);

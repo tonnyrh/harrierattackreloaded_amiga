@@ -6,6 +6,8 @@ param(
     [string]$Command,
     [ValidatePattern('^WinUAE(?:_[0-9]+)?$')]
     [string]$PipeName = 'WinUAE',
+    # Refuse commands if the pipe belongs to another (possibly user-owned) run.
+    [uint32]$ExpectedProcessId = 0,
     [ValidateRange(100, 10000)]
     [int]$TimeoutMilliseconds = 3000
 )
@@ -20,6 +22,26 @@ $pipe = [IO.Pipes.NamedPipeClientStream]::new(
     [IO.Pipes.PipeOptions]::Asynchronous)
 try {
     $pipe.Connect($TimeoutMilliseconds)
+    if ($ExpectedProcessId) {
+        if (-not ('HarrierPipeOwner' -as [type])) {
+            Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class HarrierPipeOwner {
+    [DllImport("kernel32.dll", SetLastError=true)]
+    public static extern bool GetNamedPipeServerProcessId(IntPtr pipe, out uint processId);
+}
+'@
+        }
+        [uint32]$serverProcessId = 0
+        if (-not [HarrierPipeOwner]::GetNamedPipeServerProcessId(
+            $pipe.SafePipeHandle.DangerousGetHandle(), [ref]$serverProcessId)) {
+            throw 'Cannot verify WinUAE pipe owner; no command was sent.'
+        }
+        if ($serverProcessId -ne $ExpectedProcessId) {
+            throw "WinUAE pipe belongs to PID $serverProcessId, expected $ExpectedProcessId; no command was sent."
+        }
+    }
     $encoding = [Text.UTF8Encoding]::new($true)
     [byte[]]$request = $encoding.GetPreamble() + $encoding.GetBytes($Command + [char]0)
     $write = $pipe.WriteAsync($request, 0, $request.Length)

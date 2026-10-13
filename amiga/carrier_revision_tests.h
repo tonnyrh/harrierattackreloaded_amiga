@@ -148,7 +148,7 @@ static UBYTE referenceLandingVtolMatches(void) {
     carrierParkedWingmanVisible=0;
     landing.playerX=wingmanLandingDeckLeftX(&landing)+16;
     landing.playerY=playerCarrierDeckY(&landing)-1;
-    carrierResetVtol(&landing.defence); landing.defence.vtolVY=384;
+    carrierResetVtol(&landing.defence); landing.defence.vtolVY=256;
     memset(&in,0,sizeof(in)); updateEnhancedLandingVtol(&landing,&in);
     if(!landing.defence.landed || landing.defence.vtolVY ||
         landing.playerY!=playerCarrierDeckY(&landing)) return 234;
@@ -338,8 +338,8 @@ static UBYTE referenceCarrierRevisionMatches(void) {
     UBYTE mode = currentWorldPresentationMode; currentWorldPresentationMode = GAME_MODE_ENHANCED;
     carrierDefenceSinkPixels = carrierParkedWingmanVisible = 0;
     carrierMissileHeight=8; carrierMissilePose=1;
-    drawDirectColumnRangeObjectRow(pixels,0,14,12);
-    UBYTE tip=pixels[96UL*SCREEN_PLANES*GAME_WORLD_ROW_BYTES+GAME_WORLD_ROW_BYTES]&0x18;
+    drawDirectColumnRangeObjectRow(pixels,0,14,11);
+    UBYTE tip=pixels[93UL*SCREEN_PLANES*GAME_WORLD_ROW_BYTES+GAME_WORLD_ROW_BYTES]&0x03;
     carrierMissileHeight=0;
     FreeMem(pixels,GAME_WORLD_BITMAP_BYTES); currentWorldPresentationMode = mode;
     if (!tip) return 149;
@@ -594,7 +594,8 @@ static UBYTE referenceCarrierRevisionMatches(void) {
     }
     carrierDefenceImpact(&g,108,8);
     if (g.defence.missileHeight != 8 || g.defence.hull != 92) return 206;
-    carrierLaunchMissile(&g); if (!g.wingman.rocket.active) return 207;
+    carrierLaunchMissile(&g); if (!g.wingman.rocket.active ||
+        g.wingman.rocket.x!=115 || g.wingman.rocket.y!=89) return 207;
     g.defence.landed=1;
     for (UBYTE tick=0; tick<8; tick++) carrierUpdateGuns(&g);
     carrierSyncGuns(&g,noBuffers);
@@ -714,8 +715,8 @@ static UBYTE referenceCarrierRevisionMatches(void) {
     g.gameMode = GAME_MODE_CLASSIC;
     if (handleEnhancedGroundBounce(&g,0,bounceLand,landRow) || g.armour != 100) return 195;
     g.gameMode = GAME_MODE_ENHANCED;
-    if (!handleEnhancedGroundBounce(&g,0,bounceLand,landRow) || g.armour != 50 || g.groundBounceTicks != 8 || g.crashTimer) return 196;
-    if (!handleEnhancedGroundBounce(&g,0,bounceLand,landRow) || g.armour != 50) return 197;
+    if (!handleEnhancedGroundBounce(&g,0,bounceLand,landRow) || g.armour != 62 || g.groundBounceTicks != 8 || g.crashTimer) return 196;
+    if (!handleEnhancedGroundBounce(&g,0,bounceLand,landRow) || g.armour != 62) return 197;
     if (!g.helicopterSmoke.active || g.helicopterSmoke.worldX != bounceLand*8 ||
         g.helicopterSmoke.timer || playerGroundShakeOffset(&g) != -2) return 201;
     WORD shakeX = g.playerX, smokeY = g.helicopterSmoke.y;
@@ -726,11 +727,14 @@ static UBYTE referenceCarrierRevisionMatches(void) {
     for (UBYTE tick=0; tick<8; tick++) updatePlayerGroundBounce(&g);
     WORD bounceEndY = bounceStartY-16; if (bounceEndY < PLAYER_MIN_Y) bounceEndY=PLAYER_MIN_Y;
     if (g.playerY != bounceEndY || g.groundBounceTicks || playerGroundShakeOffset(&g)) return 198;
+    /* The strengthened Harrier survives two distinct ground hits (115/300 each). */
+    if (!handleEnhancedGroundBounce(&g,0,bounceLand,landRow) || g.armour != 24 || g.aircraftFailureState) return 199;
+    for (UBYTE tick=0; tick<8; tick++) updatePlayerGroundBounce(&g);
     if (!handleEnhancedGroundBounce(&g,0,bounceLand,landRow) || g.armour || !g.aircraftFailureState) return 199;
     initGameState(&g,12040,12040,1); g.gameMode = GAME_MODE_ENHANCED;
     g.takeoffState = TAKEOFF_STATE_AIRBORNE; g.playerX=80;
     g.scrollX=bounceTarget*8-80; g.playerY=targetRow*8-4;
-    if (!handleEnhancedGroundBounce(&g,0,bounceTarget,targetRow) || g.armour != 60 ||
+    if (!handleEnhancedGroundBounce(&g,0,bounceTarget,targetRow) || g.armour != 70 ||
         !isTargetDestroyedAtColumn(bounceTarget) || !g.impact.active || g.hitsCount != 1) return 200;
 
     /* Saved 17.09.2026II.uss has fire=1 in both input snapshots.
@@ -770,7 +774,7 @@ static UBYTE referenceCarrierRevisionMatches(void) {
         /* Enemy bomb contact always hurts; carrier missile damage is opt-in. */
         g.friendlyFire = friendly;
         updateCarrierDefence(&g,&idle,&idle,&idle2,noBuffers);
-        if (g.armour != (friendly && carrierShot == 1 ? 17 : 50) || g.defence.bombs[0].active) return 192;
+        if (g.armour != (friendly && carrierShot == 1 ? 36 : 62) || g.defence.bombs[0].active) return 192;
     }
     /* Level-two enemy bombs: full tick, including CPU interception/service. */
     for (UBYTE landed=0; landed<2; landed++) {
@@ -783,7 +787,10 @@ static UBYTE referenceCarrierRevisionMatches(void) {
         g.defence.clock = 1;
         carrierDropBomb(&g, g.playerX+4, g.playerY-2, 0);
         updateCarrierDefence(&g,&idle,&idle,&idle2,noBuffers);
-        if (g.armour != 50 || g.missileDamageThirds != 150 || g.defence.bombs[0].active) return 190;
+        if (g.armour != 62 || g.missileDamageThirds != 115 || g.defence.bombs[0].active) return 190;
+        carrierDropBomb(&g, g.playerX+4, g.playerY-2, 1);
+        updateCarrierDefence(&g,&idle,&idle,&idle2,noBuffers);
+        if (g.armour != 24 || g.aircraftFailureState || g.defence.bombs[0].active) return 191;
         carrierDropBomb(&g, g.playerX+4, g.playerY-2, 1);
         updateCarrierDefence(&g,&idle,&idle,&idle2,noBuffers);
         if (g.armour || !g.aircraftFailureState || g.defence.bombs[0].active) return 191;

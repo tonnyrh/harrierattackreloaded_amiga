@@ -97,6 +97,26 @@ static UBYTE referenceCarrierRescueContinuity(void) {
             rescued.defence.spawned!=control.defence.spawned || rescued.defence.jetHits!=control.defence.jetHits ||
             rescued.defence.hull!=76 || !rescued.defence.raidDamaged) result=5;
     }
+    /* Last aircraft: both fire shortcut and direct E are blocked. Holding E
+     * must not freeze the carrier descent. A reserve still permits rescue. */
+    UBYTE savedInfinite=debugInfiniteLives;debugInfiniteLives=0;
+    for(UBYTE lives=0;lives<=2;lives++) {
+        initGameState(&rescued,12040,12040,1);rescued.gameMode=GAME_MODE_ENHANCED;
+        rescued.lives=lives;rescued.takeoffState=TAKEOFF_STATE_AIRBORNE;rescued.respawnSafeTimer=0;
+        rescued.playerX=220;rescued.playerY=40;
+        startAircraftFailure(&rescued,AIRCRAFT_FAILURE_CAUSE_ARMOUR);
+        InputState fire={0};fire.fire=fire.eject=1;
+        if(!!fireButtonEjectRequested(&rescued,&fire,&idle)!=(lives>1))result=7;
+        startPlayerEject(&rescued);
+        if(!!rescued.ejectState!=(lives>1))result=8;
+        if(lives<=1) {
+            rescued.defence.phase=DEFENCE_WAVE;rescued.defence.spawnDelay=200;
+            UWORD timer=rescued.aircraftFailureTimer;
+            updateCarrierDefence(&rescued,&fire,&fire,&p2,buffers);
+            if(rescued.ejectState || rescued.aircraftFailureTimer<=timer)result=9;
+        }
+    }
+    debugInfiniteLives=savedInfinite;
     /* Terrain respawns retain their established enemy-clear behaviour. */
     rescued.defence.phase=0; rescued.enemyPlane.active=rescued.enemyMissile.active=1;
     respawnPlayer(&rescued);
@@ -131,7 +151,42 @@ static UBYTE referenceCarrierProgressionMatches(void) {
     if(!result) result=referenceCarrierSubmarineMatches();
     modPlaying=oldMod; return result;
 }
+static UBYTE referenceCarrierDepartureMatches(void) {
+    static GameState g; UBYTE* buffers[GAME_WORLD_BUFFER_COUNT]={0};
+    InputState idle={0},up={0}; up.up=1; Player2InputState p2={0};
+    UBYTE oldMod=modPlaying, result=0; modPlaying=1;
+    for(UBYTE control=0;control<=WINGMAN_CONTROL_PLAYER2;control++) for(UBYTE dead=0;dead<2;dead++) {
+        initGameState(&g,12040,12040,2); g.gameMode=GAME_MODE_ENHANCED;
+        g.wingmanControl=control; g.wingman.destroyed=dead; g.wingmanReviveDelayColumns=50;
+        g.defence.phase=DEFENCE_WAVE; g.defence.wave=g.defence.waves=2;
+        g.defence.spawned=g.defence.quota=3; g.defence.subUsed=1;
+        g.defence.hull=76; g.defence.cargo=20; g.playerX=90; g.playerY=40;
+        carrierWingmanLiftDepth=8; carrierParkedWingmanVisible=0;
+        updateCarrierDefence(&g,&idle,&idle,&p2,buffers);
+        if(g.defence.phase!=DEFENCE_SECURE || g.wingman.active) result=1;
+        if(g.wingman.destroyed!=dead || g.wingmanReviveDelayColumns!=50) result=2;
+        g.playerX=90; g.playerY=TAKEOFF_PLAYER_DECK_Y; g.defence.landed=1;
+        g.defence.gunHeight[0]=g.defence.gunHeight[1]=g.defence.missileHeight=8;
+        updateCarrierDefence(&g,&idle,&idle,&p2,buffers);
+        if(g.defence.phase!=DEFENCE_DEPART || g.playerX!=90) result=3;
+        updateCarrierDefence(&g,&up,&idle,&p2,buffers);
+        if(g.defence.phase!=DEFENCE_DEPART || !g.defence.landed || g.playerX!=90 || !g.defence.gunHeight[0]) result=4;
+        for(UBYTE t=0;t<60;t++) updateCarrierDefence(&g,&idle,&idle,&p2,buffers);
+        if(!carrierReadyForDeparture(&g) || (control && !dead && (!carrierParkedWingmanVisible || carrierWingmanLiftDepth))) result=5;
+        ULONG score=g.bonusScore; UBYTE hull=g.defence.hull,cargo=g.defence.cargo;
+        hudRenderState[0].valid=1;
+        updateCarrierDefence(&g,&up,&idle,&p2,buffers);
+        if(g.defence.phase || g.takeoffState!=TAKEOFF_STATE_LIFTING || g.playerX!=90 ||
+            g.playerY!=TAKEOFF_PLAYER_DECK_Y-3 || g.missionNumber!=2 || g.bonusScore!=score ||
+            g.defence.hull!=hull || g.defence.cargo!=cargo || !hudRenderState[0].valid) result=6;
+        if(g.wingman.destroyed!=dead || (control && g.wingman.mode!=WINGMAN_ON_DECK)) result=7;
+        if((!control || dead) && carrierParkedWingmanVisible) result=8;
+    }
+    modPlaying=oldMod; return result;
+}
 static UBYTE referenceCarrierDefenceMatches(void) {
+    UBYTE departure=referenceCarrierDepartureMatches();
+    if(departure) return departure;
     UBYTE progression=referenceCarrierProgressionMatches();
     if(progression) return progression;
     UBYTE rescueResult=referenceCarrierRescueContinuity();
@@ -328,7 +383,8 @@ static UBYTE referenceCarrierDefenceMatches(void) {
         if (file) { Write(file, hud, HUD_BITMAP_BYTES); Close(file); }
     }
     FreeMem(hud, 2UL * HUD_BITMAP_BYTES);
-    if (sfxSamples[SFX_CARRIER_KLAXON].byteLength != 8400 || sfxSamples[SFX_CARRIER_KLAXON].period != 591) return 42;
+    /* Synthesized alarm: one short repeating waveform, no long recording. */
+    if (sfxSamples[SFX_CARRIER_KLAXON].byteLength != 32 || sfxSamples[SFX_CARRIER_KLAXON].period != 560) return 42;
     /* Independent gun durability, automatic clearance and physical collisions. */
     carrierWingmanLiftDepth = 8;
     initGameState(&g, 12040, 12040, 1); g.gameMode = GAME_MODE_ENHANCED;
@@ -357,9 +413,9 @@ static UBYTE referenceCarrierDefenceMatches(void) {
     if (g.defence.gunHealth[0] != 2 || g.defence.gunHealth[1] != 2 || g.defence.hull != 84 || g.defence.cargo) return 50;
     g.defence.gunHeight[1] = 8; g.playerX = 144; g.playerY = 100;
     g.respawnSafeTimer = 0; carrierUpdateGuns(&g);
-    if (g.defence.gunHealth[1] || g.defence.gunHeight[1] || g.armour != 67 || g.missileDamageThirds != 100) return 51;
+    if (g.defence.gunHealth[1] || g.defence.gunHeight[1] || g.armour != 75 || g.missileDamageThirds != 77) return 51;
     carrierUpdateGuns(&g);
-    if (g.armour != 67) return 52; /* Wreckage cannot repeatedly drain armour. */
+    if (g.armour != 75) return 52; /* Wreckage cannot repeatedly drain armour. */
     memset(g.helicopterBullets, 0, sizeof(g.helicopterBullets));
     g.defence.gunHeight[0] = 0; g.defence.clock = 75;
     g.defence.aimX = 120; g.defence.aimY = 40; carrierGunBullet(&g, 0);
@@ -441,12 +497,12 @@ static UBYTE referenceCarrierDefenceMatches(void) {
     for (UBYTE i = 0; i < SFX_CHANNEL_COUNT; i++)
         if (sfxChannelCurrentId[i] == SFX_CARRIER_KLAXON) alarmChannel = i;
     if (alarmChannel == 255 || sfxPendingSample[alarmChannel] != &sfxSamples[SFX_CARRIER_KLAXON] ||
-        sfxChannelPendingVolume[alarmChannel] != AUDIO_MIX_VOLUME(64)) return 68;
+        sfxChannelPendingVolume[alarmChannel] != 0) return 68;
     updateSfx();
-    if (sfxPendingSample[alarmChannel] || sfxChannelFrames[alarmChannel] != 211) return 69;
+    if (sfxPendingSample[alarmChannel] || sfxChannelFrames[alarmChannel] != CARRIER_SIREN_FRAMES) return 69;
     playSfxAt(SFX_FIRE, SFX_POSITION_CENTER);
     if (sfxChannelCurrentId[alarmChannel] != SFX_CARRIER_KLAXON || sfxChannelSilenceQueueDelay[alarmChannel]) return 70;
-    for (UWORD t = 0; t < 210; t++) updateSfx();
+    for (UWORD t = 0; t < CARRIER_SIREN_FRAMES - 1; t++) updateSfx();
     if (sfxChannelFrames[alarmChannel] != 1) return 72;
     updateSfx();
     if (sfxChannelFrames[alarmChannel]) return 73;
@@ -456,7 +512,7 @@ static UBYTE referenceCarrierDefenceMatches(void) {
         WORD v = (BYTE)sfxCarrierKlaxon[i]; if (v < 0) v = -v;
         if (v > peak) peak = v;
     }
-    if (peak != 120) return 71;
+    if (peak != 81) return 71;
     modPlaying = 1;
     initGameState(&g, 12040, 12040, 1); g.gameMode = GAME_MODE_ENHANCED;
     g.defence.phase = DEFENCE_WAVE; g.enemyPlane.active = 1;

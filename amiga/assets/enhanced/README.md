@@ -35,8 +35,8 @@ the project editor afterwards.
 `python tools/seed-compact-enhanced-assets.py --force` resets the current
 compact masters to the built-in pixel art. It refuses to overwrite edits
 without `--force`. Normal editing uses the editor instead.
-The older 16x16/8x16 PNGs, banks and `generate-enhanced-*-assets.py` scripts
-are retained as design references; they are no longer loaded by the game or editor.
+The obsolete 16x16/8x16 experiment and its generators were removed.
+The compact editable masters and their current packer are authoritative.
 
 The ground-art overlay preserves the original target footprints. The original procedural target
 IDs still own collision, destruction, smoke and score. The tank keeps its

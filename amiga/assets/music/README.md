@@ -48,3 +48,28 @@ Mutopia-2005/01/18-527, public domain.
 The historical three-channel score is retained only as provenance. Original
 CPC assembler and its converter are deliberately not part of this standalone
 Amiga repository.
+
+## Shared Chip RAM playback (October 2026)
+
+`tools/pack-mod-music.py` losslessly packs the three active MOD files. The
+original MODs remain the editable masters. The main build regenerates `.lz`
+files and `packed_sizes.h`, verifying an exact round trip.
+
+Only the current track is expanded into one 7,636-byte ordinary-RAM buffer
+(prefer Fast/Slow RAM, fall back to public RAM). Headers and note patterns never
+need Paula DMA. The menu tune needs just 128 dedicated Chip bytes for its
+instruments. Fanfare and Game Over samples reuse the menu ticker arena's unused
+tail, beyond the live HUD and engine. Their maximum is 5,528 bytes, checked
+against arena capacity at build time. Their debug previews use the same area;
+the ticker is not displayed in that screen.
+
+The old tracks occupied 21,004 dedicated Chip bytes; now only 128 dedicated
+Chip bytes are needed. The packed masters take 11,616 ordinary bytes. Including
+the unpack buffer, total data storage falls by 1,624 bytes, **not** 20 KB: this
+primarily relieves Chip pressure. Ordinary allocations can still fall back to
+Chip when other RAM is exhausted.
+
+Playback is stopped before replacing instruments. Unpacking happens only when
+starting a track, never in the scrolling loop. Sound quality and notes are
+unchanged. `tools/test-mod-unpack.cmd` tests the actual C decoder with ASan,
+all three masters, truncated input, output boundaries and invalid backreferences.
