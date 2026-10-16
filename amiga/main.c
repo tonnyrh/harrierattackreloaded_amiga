@@ -14,7 +14,7 @@
 #include <stddef.h>
 #include <string.h>
 #include "assets/harrier_menu_text.h"
-#define HAR_BUILD_LABEL "PUBLIC BETA 5"
+#define HAR_BUILD_LABEL "PUBLIC BETA 6"
 #ifndef HAR_CARRIER_BLITTER
 #define HAR_CARRIER_BLITTER 1
 #endif
@@ -533,6 +533,7 @@ static ULONG headlessDamageStats[DAMAGE_FIELD_COUNT];
 #define PLAYER_CLASSIC_LIVES 1
 #define PLAYER_RESPAWN_SAFE_FRAMES 90
 #define CPC_FUEL_CLOCK_HZ 300
+#define GAME_FUEL_BURN_HZ (CPC_FUEL_CLOCK_HZ * 115 / 100)
 #define CPC_FUEL_FRAME_HZ 50
 #define CPC_FUEL_TIME_QUANTUM 256
 #define CPC_FUEL_SUBCOUNT_FULL 14
@@ -919,6 +920,7 @@ static UBYTE menuTickerFrameDivider = 0;
 static UBYTE menuTickerCompleted = 0;
 static const char* activeMenuTickerText = menuTickerText;
 /* Menu ticker and gameplay HUD/engine never run together. One Chip arena. */
+#define IDLE_AUDIO_ARENA_BYTES (MENU_TICKER_BITMAP_BYTES - HUD_BITMAP_BYTES - ENGINE_BUFFER_BYTES)
 typedef char MenuRuntimeArenaFits[(MENU_TICKER_BITMAP_BYTES >= HUD_BITMAP_BYTES + ENGINE_BUFFER_BYTES) ? 1 : -1];
 static UBYTE* menuTickerBitmap = 0;
 
@@ -1860,6 +1862,8 @@ typedef struct SfxSample {
 #define SFX_PRIORITY_PLAYER 4
 #define SFX_POSITION_CENTER (SCREEN_WIDTH / 2)
 #include "assets/sfx/sample_config.h"
+typedef char IdleAudioArenaFits[(IDLE_AUDIO_ARENA_BYTES >= CARRIER_IDLE_DECODE_BUFFER_BYTES) ? 1 : -1];
+
 #define CARRIER_IDLE_MIN_DELAY_FRAMES 750
 #define CARRIER_IDLE_DELAY_SPREAD_FRAMES 251
 #define CARRIER_IDLE_FADE_FRAMES 25
@@ -1898,7 +1902,7 @@ static ULONG sfxVoiceSequence = 0;
 static const SfxSample* sfxPendingSample[SFX_CHANNEL_COUNT];
 static UWORD carrierIdleRandomState = 0x6d2b;
 static UWORD carrierIdleDelayFrames = CARRIER_IDLE_MIN_DELAY_FRAMES;
-static UBYTE carrierIdleLastVariant = 0xff;
+static UBYTE carrierGullCallPending = 0;
 static UBYTE carrierIdleChannel = 0xff;
 static UBYTE carrierIdleAge = 0;
 static UBYTE carrierIdleForcedFade = 0;
@@ -3200,9 +3204,7 @@ EMBED_CHIP sfxWaterSplashSample[] = {
 EMBED sfxCarrierIdle1Sample[] = {
 	#embed "assets/sfx/carrier_idle_1.adpcm"
 };
-EMBED sfxCarrierIdle2Sample[] = {
-	#embed "assets/sfx/carrier_idle_2.adpcm"
-};
+#define sfxCarrierIdle2Sample sfxCarrierIdle1Sample /* Legacy sound-browser slot. */
 /* Standard 4-channel/31-instrument ProTracker "M.K." MOD - see
  * assets/music/README.md for provenance (Thaxted/"I Vow to Thee, My
  * Country", the real CPC menu tune, re-arranged to 4 independent voices). */
@@ -3294,7 +3296,7 @@ static UBYTE sfxRetriggerGuard[SFX_COUNT];
 static UBYTE depotBoomReload[4], depotBoomSecond[4], depotBoomVariant;
 
 static const SfxSample sfxSamples[SFX_COUNT] = {
-    [SFX_BOMBER_DRONE]={sfxBomberDrone,sizeof(sfxBomberDrone),700,14,SFX_PRIORITY_AMBIENT,SFX_PAN_ANY,12},
+    [SFX_BOMBER_DRONE]={sfxBomberDrone,sizeof(sfxBomberDrone),700,20,SFX_PRIORITY_AMBIENT,SFX_PAN_ANY,12},
     [SFX_DEPOT_BOOM]={sfxGroundTargetHit1Sample,sizeof(sfxGroundTargetHit1Sample),SFX_PAULA_PERIOD,64,SFX_PRIORITY_IMPACT,SFX_PAN_ANY,
         SFX_FRAMES_FOR_BYTES(sizeof(sfxGroundTargetHit1Sample))},
     [SFX_GROUND_BOUNCE] = { sfxGroundBounce, sizeof(sfxGroundBounce), SFX_PAULA_PERIOD, 56,
@@ -3544,6 +3546,7 @@ static void stopAllSfx(void) {
 	engineActive = 0;
 	engineLastSpeed = 0xff;
 	carrierIdleChannel = 0xff;
+	carrierGullCallPending = 0;
 	carrierIdleAge = 0;
 	carrierIdleForcedFade = 0;
 	carrierIdleDelayFrames = CARRIER_IDLE_MIN_DELAY_FRAMES;
@@ -3925,6 +3928,7 @@ static void scheduleNextCarrierIdle(void) {
 	carrierIdleDelayFrames = (UWORD)(CARRIER_IDLE_MIN_DELAY_FRAMES +
 		(carrierIdleRandomState % CARRIER_IDLE_DELAY_SPREAD_FRAMES));
 	carrierIdleChannel = 0xff;
+	carrierGullCallPending = 0;
 	carrierIdleAge = 0;
 	carrierIdleForcedFade = 0;
 	carrierIdleNextVariant = 0xff;
@@ -3934,10 +3938,9 @@ static void scheduleNextCarrierIdle(void) {
 	carrierIdleDecodeFading = 0;
 }
 
-/* Sparse carrier-deck ambience. The WAV masters retain their own authored
- * shape, while Paula volume supplies a clearly controlled 0.5-second fade
- * at both edges. Starting the engine, entering flight, or starting a MOD
- * initiates the same short fade-out instead of cutting the sample. */
+/* Predecode the first idle recording incrementally, then play once per
+ * arriving gull flock. Flight stops it immediately; MOD startup releases
+ * all effect DMA before reusing the same Chip instrument arena. */
 static void updateCarrierIdleSfx(UBYTE eligible) {
 	if (carrierIdleChannel < SFX_CHANNEL_COUNT) {
 		UBYTE currentId = sfxChannelCurrentId[carrierIdleChannel];
@@ -3947,8 +3950,11 @@ static void updateCarrierIdleSfx(UBYTE eligible) {
 			return;
 		}
 
-		if (!eligible && carrierIdleForcedFade == 0)
-			carrierIdleForcedFade = CARRIER_IDLE_FADE_FRAMES;
+		if (!eligible) {
+			stopSfxChannel(carrierIdleChannel);
+			scheduleNextCarrierIdle();
+			return;
+		}
 
 		UWORD volume;
 		if (carrierIdleForcedFade) {
@@ -3984,20 +3990,17 @@ static void updateCarrierIdleSfx(UBYTE eligible) {
 	if (!eligible) {
 		/* Do not let time spent in music/flight make an ambience sample fire
 		 * immediately on the first deck frame. */
-		if (carrierIdleDelayFrames < CARRIER_IDLE_MIN_DELAY_FRAMES)
+		if (carrierGullCallPending || carrierIdleNextVariant != 0xff)
 			scheduleNextCarrierIdle();
 		return;
 	}
 	if (carrierIdleNextVariant == 0xff) {
-		carrierIdleNextVariant = nextSfxVariant(&carrierIdleRandomState,
-			frameCounter, &carrierIdleLastVariant, 2);
+		carrierIdleNextVariant = 0; /* Only the first idle/gull recording. */
 		beginCarrierIdleDecode(carrierIdleNextVariant);
 	}
 	serviceCarrierIdleDecode();
-	if (carrierIdleDelayFrames > 0) {
-		carrierIdleDelayFrames--;
+	if (!carrierGullCallPending)
 		return;
-	}
 	/* A malformed or unexpectedly long asset must never stall gameplay. It
 	 * merely postpones this optional cue until preparation has completed. */
 	if (carrierIdlePreparedVariant != carrierIdleNextVariant ||
@@ -4010,6 +4013,7 @@ static void updateCarrierIdleSfx(UBYTE eligible) {
 		if (sfxChannelCurrentId[channel] == sfxId) {
 			carrierIdleChannel = channel;
 			carrierIdleAge = 0;
+			carrierGullCallPending = 0;
 			carrierIdleForcedFade = 0;
 			return;
 		}
@@ -4108,7 +4112,7 @@ static void startPendingSfxChannel(UBYTE channel) {
 static __attribute__((noinline,optimize("Os"))) void serviceBomberDrone(const GameState* g) {
     UBYTE audible=g->defence.phase && g->defence.phase!=DEFENCE_SINKING &&
         g->enemyPlane.active && g->defence.jetType==2 && !g->defence.jetTurnTicks && !g->gameOver;
-    UWORD volume=g->defence.jetHits && (g->defence.clock&31)>=24 ? 0 : 12;
+    UWORD volume=g->defence.jetHits && (g->defence.clock&31)>=24 ? 0 : 20;
     for(UBYTE c=0;c<4;c++) if(sfxChannelCurrentId[c]==SFX_BOMBER_DRONE) {
         if(!audible) stopSfxChannel(c);
         else {sfxChannelFrames[c]=12; sfxChannelPendingVolume[c]=AUDIO_MIX_VOLUME(volume); if(!sfxChannelStartDelay[c]) custom->aud[c].ac_vol=AUDIO_MIX_VOLUME(volume);}
@@ -4610,6 +4614,7 @@ static void serviceModMusicToCurrentVbl(void) {
 
 static void startModTrack(const UBYTE* packed, ULONG packedBytes, ULONG trackBytes, UBYTE loopEnabled,
 	UBYTE tempoPercent) {
+	stopAllSfx(); /* Release shared idle DMA before replacing instruments. */
 	modStopChannels();
 	if (!modTrackBuffer || trackBytes > MOD_TRACK_BUFFER_BYTES ||
 		!unpackModTrack(packed, packedBytes, modTrackBuffer, trackBytes)) {
@@ -5461,12 +5466,8 @@ static void mutateEngineBuffer(UBYTE speed) {
 	engineWriteOffset = (UWORD)(dest - engineBuffer);
 }
 
-static void startEngineSound(UBYTE speed) {
-	if (!engineBuffer)
-		return;
-
-	if (!consumePreparedEngineBuffer(speed))
-		fillEngineBuffer(speed);
+static void resumeEngineSound(UBYTE speed) {
+	if(!engineBuffer)return;
 	engineWriteOffset = 0;
 	stopSfxChannel(ENGINE_CHANNEL);
 	custom->aud[ENGINE_CHANNEL].ac_ptr = (volatile UWORD*)engineBuffer;
@@ -5477,6 +5478,16 @@ static void startEngineSound(UBYTE speed) {
 	engineActive = 1;
 	engineLastSpeed = speed;
 }
+
+static void startEngineSound(UBYTE speed) {
+	if (!engineBuffer)
+		return;
+
+	if (!consumePreparedEngineBuffer(speed))
+		fillEngineBuffer(speed);
+	resumeEngineSound(speed);
+}
+
 
 static void updateEngineSound(UBYTE speed, UBYTE landing) {
 	if (!engineBuffer)
@@ -6290,9 +6301,13 @@ static void buildMenuCopper(USHORT* copper, const UBYTE* screen,
 	*copPtr++ = 0xfffe;
 }
 
+static UBYTE campaignFrozenDisplay;
+
 static void buildGameHudCopper(USHORT* copper, const UBYTE* world, const UBYTE* hud, const UWORD* palette, UWORD scrollDelay, USHORT byteOffset, const UWORD* playerSprite, const UWORD* playerAttachSprite, const UWORD* crashPart1Sprite, const UWORD* enemyAttachSprite, const UWORD* enemySprite, const UWORD* enemyMissileSprite, const UWORD* wingmanSprite, const UWORD* unusedSprite7) {
 	USHORT* copPtr = copper;
 	const UBYTE* planes[SCREEN_PLANES];
+    UBYTE narrow = campaignFrozenDisplay || (oil.active && !oil.approach);
+    UWORD worldRowBytes = campaignFrozenDisplay ? SCREEN_ROW_BYTES : GAME_WORLD_ROW_BYTES;
 
 	/* Commit the camera immediately after line 311, then let Copper consume
 	 * its fine scroll and all pointer halves together at line 16. Without
@@ -6301,7 +6316,7 @@ static void buildGameHudCopper(USHORT* copper, const UBYTE* world, const UBYTE* 
 	*copPtr++ = 0x1001;
 	*copPtr++ = 0xfffe;
 
-	copPtr = screenScan(copPtr, (oil.active && !oil.approach) ? SCREEN_WIDTH : GAME_FETCH_WIDTH, (oil.active && !oil.approach) ? 0 : 1);
+	copPtr = screenScan(copPtr, narrow ? SCREEN_WIDTH : GAME_FETCH_WIDTH, narrow ? 0 : 1);
 
 	*copPtr++ = offsetof(struct Custom, bplcon0);
 	*copPtr++ = (GAME_WORLD_DISPLAY_PLANES << 12) | (1 << 9);
@@ -6313,9 +6328,12 @@ static void buildGameHudCopper(USHORT* copper, const UBYTE* world, const UBYTE* 
 	 * buffer's real storage layout, unchanged) regardless of how many planes
 	 * are actually being fetched/displayed here - correct as-is, same as the
 	 * HUD split below already relies on. */
-	copPtr = copSetModulo(copPtr, GAME_WORLD_ROW_BYTES, (oil.active && !oil.approach) ? SCREEN_WIDTH : GAME_FETCH_WIDTH);
+	if(campaignFrozenDisplay) {
+        *copPtr++=offsetof(struct Custom,bpl1mod);*copPtr++=(GAME_WORLD_DISPLAY_PLANES-1)*SCREEN_ROW_BYTES;
+        *copPtr++=offsetof(struct Custom,bpl2mod);*copPtr++=(GAME_WORLD_DISPLAY_PLANES-1)*SCREEN_ROW_BYTES;
+    } else copPtr = copSetModulo(copPtr, GAME_WORLD_ROW_BYTES, narrow ? SCREEN_WIDTH : GAME_FETCH_WIDTH);
 	for (int plane = 0; plane < GAME_WORLD_DISPLAY_PLANES; plane++)
-		planes[plane] = world + byteOffset + GAME_WORLD_ROW_BYTES * plane;
+		planes[plane] = world + byteOffset + worldRowBytes * plane;
 	copPtr = copSetPlanesEx(0, copPtr, planes, GAME_WORLD_DISPLAY_PLANES, COPPER_TRACK_SCROLL);
 	/* The menu/loading-screen copper build (buildDisplayCopperEx()) still
 	 * uses the full SCREEN_PLANES(5) via these same activeCopperPlaneHigh/Low
@@ -6373,7 +6391,7 @@ static void buildGameHudCopper(USHORT* copper, const UBYTE* world, const UBYTE* 
 
 	copPtr = copSetGameSkyGradient(copPtr, palette);
     battleshipWaterFine=0;
-    if(battleship.active) {
+    if(battleship.active && !campaignFrozenDisplay) {
         copPtr=copWaitDisplayYAt(copPtr,BATTLESHIP_SEA_Y-2,0xda);
         /* Pointer-switch blank line must be water-coloured, never a sky gap. */
         copPtr=copSetColor(copPtr,GAME_COLOR_SKY,currentSeaLowRgb);
@@ -7827,7 +7845,7 @@ static __attribute__((noinline, optimize("Os"))) void drawMenuHighScore(UBYTE* b
 }
 
 /* Extended Enhanced routes need a landing reserve even without supply drops.
- * Effective difficulties 3/4/5 carry 10/20/30% more fuel; Classic is exact CPC.
+ * Effective difficulties 3/4/5 carry 10/20/30% more fuel; Classic uses the base tank capacity.
  * Still driven by simulation ticks, so menu tempo and pauses scale uniformly. */
 static UWORD playerFuelClockLimit(const GameState* game) {
     UBYTE difficulty = game->levelDifficulty > 5 ? 5 : game->levelDifficulty;
@@ -7856,7 +7874,8 @@ static void resetPlayerFuel(GameState* game) {
 /* CPC timercountdown compares successive KL TIME values. Its high byte
  * changes every 256 ticks of the 300 Hz firmware clock, so a full 14x16 tank
  * lasts about 191.15 seconds. The PAL game loop is the clock here: adding 300
- * against a 50*256 limit preserves the same rational cadence without floats. */
+ * against a 50*256 limit preserves the rational cadence without floats.
+ * GAME_FUEL_BURN_HZ applies the shared 15% consumption increase. */
 static UBYTE ejectLampIsLit(const GameState* game) {
     return game->aircraftFailureState != AIRCRAFT_FAILURE_NONE ||
         game->fuel == 0 || game->armour == 0;
@@ -7907,7 +7926,7 @@ static UBYTE updatePlayerFuel(GameState* game) {
 	}
 
 	game->fuelClockAccumulator = (UWORD)(game->fuelClockAccumulator +
-		CPC_FUEL_CLOCK_HZ * (game->gameMode == GAME_MODE_ENHANCED &&
+		GAME_FUEL_BURN_HZ * (game->gameMode == GAME_MODE_ENHANCED &&
 			game->lowSpeedLanding ? 3 : 1));
 	UWORD clockLimit = playerFuelClockLimit(game);
 	if (game->fuelClockAccumulator >= clockLimit) {
@@ -7927,6 +7946,7 @@ static UBYTE updatePlayerFuel(GameState* game) {
 
 static void initGameState(GameState* game, UWORD campaignSeed,
 	UWORD worldSeed, UBYTE missionNumber) {
+    UBYTE reuseWorld=campaign.transition && game->worldSeed==worldSeed;
 	memset(&game->defence, 0, sizeof(game->defence));
     game->defence.hull = 100;
     game->defence.gunHealth[0] = game->defence.gunHealth[1] = 2;
@@ -7934,7 +7954,9 @@ static void initGameState(GameState* game, UWORD campaignSeed,
 	game->campaignSeed = campaignSeed ? campaignSeed : WORLD_SEED_FALLBACK;
 	game->worldSeed = worldSeed ? worldSeed : WORLD_SEED_FALLBACK;
 	game->missionNumber = missionNumber ? missionNumber : 1;
-	resetCpcRandomSequence(game->worldSeed);
+	/* Scene changes stay in the same generated mission. Rebuilding its
+	 * procedural tables here blocks the display for no gameplay benefit. */
+	if(!reuseWorld) resetCpcRandomSequence(game->worldSeed);
 	resetRuntimeFlak();
 	resetTargetLock();
 	resetDestroyedShipColumns();
@@ -8744,7 +8766,6 @@ static __attribute__((noinline, optimize("Os"))) void drawCarrierInstruments(UBY
     UBYTE hull = oil.active ? oil.carrierHull : d->hull;
     UWORD cargo = d->cargo + (oil.active ? oil.carrierCargo : 0);
     if(cargo > 180) cargo = 180;
-    UBYTE colour = hull < 25 ? HUD_COLOR_WARN : HUD_COLOR_FUEL;
     if (full || state->carrierHull!=hull || state->carrierCargo!=cargo) {
         fillRect(hud,280,16,40,26,HUD_COLOR_BACKGROUND);
         static const UBYTE r[4]={6,5,6,5};
@@ -8759,8 +8780,6 @@ static __attribute__((noinline, optimize("Os"))) void drawCarrierInstruments(UBY
             if(pen) fillRect(hud,282+x*2,17+y*2,2,2,pen);
         }
         char count[2]={'0'+cargo/20,0}; drawText(hud,308,21,count,HUD_COLOR_LABEL);
-        drawTelemetryText(hud,282,36,"HULL",HUD_COLOR_LABEL);
-        drawTelemetryUnsignedPadded(hud,303,36,hull,3,colour);
     }
     UBYTE status = d->phase && d->perfectTicks ? (d->raidBonus == 2 ? 9 : 8) : d->phase == DEFENCE_ALARM || d->phase == DEFENCE_LULL ? 1 :
         d->phase == DEFENCE_SECURE ? 2 : d->phase == DEFENCE_DEPART ? 3 : d->phase == DEFENCE_SINKING ? 4 :
@@ -11411,7 +11430,14 @@ static UBYTE seaTileForColumn(LONG worldColumn, UWORD tileY) {
 	return 3;
 }
 
+/* The special sortie leaves the city behind once, then remains at sea. */
+static UBYTE campaignOceanColumn(LONG column) {
+ return campaign.oceanReturn || (campaign.oilRoute &&
+     column>=612+cpcLandRouteExtension+cpcTownRouteOverflow);
+}
 static const LevelSegmentDef* levelSegmentForWorldColumn(LONG worldColumn) {
+ static const LevelSegmentDef ocean={0,32767,HAR_STAGE_START_FRIGATE,HAR_TERRAIN_SEA};
+ if(campaignOceanColumn(worldColumn))return &ocean;
 	static const LevelSegmentDef* recent;
 	/* Route segments are disjoint. Most camera, actor and wave queries stay
 	 * in one segment; validate live bounds so route rebuilds remain safe. */
@@ -12434,6 +12460,7 @@ static UBYTE cpcRStateForWorldColumn(LONG worldColumn) {
 }
 
 static UBYTE cpcCloudTileAtColumnRow(LONG worldColumn, WORD tileY) {
+    if(campaignOceanColumn(worldColumn))return 0;
 	UBYTE topRow;
 	UBYTE encodedColumn;
 	UBYTE blockColumn;
@@ -13168,6 +13195,8 @@ static UBYTE objectCellForWorldColumnTile(LONG worldColumn, WORD tileY, ObjectCe
 	outCell->flags = 0;
 	outCell->hp = 0;
 
+    if(campaignOceanColumn(worldColumn) && (!campaign.oceanReturn ||
+        worldColumn<663+cpcLandRouteExtension+cpcTownRouteOverflow))return 1;
 	if (terrainKind == HAR_TERRAIN_COAST_FALL) {
 		LONG localColumn = segment ? worldColumn - segment->startColumn : worldColumn;
 		if (localColumn == 0 && (tileY == 14 || tileY == 15)) {
@@ -13789,7 +13818,7 @@ static void resolveWorldTileColumn(LONG worldColumn, RenderColumn* outColumn, Re
 static void buildWorldTileColumn(LONG worldColumn, RenderColumn* outColumn) {
 #endif
     /* Encounter sea background is required in cached and uncached builds. */
-    if(battleship.active || oil.scene) {
+    if(battleship.active || oil.scene || campaignOceanColumn(worldColumn)) {
         for(UWORD row=0;row<GAME_OBJECT_MAP_HEIGHT_TILES;row++)
             outColumn->tile[row]=row<15 ? 0 : seaTileForColumn(worldColumn & 31,row);
         return;
@@ -14017,7 +14046,7 @@ static void buildWorldTileColumn(LONG worldColumn, RenderColumn* outColumn) {
 
 #if HAR_RENDER_COLUMN_CACHE
 static void buildWorldTileColumn(LONG worldColumn, RenderColumn* outColumn) {
-    if(battleship.active || oil.scene) {
+    if(battleship.active || oil.scene || campaignOceanColumn(worldColumn)) {
         for(UWORD row=0;row<GAME_OBJECT_MAP_HEIGHT_TILES;row++)
             outColumn->tile[row]=row<15 ? 0 : seaTileForColumn(worldColumn & 31,row);
         return;
@@ -14218,6 +14247,7 @@ static void drawEnhancedGroundTargetColumnAt(UBYTE* bitmap,
 static void drawCarrierSceneStatus(UBYTE* bitmap,UWORD tileX,LONG column,WORD row);
 #include "oil_platform_render.h"
 static void drawDirectColumnRangeObjects(UBYTE* bitmap, UWORD physicalTileX, LONG worldColumn) {
+    if(campaign.oilRoute && campaignOceanColumn(worldColumn) && !oil.scene)return;
     if(battleship.active) { for(WORD r=0;r<GAME_OBJECT_MAP_HEIGHT_TILES;r++) battleshipDrawRow(bitmap,physicalTileX,worldColumn,r); return; }
     if(oil.scene) {
         for(WORD row=OIL_ORIGIN_Y/8;row<(OIL_ORIGIN_Y+OIL_HEIGHT)/8;row++) oilDrawRow(bitmap,physicalTileX,worldColumn,row);
@@ -14227,6 +14257,7 @@ static void drawDirectColumnRangeObjects(UBYTE* bitmap, UWORD physicalTileX, LON
 		buildHarLevelObjectIndex();
 	for (UBYTE wideIndex = 0; wideIndex < harWideObjectCount; wideIndex++) {
 		const LevelObjectDef* object = &harLevelObjects[harWideObjectIndex[wideIndex]];
+        if(campaign.oceanReturn && object->id!=HAR_OBJ_OWN_FRIGATE)continue;
 		LONG objectColumn = object->column;
 		WORD row;
 
@@ -14312,6 +14343,7 @@ static void drawCarrierSubBubbles(UBYTE* bitmap, UWORD physicalTileX,
 
 static void drawDirectColumnRangeObjectRow(UBYTE* bitmap,
 	UWORD physicalTileX, LONG worldColumn, WORD tileRow) {
+    if(campaign.oilRoute && campaignOceanColumn(worldColumn) && !oil.scene)return;
     if(battleship.active) {battleshipDrawRow(bitmap,physicalTileX,worldColumn,tileRow);return;}
     if(oil.scene) {
         oilDrawRow(bitmap,physicalTileX,worldColumn,tileRow);
@@ -14322,6 +14354,7 @@ static void drawDirectColumnRangeObjectRow(UBYTE* bitmap,
 	for (UBYTE wideIndex = 0; wideIndex < harWideObjectCount; wideIndex++) {
 		const LevelObjectDef* object =
 			&harLevelObjects[harWideObjectIndex[wideIndex]];
+        if(campaign.oceanReturn && object->id!=HAR_OBJ_OWN_FRIGATE)continue;
 		LONG objectColumn = object->column;
 		if (object->id == HAR_OBJ_OWN_FRIGATE &&
 			(object->flags & HAR_OBJECT_FLAG_NATIVE_CARRIER)) {
@@ -15537,6 +15570,7 @@ static void updateCarrierGulls(const GameState* game, UBYTE idleEligible,
 				for (UBYTE index = 0; index < CARRIER_GULL_MAX; index++) {
 					if (!carrierGulls[index].active) {
 						spawnCarrierGull(game, index);
+						if (!activeCount) carrierGullCallPending = 1;
 						break;
 					}
 				}
@@ -20855,7 +20889,10 @@ static UBYTE updateEnemyShipMissileTrigger(GameState* game) {
 		UWORD triggerColumn =
 			harEnemyShipMissileTriggers[game->enemyShipMissileTriggerIndex];
 		game->enemyShipMissileTriggerIndex++;
-		if (!game->enemyMissile.active) {
+		/* Special-scene sea corridors replace the frigate as well as its
+		 * terrain. Consume its old trigger, but never fire from empty water. */
+		if (!game->enemyMissile.active && !oil.scene && !battleship.active &&
+			!campaignOceanColumn(triggerColumn)) {
 			launchEnemyShipMissile(game, triggerColumn);
 			changed = 1;
 		}
@@ -23203,7 +23240,9 @@ static int runClassicGameplayContractTest(void) {
 #if HAR_HEADLESS_OIL_TEST
  UBYTE oilResult=oilContract();
  if(oilResult) KPrintF("oil-test=%ld\n",(LONG)oilResult);
- writeClassicContractResult(oilResult ? "FAIL oil-platform" : "PASS oil-platform-solo-cpu-p2-health-landing-respawn-vtol-restoration");
+ char oilFailure[]="FAIL oil-platform 00";
+ oilFailure[sizeof(oilFailure)-3]='0'+oilResult/10;oilFailure[sizeof(oilFailure)-2]='0'+oilResult%10;
+ writeClassicContractResult(oilResult ? oilFailure : "PASS oil-platform-solo-cpu-p2-health-landing-respawn-vtol-restoration");
  return oilResult;
 #endif
 #if HAR_HEADLESS_ENHANCED_BALANCE_TEST_ONLY
@@ -25042,9 +25081,8 @@ static int runClassicGameplayContractTest(void) {
 		fuelFrames++;
 	}
 	CONTRACT_CHECK(classic.fuel == 0, "Fuel reaches zero");
-	/* ceil(14 * 16 * 256 * 50 / 300) PAL frames. Keep the literal as
-	 * an external contract against accidentally changing the CPC constants. */
-	CONTRACT_CHECK(fuelFrames == 9558, "CPC fuel duration is 9558 PAL frames");
+	/* ceil(14 * 16 * 256 * 50 / 345): base tank with 15% more burn. */
+	CONTRACT_CHECK(fuelFrames == 8311, "Fuel duration is 8311 PAL frames");
 
 	/* Regression: town destruction must not share the old 24-cell ship/target
 	 * smoke list.  Exercise more than that limit through the real generated
@@ -26235,8 +26273,9 @@ static void startGameSession(GameState* game,
 	UBYTE levelDifficulty = cpcDifficultyForMission(skillLevel,
 		effectiveMission);
     oil.active=oil.scene=oil.completed=oil.approach=0;battleship.active=0;
+    campaign.oilRoute=campaign.oceanReturn=0;
     if(!campaign.transition) {
-        campaign.specialDone=0;campaign.request=0;campaign.debugOpen=0;
+        campaign.specialDone=0;campaign.request=0;campaign.debugOpen=0;campaign.oceanReturn=0;
         if(effectiveMission==1) campaign.cheated=debugInvulnerable;
     }
 	stopAllSfx();
@@ -26262,7 +26301,7 @@ static void startGameSession(GameState* game,
 	memset(&tempoPendingInput2, 0, sizeof(tempoPendingInput2));
 	/* Prepare while the previous scene is still displayed. Commit the LFSR
 	 * state only when takeoff actually starts, preserving the sound sequence. */
-	prepareEngineBuffer(engineSpeedForSpeedLevel(game->speedLevel));
+	if(!campaign.transition) prepareEngineBuffer(engineSpeedForSpeedLevel(game->speedLevel));
 	/* Select the actual CPC palette phase now, before buildGameHudCopper()
 	 * captures these colours. */
 	resetCityFade(game);
@@ -26278,6 +26317,7 @@ static void startGameSession(GameState* game,
 	 * assigns this again only after the old world has been discarded. */
 	selectHighScoreMode(game->gameMode);
 	currentWorldPresentationMode = game->gameMode;
+    campaign.oilRoute=game->gameMode==GAME_MODE_ENHANCED && campaignSortie(game->missionNumber)>1 && !campaign.specialDone;
     memset(&oil,0,sizeof(oil));
     carrierSceneHull=255; carrierSceneCargo=0;
     carrierDefenceSinkPixels = 0; carrierDefenceGunMask = 0; carrierWingmanLiftDepth = 0;
@@ -26287,7 +26327,7 @@ static void startGameSession(GameState* game,
     if(!campaign.transition && (HAR_OIL_PLATFORM_PROTOTYPE || HAR_BATTLESHIP_PROTOTYPE || campaignSortie(game->missionNumber)!=1)) carrierBeginDefence(game);
 #endif
 
-	KPrintF("World seed campaign=%ld mission=%ld world=%ld skill=%ld mode=%ld\n",
+	if(!campaign.transition) KPrintF("World seed campaign=%ld mission=%ld world=%ld skill=%ld mode=%ld\n",
 		(ULONG)game->campaignSeed, (ULONG)game->missionNumber,
 		(ULONG)game->worldSeed, (ULONG)game->levelDifficulty,
 		(ULONG)game->gameMode);
@@ -26361,7 +26401,8 @@ static void startGameSession(GameState* game,
 	*pendingWingmanSpriteUpdate = 0;
 	*hudDirty = 0;
 
-	drawHudBuffer(hudBuffer, game, highScore, 0);
+	/* A scene handoff keeps the copied HUD; draw once after preparation. */
+	if(!campaign.transition) drawHudBuffer(hudBuffer, game, highScore, 0);
 #if HAR_DEBUG_PERF_LOG
 	perfHudGuardArm(hudBuffer, worldBuffers[0] + GAME_WORLD_BITMAP_BYTES);
 #endif
@@ -26384,12 +26425,20 @@ static void startGameSession(GameState* game,
 
 #include "friendly_fire_tests.h"
 
+#include "campaign_display.h"
 #include "campaign.h"
 
 static void reportStartupMemoryFailure(void) {
  const char message[]="\nNot enough free Chip RAM to start Harrier.\nBoot the ADF directly, without mounted DH0/DH1 drives,\nor use more Chip RAM. Requires at least 1 MB total RAM.\n";
  Write(Output(),(APTR)message,sizeof(message)-1);
 }
+#if HAR_HEADLESS_CAMPAIGN_TRANSITION_TEST
+static UBYTE transitionTestStage,transitionTestStable=1;
+static UWORD transitionTestMaxFields,transitionTestTransitCount;
+static ULONG transitionStillHash(const UBYTE* data) {
+ ULONG hash=0;for(ULONG i=0;i<SCREEN_BITMAP_BYTES;i++)hash=hash*33+data[i];return hash;
+}
+#endif
 int main(void) {
 	SysBase = *((struct ExecBase**)4UL);
 	custom = (struct Custom*)0xdff000;
@@ -26479,8 +26528,10 @@ int main(void) {
 	 * Both playback paths already handle a missing buffer without DMA. */
 	seaAmbienceBuffer = (UBYTE*)AllocMem(SEA_AMBIENCE_BUFFER_BYTES,
 		MEMF_CHIP | MEMF_CLEAR);
-	carrierIdleDecodeBuffer = (UBYTE*)AllocMem(
-		CARRIER_IDLE_DECODE_BUFFER_BYTES, MEMF_CHIP | MEMF_CLEAR);
+	/* Idle birds and MOD instruments never play together. Borrow the
+	 * existing arena tail instead of allocating 35 KB of optional Chip RAM. */
+	carrierIdleDecodeBuffer = menuTickerBitmap ?
+		menuTickerBitmap + HUD_BITMAP_BYTES + ENGINE_BUFFER_BYTES : 0;
 	telemetrySamples = (TelemetrySample*)AllocMem(sizeof(TelemetrySample) * TELEMETRY_SAMPLE_COUNT, MEMF_FAST | MEMF_CLEAR);
 	if (!telemetrySamples && AvailMem(MEMF_PUBLIC) > sizeof(TelemetrySample) * TELEMETRY_SAMPLE_COUNT + 4096)
 		telemetrySamples = (TelemetrySample*)AllocMem(sizeof(TelemetrySample) * TELEMETRY_SAMPLE_COUNT, MEMF_PUBLIC | MEMF_CLEAR);
@@ -26546,9 +26597,7 @@ int main(void) {
 		if (seaAmbienceBuffer)
 			FreeMem(seaAmbienceBuffer, SEA_AMBIENCE_BUFFER_BYTES);
 		seaAmbienceBuffer = 0;
-		if (carrierIdleDecodeBuffer)
-			FreeMem(carrierIdleDecodeBuffer,
-				CARRIER_IDLE_DECODE_BUFFER_BYTES);
+		/* Idle buffer aliases the menu/runtime arena. */
 		carrierIdleDecodeBuffer = 0;
 		CloseLibrary((struct Library*)DOSBase);
 		CloseLibrary((struct Library*)GfxBase);
@@ -27042,7 +27091,7 @@ int main(void) {
 				(game.landingState == LANDING_STATE_HOVER ||
 				 game.scrollX >= LANDING_HOVER_SCROLL_X))
 				headlessFinalCarrierFrame = frameCounter;
-			if ((!HAR_HEADLESS_LANDING_EXERCISE && headlessFinalCarrierFrame &&
+			if ((!HAR_HEADLESS_CAMPAIGN_TRANSITION_TEST && !HAR_HEADLESS_LANDING_EXERCISE && headlessFinalCarrierFrame &&
 				 (UWORD)(frameCounter - headlessFinalCarrierFrame) >= 50) ||
 				frameCounter > HAR_HEADLESS_MAX_FRAMES)
 				break;
@@ -27103,14 +27152,44 @@ int main(void) {
 #endif
 		UBYTE inputMask = InputMask(&input);
 
-        if(inGameScene && campaign.request && !gamePaused && !telemetryStatsPaused) {
+#if HAR_HEADLESS_CAMPAIGN_TRANSITION_TEST
+        if(inGameScene && !transitionTestStage && frameCounter>300) {
+            game.missionNumber=2;campaign.request=CAMPAIGN_OIL;transitionTestStage=1;
+            debugInvulnerable=1;
+        }
+        if(transitionTestStage==1 && oil.active && !oil.approach && game.defence.clock>700) {
+            /* Complete the raid fixture, then exercise its real departure. */
+            game.defence.phase=DEFENCE_SECURE;game.defence.phaseTicks=1;
+            game.enemyPlane.active=game.helicopter.active=game.enemyMissile.active=0;
+            memset(game.defence.bombs,0,sizeof(game.defence.bombs));
+            transitionTestStage=2;
+        }
+        if(transitionTestStage==2 && !oil.active && campaign.oceanReturn &&
+           game.landingState==LANDING_STATE_HOVER) {
+            game.missionNumber=3;campaign.request=CAMPAIGN_BATTLESHIP;transitionTestStage=3;
+        }
+        if(transitionTestStage==3 && battleship.active && battleship.clock>240) {
+            battleship.finished=1;campaign.specialDone=1;campaign.request=CAMPAIGN_RETURN;transitionTestStage=4;
+        }
+        if(transitionTestStage==4 && !battleship.active && campaign.oceanReturn &&
+           game.landingState==LANDING_STATE_HOVER) {transitionTestStage=5;break;}
+#endif
+        if(inGameScene && campaign.request && !gamePaused && !telemetryStatsPaused && campaignCanChangeScene(&game)) {
             UBYTE scene=campaign.request;CampaignCarry keep;campaignSave(&keep,&game);
-            WORD arrivalX=game.playerX,arrivalY=game.playerY;
+            UBYTE oceanTransit=scene==CAMPAIGN_OIL || scene==CAMPAIGN_BATTLESHIP || scene==CAMPAIGN_RETURN;
+#if HAR_HEADLESS_CAMPAIGN_TRANSITION_TEST
+            ULONG entryStart=campaignHardwareField();
+#endif
+            UBYTE reuseEngineLoop=engineActive;
             campaign.transition=1;
             stopModMusic();stopAllSfx();
-            drawTextCentered(screenBuffer,112,"LOADING...",11);
-            buildDisplayCopper(copper,screenBuffer,(const UWORD*)loadingPalette,nullSprite);
-            custom->copjmp1=0x7fff;
+            freezeCampaignDisplay(screenBuffer,copper,worldBuffers[activeWorldBuffer],hudBuffer,&game,
+                playerSprite,playerAttachSprite,crashPart1Sprite,enemyAttachSprite,enemySprite,
+                enemyMissileSprite,wingmanSprite,unusedSprite7,oceanTransit);
+#if HAR_HEADLESS_CAMPAIGN_TRANSITION_TEST
+            ULONG entryFrozen=campaignHardwareField();
+            ULONG stillHash=oceanTransit?0:transitionStillHash(screenBuffer);
+#endif
             startGameSession(&game,copper,worldBuffers,&activeWorldBuffer,hudBuffer,
                 playerSprite,playerAttachSprite,crashPart1Sprite,enemyAttachSprite,enemySprite,enemyMissileSprite,
                 wingmanSprite,unusedSprite7,&pendingGameScrollCopperUpdate,&pendingPlayerSpriteUpdate,
@@ -27119,11 +27198,37 @@ int main(void) {
                 game.skillLevel,game.gameMode,game.wingmanControl,0);
             campaignRestore(&game,&keep);campaignApplyScene(&game,scene);
             if(scene==CAMPAIGN_BATTLESHIP) campaignBattleshipArrival(&game,&keep);
-            if(scene==CAMPAIGN_OIL) {game.playerX=arrivalX;game.playerY=arrivalY;}
-            if(game.takeoffState==TAKEOFF_STATE_AIRBORNE && !game.defence.landed) startEngineSound(engineSpeedForSpeedLevel(game.speedLevel));
+            if(scene==CAMPAIGN_OIL || scene==CAMPAIGN_RETURN) campaignOceanArrival(&game,&keep,scene);
+#if HAR_HEADLESS_CAMPAIGN_TRANSITION_TEST
+            if(game.playerX!=keep.playerX || game.playerY!=keep.playerY ||
+               currentSkyTopRgb!=keep.sky[0] || currentSkyMidRgb!=keep.sky[1] ||
+               currentSkyLowRgb!=keep.sky[2])transitionTestStable=0;
+#endif
+            if(game.takeoffState==TAKEOFF_STATE_AIRBORNE && !game.defence.landed) {
+                if(reuseEngineLoop)resumeEngineSound(engineSpeedForSpeedLevel(game.speedLevel));
+                else startEngineSound(engineSpeedForSpeedLevel(game.speedLevel));
+            }
             campaign.transition=0;campaign.request=0;
             worldObjectsReset();
-            initRingWorldBuffer(worldBuffers[activeWorldBuffer],scrollLeftWorldColumnForScroll(game.scrollX));
+#if HAR_HEADLESS_CAMPAIGN_TRANSITION_TEST
+            ULONG entryReady=campaignHardwareField();
+            KPrintF("TRANSIT entry freeze=%ld reset=%ld total=%ld\n",(entryFrozen-entryStart)&65535,(entryReady-entryFrozen)&65535,(entryReady-entryStart)&65535);
+#endif
+            if(oceanTransit) prepareCampaignOceanWorld(screenBuffer,worldBuffers[activeWorldBuffer],&game);
+            else initRingWorldBuffer(worldBuffers[activeWorldBuffer],scrollLeftWorldColumnForScroll(game.scrollX));
+            #if HAR_HEADLESS_CAMPAIGN_TRANSITION_TEST
+            if(oceanTransit) {
+                transitionTestTransitCount++;
+                KPrintF("TRANSIT scene=%ld fields=%ld maxWork=%ld scroll=%ld\n",(ULONG)scene,(ULONG)campaignTransitFrames,(ULONG)campaignTransitMaxFields,(ULONG)game.scrollX);
+                KPrintF("TRANSIT combat spawned=%ld kills=%ld shots=%ld clear=%ld\n",(ULONG)campaignTransitSpawned,(ULONG)campaignTransitKills,(ULONG)campaignTransitShots,(ULONG)campaignTransitClear);
+                if(!campaignTransitClear || campaignTransitSpawned<2 || !campaignTransitShots)transitionTestStable=0;
+                if(campaignTransitMaxFields>transitionTestMaxFields)transitionTestMaxFields=campaignTransitMaxFields;
+                ULONG streamedHash=0;for(ULONG i=0;i<GAME_WORLD_BITMAP_BYTES;i++)streamedHash=streamedHash*33+worldBuffers[activeWorldBuffer][i];
+                initRingWorldBuffer(worldBuffers[activeWorldBuffer],scrollLeftWorldColumnForScroll(game.scrollX));
+                ULONG referenceHash=0;for(ULONG i=0;i<GAME_WORLD_BITMAP_BYTES;i++)referenceHash=referenceHash*33+worldBuffers[activeWorldBuffer][i];
+                if(streamedHash!=referenceHash)transitionTestStable=0;
+            }
+#endif
             drawHudBuffer(hudBuffer,&game,highScore,0);
             if(battleship.active)battleshipDrawHud(hudBuffer);
             updatePlayerSprite(playerSprite,playerAttachSprite,&game);
@@ -27131,7 +27236,10 @@ int main(void) {
             buildGameHudCopper(copper,worldBuffers[activeWorldBuffer],hudBuffer,(const UWORD*)gamePalette,
                 scrollDelayForBplcon1(game.scrollX),displayByteOffsetForGameState(&game),playerSprite,playerAttachSprite,
                 crashPart1Sprite,enemyAttachSprite,enemySprite,enemyMissileSprite,wingmanSprite,unusedSprite7);
-            custom->copjmp1=0x7fff;
+#if HAR_HEADLESS_CAMPAIGN_TRANSITION_TEST
+            if(!oceanTransit && stillHash!=transitionStillHash(screenBuffer))transitionTestStable=0;
+#endif
+            WaitVbl();custom->cop1lc=(ULONG)copper;custom->copjmp1=0x7fff;
             pendingGameScrollCopperUpdate=pendingPlayerSpriteUpdate=pendingWingmanSpriteUpdate=1;
             tempoPoseValid=tempoPresentedValid=tempoClockValid=0;
             lastInputMask=inputMask;
@@ -27802,7 +27910,7 @@ int main(void) {
                     battleshipUpdate(&game,&input,&previousInput,&input2,worldBuffers);
                     pendingWingmanSpriteUpdate=pendingPlayerSpriteUpdate=pendingEnemyMissileSpriteUpdate=pendingGameScrollCopperUpdate=1;
                     if(!(battleship.clock&7)) {drawHudValues(hudBuffer,&game,highScore,0);battleshipDrawHud(hudBuffer);}
-                    if(battleship.finished==1) {campaign.specialDone=1;campaign.request=CAMPAIGN_LANDING;}
+                    if(battleship.finished==1) {campaign.specialDone=1;campaign.request=CAMPAIGN_RETURN;}
                 } else if (game.defence.phase && game.gameMode == GAME_MODE_ENHANCED &&
                     game.takeoffState != TAKEOFF_STATE_ROLLING_IN) {
                     UBYTE wasOilApproach=oil.approach;
@@ -28761,6 +28869,9 @@ int main(void) {
 		}
 	}
 
+#if HAR_HEADLESS_CAMPAIGN_TRANSITION_TEST
+    KPrintF("TRANSIT ending stage=%ld stable=%ld count=%ld max=%ld\n",(ULONG)transitionTestStage,(ULONG)transitionTestStable,(ULONG)transitionTestTransitCount,(ULONG)transitionTestMaxFields);
+#endif
 	stopAllSfx();
 	stopModMusic();
 	/* Restore AmigaOS while every Copper, bitplane, sprite and audio buffer it
@@ -28768,6 +28879,19 @@ int main(void) {
 	 * and only then waited/restored the OS display, creating a teardown-only
 	 * use-after-free on real hardware and strict WinUAE configurations. */
 	FreeSystem();
+#if HAR_HEADLESS_CAMPAIGN_TRANSITION_TEST
+    KPrintF("TRANSIT OS restored\n");
+    BPTR transitionFile=Open((CONST_STRPTR)"DH1:transition_result.txt",MODE_NEWFILE);
+    if(transitionFile) {
+        const char* result=transitionTestStage==5 && transitionTestStable && transitionTestTransitCount==4 && transitionTestMaxFields<=1 ?
+            "PASS campaign-oil-battleship-ocean-transits-buffer-equivalence" : "FAIL campaign-live-transition";
+        Write(transitionFile,(APTR)result,strlen(result));
+        char metrics[]="\nmax-work-vsyncs=00 transits=0 stage=0 stable=0\n";
+        metrics[17]='0'+transitionTestMaxFields/10;metrics[18]='0'+transitionTestMaxFields%10;
+        metrics[29]='0'+transitionTestTransitCount;metrics[37]='0'+transitionTestStage;metrics[46]='0'+transitionTestStable;
+        Write(transitionFile,metrics,sizeof(metrics)-1);Close(transitionFile);
+    }
+#endif
 #if HAR_SCROLL_PRESENT_TRACE
     BPTR traceFile=Open((CONST_STRPTR)"DH1:scroll_trace.bin",MODE_NEWFILE);
     if(traceFile) {
@@ -28821,7 +28945,7 @@ int main(void) {
 	engineBuffer = 0;
     if(seaAmbienceBuffer) FreeMem(seaAmbienceBuffer, SEA_AMBIENCE_BUFFER_BYTES);
 	seaAmbienceBuffer = 0;
-    if(carrierIdleDecodeBuffer) FreeMem(carrierIdleDecodeBuffer, CARRIER_IDLE_DECODE_BUFFER_BYTES);
+    /* Idle buffer aliases the menu/runtime arena. */
 	carrierIdleDecodeBuffer = 0;
 	if (telemetrySamples)
 		FreeMem(telemetrySamples, sizeof(TelemetrySample) * TELEMETRY_SAMPLE_COUNT);

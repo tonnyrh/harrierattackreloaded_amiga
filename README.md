@@ -12,20 +12,14 @@ kept here.
 
 ## Project status
 
-**Public Beta 4 (v0.9.0-beta.4) remains a prerelease.** The complete
-mission loop is playable: carrier takeoff, generated sea/terrain/city route,
-air and ground combat, powerups, return flight, carrier landing and progression
-to the next mission. Solo, CPU Wingman and local Player 2 modes are available,
-along with the alternating attract demo.
+**Public Beta 6 (v0.9.0-beta.6) is a prerelease.** The main ADF integrates
+terrain/city missions, carrier defence, oil-platform defence and Battleship.
+Enhanced follows a repeating three-sortie campaign, with open-sea transitions
+and increasing difficulty. Classic retains its regular mission loop.
 
-This beta adds Enhanced Missile Silos, terrain-following helicopters, low-speed
-landing mode, missile armour damage and two-button emergency eject. F depots
-grant 20% fuel, longer routes have a landing fuel reserve, and Fuel/Armour
-meters now have distinct colours. It also includes A500 Wingman sprite
-publication changes, terrain impacts for tank missiles and bounded helicopter
-machine-gun bullets. The editor includes the new encounter and fuel-depot art.
-See [encounter behavior and validation](amiga/ENHANCED_ENCOUNTERS.md) for details,
-performance measurements and remaining real-hardware checks.
+This is still a radical beta that needs polish, balancing and real-hardware
+feedback. See [release notes](RELEASE_NOTES_PUBLIC_BETA.md) and
+[campaign flow](amiga/CAMPAIGN.md) for changes and validation limits.
 
 The port includes the CPC-derived weapon, collision, scoring, difficulty and
 level rules; hardware-assisted smooth scrolling; OCS sprites and pixel BOBs;
@@ -54,9 +48,9 @@ Workbench/hard-disk installation. Kickstart ROMs are never included.
 
 ## Current development build
 
-BETA5DEV2 adds Enhanced carrier defence with CPU/P2 ship weapons and helicopter repair-kit drops. Wingman remains available over land.
-See [carrier controls and mission cycle](amiga/CARRIER_DEFENCE.md).
-The existing public Beta 4 download is unchanged.
+Build and test `amiga/out/harrier_amiga.adf` as the single integrated game.
+Separate Battleship/oil-platform ADFs are legacy development tools, not routine
+build or release outputs. Use the debug scene selector for focused testing.
 
 ## Difficulty
 

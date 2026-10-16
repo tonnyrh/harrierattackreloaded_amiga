@@ -44,7 +44,7 @@ static UBYTE referenceCarrierBonusMatches(void) {
         if(scenario==4) carrierDefenceImpact(&g,80,0);
         updateCarrierDefence(&g,&idle,&idle,&p2,buffers);
         if(g.defence.phase!=DEFENCE_LULL || g.defence.raidBonus) { result=3; break; }
-        if(scenario==1 || scenario==3) carrierDeliverRepair(&g,g.defence.hull,20);
+        if(scenario==1 || scenario==3) carrierDeliverRepair(&g,g.defence.hull,40);
         g.defence.phase=DEFENCE_WAVE; g.defence.wave=2;
         ULONG before=g.missionBaseScore;
         updateCarrierDefence(&g,&idle,&idle,&p2,buffers);
@@ -223,12 +223,18 @@ static UBYTE referenceCarrierDefenceMatches(void) {
     carrierServiceRepair(&g,1);
     if(g.defence.service || g.defence.cargo!=40) return 203;
     for(UBYTE t=0;t<CARRIER_REPAIR_TICKS;t++) carrierServiceRepair(&g,0);
-    if(g.defence.hull!=60 || g.defence.cargo!=20 || g.defence.gunHealth[0]!=2) return 204;
+    if(g.defence.hull!=50 || g.defence.cargo!=20 || g.defence.gunHealth[0]!=2) return 204;
     for(UBYTE t=0;t<CARRIER_REPAIR_TICKS;t++) carrierServiceRepair(&g,0);
-    if(g.defence.hull!=80 || g.defence.cargo) return 205;
+    if(g.defence.hull!=60 || g.defence.cargo) return 205;
     g.defence.hull=100; g.defence.cargo=20;
     for(UBYTE t=0;t<CARRIER_REPAIR_TICKS;t++) carrierServiceRepair(&g,0);
     if(g.defence.cargo!=20) return 206;
+#if HAR_HEADLESS_REPAIR_TEST_ONLY
+    g.defence.hull=95;
+    for(UBYTE t=0;t<CARRIER_REPAIR_TICKS;t++)carrierServiceRepair(&g,0);
+    if(g.defence.hull!=100 || g.defence.cargo)return 207;
+    modPlaying=oldMod;return 0;
+#endif
     /* Down accelerates, up slows descent, fire alone leaves normal descent. */
     for(UBYTE fast=0;fast<4;fast++) {
         initGameState(&g,12040,12040,1); g.gameMode=GAME_MODE_ENHANCED;
@@ -410,7 +416,7 @@ static UBYTE referenceCarrierDefenceMatches(void) {
     carrierDeliverRepair(&g, 64, 0);
     if (g.defence.gunHealth[0] || g.defence.gunHealth[1] != 2) return 49;
     carrierDeliverRepair(&g, 64, 20);
-    if (g.defence.gunHealth[0] != 2 || g.defence.gunHealth[1] != 2 || g.defence.hull != 84 || g.defence.cargo) return 50;
+    if (g.defence.gunHealth[0] != 2 || g.defence.gunHealth[1] != 2 || g.defence.hull != 74 || g.defence.cargo) return 50;
     g.defence.gunHeight[1] = 8; g.playerX = 144; g.playerY = 100;
     g.respawnSafeTimer = 0; carrierUpdateGuns(&g);
     if (g.defence.gunHealth[1] || g.defence.gunHeight[1] || g.armour != 75 || g.missileDamageThirds != 77) return 51;

@@ -70,8 +70,8 @@ Tests were muted as requested; tonal preference still needs the user's audition.
 | `ground_hit_3.wav` | Archived master only | Fourth variant retained for restoration; no runtime allocation. |
 | `ground_miss_0.wav` | `ground_miss_1.raw` | Bomb/rocket hit on bare land that is not a real target - a "miss". Previously reused a random `ground_target_hit_*` variant; now its own dedicated sound. |
 | `WaterSplash.wav` | `water_splash.raw` | Played when a player or Wingman bomb reaches open water; accompanies the temporary white Smoke 1/Smoke 2 spray animation. |
-| `idle_0.wav` | `carrier_idle_1.adpcm` | Random carrier-deck ambience while the Harrier has not taken off and no MOD music is playing. |
-| `idle_1.wav` | `carrier_idle_2.adpcm` | Random carrier-deck ambience under the same conditions. |
+| `idle_0.wav` | `carrier_idle_1.adpcm` | First idle cue, shortened to 800 ms and triggered once per arriving gull flock; shares the MOD instrument arena. |
+| `idle_1.wav` | Archived second cue | Retained for restoration; not embedded. Legacy browser slot uses cue 1. |
 
 Ground-target hits and land misses both use `startWorldImpactQuiet()` for the
 visual explosion and play one sample (`ground_target_hit_*` for an actual
@@ -151,3 +151,9 @@ one existing ground_target_hit variant, followed immediately by the next
 variant in full, at volume 64. Three pairs rotate; the old one-third ground-miss
 replay is removed. tools/generate-bomber-drone.py writes a listening preview
 only; no concatenated audio buffer is loaded by the game.
+
+## Gull cue and shared Chip audio (2026-10-16)
+Only the first idle recording is embedded for carrier gulls. The second legacy
+sound-browser slot aliases it; both source WAVs remain available. See
+`sfx/README.md` for the 800 ms edit and shared buffer lifetime. All attack
+alarms still use the 32-byte inline Paula waveform; no recorded klaxon is linked.

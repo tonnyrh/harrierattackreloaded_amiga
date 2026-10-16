@@ -42,7 +42,7 @@ static UBYTE referenceCarrierGunneryMatches(void) {
     memset(&p2, 0, sizeof(p2)); updateCarrierDefence(&g, &in, &prev, &p2, buffers);
     if(g.defence.hull!=40 || g.defence.cargo!=20) return 209;
     for(UBYTE tick=1;tick<CARRIER_REPAIR_TICKS;tick++) updateCarrierDefence(&g,&in,&prev,&p2,buffers);
-    if (g.defence.hull != 60 || g.defence.cargo || g.defence.wave != 2 || g.defence.phase != DEFENCE_WAVE) return 109;
+    if (g.defence.hull != 50 || g.defence.cargo || g.defence.wave != 2 || g.defence.phase != DEFENCE_WAVE) return 109;
     g.defence.landed = 0; g.playerX = 100; g.playerY = 40; g.armour = 100;
     memset(b, 0, sizeof(*b)); b->active = 1; b->worldX = 104; b->y = 43;
     carrierAdvanceBullet(&g, b);
@@ -76,7 +76,7 @@ static UBYTE referenceCarrierGunneryMatches(void) {
     dropCarrierRepair(&g);
     if (!g.powerup.active || g.powerup.worldX != 204 || g.powerup.type != POWERUP_CARRIER_REPAIR) return 116;
     for (UBYTE i = 0; i < 5; i++) activatePowerup(&g, POWERUP_CARRIER_REPAIR);
-    if (g.defence.cargo != 60 || g.defence.hull != 60) return 117;
+    if (g.defence.cargo != 60 || g.defence.hull != 50) return 117;
     for (LONG c = CPC_LAND_PROCEDURAL_WORLD_START; c < CPC_LAND_PROCEDURAL_WORLD_START + cpcLandProceduralLength; c++)
         if (repairDepotLocalColumn(c) >= 0) return 118;
     initGameState(&g, 12040, 12040, 1); g.gameMode = GAME_MODE_ENHANCED;

@@ -4,6 +4,9 @@ typedef struct { ULONG key; UBYTE tile[40]; } BattleshipTileCache;
 static BattleshipTileCache* battleshipTileCache;
 /* One shared overlay path for initial drawing and every BOB background repair. */
 static void battleshipDrawRow(UBYTE* bitmap,UWORD physical,LONG col,WORD row) {
+    /* The logical map has 25 rows, but the world bitmap ends at row 21.
+     * The raw sea writer below must obey the same clip as the tile blitter. */
+    if(row<0 || row*8>=GAME_WORLD_HEIGHT)return;
     if(row>=BATTLESHIP_SEA_Y/8) {
         /* The Copper scrolls this sea independently of the ship, wrapping
          * every 256 pixels. Repeat the wave pattern at exactly that period.

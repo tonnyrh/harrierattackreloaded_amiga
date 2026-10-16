@@ -84,9 +84,15 @@ Game Over uses `assets/music/raf_game_over.mod`, not a one-shot RAW sample.
 Menu navigation is deliberately silent so the four-channel menu MOD remains
 uninterrupted.
 
-`carrier_idle_1.adpcm` and `carrier_idle_2.adpcm` are derived from the versioned
-`idle_0.wav` and `idle_1.wav` masters. They alternate roughly every
-15-20 seconds while the Harrier is on its carrier and no MOD is playing. Paula
-volume provides a short fade at both ends; these low-priority sounds yield to
-important gameplay effects. The four-bit IMA ADPCM data lives outside chip
-RAM and is decoded on demand into one shared Paula DMA buffer.
+Carrier idle now uses only the first existing recording (`idle_0.wav`),
+trimmed after silence removal to 800 ms. Its original WAV remains unchanged.
+The short ADPCM cue is prepared incrementally and requested once when the
+first gull of a flock spawns. It stops on departure or loss of idle eligibility.
+It does not play on a free-running timer. The legacy second sound-browser
+slot aliases the first cue; the second recording is no longer embedded.
+
+The 7,056-byte decoded cue borrows the menu/runtime arena after the HUD and
+engine. MOD instruments share this same tail at a different time. MOD startup
+stops effect DMA and invalidates prepared audio before replacing instruments.
+No separate idle Chip allocation remains (previously 35,280 bytes). A compile-
+time bounds check protects the arena. The original WAV masters are retained.

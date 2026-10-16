@@ -4,6 +4,34 @@ static UBYTE battleshipDestroyed(void) {
     UBYTE n=0; for(UBYTE i=0;i<BATTLESHIP_TARGETS;i++) if(!battleship.hp[i]) n++;
     return n;
 }
+/* One roof scanline per loading tick; the boss cannot appear before ready. */
+static UBYTE battleshipPrepareVisualStep(UWORD* step) {
+ UWORD n=*step;
+ if(n<BATTLESHIP_TARGETS*56) {
+  UBYTE i=n/56,y=56+n%56,solid=0;
+  for(UBYTE x=0;x<16;x++) {
+   UWORD px=battleshipTargetX[i]+x;
+   UWORD tile=battleshipTileMap[((y-56)/8)*120+px/8-BATTLESHIP_START_COLUMN];
+   if(battleshipTiles[tile*40UL+(y&7)*5+4]&(128>>(px&7)))solid++;
+  }
+  if(solid>=12 || y==111) {
+   UBYTE top=solid>=12?y:104;
+   battleship.targetY[i]=((top+7)&~7)-battleshipHeight(i);
+   *step=(i+1)*56;
+  } else ++*step;
+  return 0;
+ }
+ UBYTE f=n-BATTLESHIP_TARGETS*56;
+ if(f>=3)return 1;
+ memset(battleshipFireTiles[f],0,sizeof(battleshipFireTiles[f]));
+ for(UBYTE y=0;y<8;y++)for(UBYTE x=0;x<8;x++) {
+  UBYTE sx=x*2,sy=y*2,part=(sy/8)*2+sx/8;
+  const UBYTE* src=ammunitionDepotBlast+f*160+part*40+(sy&7)*5;
+  UBYTE bit=128>>(sx&7),out=128>>x;
+  for(UBYTE plane=0;plane<5;plane++)if(src[plane]&bit)battleshipFireTiles[f][y*5+plane]|=out;
+ }
+ ++*step;return *step==BATTLESHIP_TARGETS*56+3;
+}
 static void battleshipBegin(GameState* g) {
     if(g->gameMode!=GAME_MODE_ENHANCED) { battleship.active=0; return; }
     if(battleship.finished==1) { battleship.finished=2; battleship.active=0; return; }
@@ -11,26 +39,9 @@ static void battleshipBegin(GameState* g) {
     memset(&battleship,0,sizeof(battleship)); battleship.active=1; battleship.pass=1; battleship.hudHealth=255;
     for(UBYTE i=0;i<BATTLESHIP_TARGETS;i++) {
         battleship.hp[i]=i==8 ? 9 : i==9 ? 4 : (i==10 || i==11) ? 1 : 2; battleship.pose[i]=1; battleship.lift[i]=i>=12 ? 0 : 16;
-        /* Ignore thin aerials: mount each weapon on a roof wide enough for it. */
-        UBYTE top=104;
-        for(UBYTE y=56;y<112;y++) {
-            UBYTE solid=0;
-            for(UBYTE x=0;x<16;x++) {
-                UWORD px=battleshipTargetX[i]+x;
-                UWORD tile=battleshipTileMap[((y-56)/8)*120+px/8-BATTLESHIP_START_COLUMN];
-                if(battleshipTiles[tile*40UL+(y&7)*5+4] & (128>>(px&7))) solid++;
-            }
-            if(solid>=12) {top=y;break;}
-        }
-        battleship.targetY[i]=((top+7)&~7)-battleshipHeight(i);
     }
-    /* Reuse the existing depot fire, reduced once to three tiny 8x8 tiles. */
-    memset(battleshipFireTiles,0,sizeof(battleshipFireTiles));
-    for(UBYTE f=0;f<3;f++)for(UBYTE y=0;y<8;y++)for(UBYTE x=0;x<8;x++) {
-        UBYTE sx=x*2,sy=y*2,part=(sy/8)*2+sx/8;
-        const UBYTE* src=ammunitionDepotBlast+f*160+part*40+(sy&7)*5;
-        UBYTE bit=128>>(sx&7),out=128>>x;
-        for(UBYTE plane=0;plane<5;plane++)if(src[plane]&bit)battleshipFireTiles[f][y*5+plane]|=out;
+    if(!campaign.transition) {
+        UWORD visualStep=0;while(!battleshipPrepareVisualStep(&visualStep)) {}
     }
     for(UBYTE i=0;i<5;i++) {
         battleship.fireRow[i]=(battleshipSurface[battleshipFireColumn[i]-BATTLESHIP_START_COLUMN]-4)/8;
@@ -167,11 +178,14 @@ static UBYTE battleshipWeaponHit(GameState* g,WeaponState* w,UBYTE bomb) {
     return 0;
 }
 static void battleshipMoveCamera(GameState* g) {
-    WORD target=battleship.phase==1 ? -40 : 16;
+    WORD target=battleship.phase==3 ? 32 : battleship.phase==1 ? -40 : 16;
     if(battleship.velocity16<target) battleship.velocity16++;
     if(battleship.velocity16>target) battleship.velocity16--;
+    if(battleship.phase==3 && battleship.velocity16<0)battleship.velocity16=0;
     battleship.camera16+=battleship.velocity16;
-    if(battleship.camera16>=BATTLESHIP_LAST_CAMERA*16) {
+    if(battleship.phase==3 && battleship.camera16>BATTLESHIP_DEPART_CAMERA*16)
+        battleship.camera16=BATTLESHIP_DEPART_CAMERA*16;
+    if(battleship.phase!=3 && battleship.camera16>=BATTLESHIP_LAST_CAMERA*16) {
         battleship.camera16=BATTLESHIP_LAST_CAMERA*16; battleship.phase=1;
     }
     if(battleship.phase==1 && battleship.camera16<BATTLESHIP_FIRST_RETURN*16) {
@@ -225,13 +239,34 @@ static void battleshipMoveMissile(GameState* g) {
     LONG col=(w->worldX>>3)-BATTLESHIP_START_COLUMN;
     if(col>=0 && col<120 && w->y>=battleshipSurface[col]) {w->active=0;startImpact(g,w->x,w->y);}
 }
+static void battleshipMoveWingman(GameState* g,const Player2InputState* in2) {
+    WingmanState* wing=&g->wingman;
+    if(!wing->active)return;
+        UBYTE human=g->wingmanControl==WINGMAN_CONTROL_PLAYER2;
+        wing->mode=human ? WINGMAN_PLAYER2_FLIGHT : WINGMAN_FORMATION;
+        if(human) {wing->interceptScreenX+=(in2->right-in2->left)*2;wing->screenY+=(in2->down-in2->up)*2;}
+        else {
+            WORD x=g->playerX-32,y=g->playerY-12;
+            if(wing->interceptScreenX<x)wing->interceptScreenX++;
+            else if(wing->interceptScreenX>x)wing->interceptScreenX--;
+            if(wing->screenY<y)wing->screenY++;
+            else if(wing->screenY>y)wing->screenY--;
+        }
+        if(wing->interceptScreenX<8)wing->interceptScreenX=8;
+        if(wing->interceptScreenX>296)wing->interceptScreenX=296;
+        if(wing->screenY<8)wing->screenY=8;
+        if(wing->screenY>108)wing->screenY=108;
+        wing->row=wing->screenY/8;
+}
 static void battleshipSupport(GameState* g,WORD delta,const Player2InputState* in2) {
     if(battleship.supplyClock) battleship.supplyClock--;
     else if(battleship.phase==1 && battleship.supplyPass!=battleship.pass && !g->powerup.active) {
         UBYTE type=(battleship.supplyId++&1) ? POWERUP_BOMBS : POWERUP_ROCKETS;
         if(g->rockets<g->bombs) type=POWERUP_ROCKETS;
         else if(g->bombs<g->rockets) type=POWERUP_BOMBS;
-        if(battleship.savedWingman!=WINGMAN_CONTROL_OFF && !g->wingman.active)
+        /* Empty magazines take priority over replacing a lost escort.
+         * Both empty: alternate using supplyId, still one drop per pass. */
+        if(g->rockets && g->bombs && battleship.savedWingman!=WINGMAN_CONTROL_OFF && !g->wingman.active)
             type=POWERUP_WINGMAN;
         battleship.supplyPass=battleship.pass;
         spawnPowerup(g,type,1);
@@ -282,21 +317,8 @@ static void battleshipSupport(GameState* g,WORD delta,const Player2InputState* i
     }
     WingmanState* wing=&g->wingman;
     if(wing->active) {
+        battleshipMoveWingman(g,in2);
         UBYTE human=g->wingmanControl==WINGMAN_CONTROL_PLAYER2;
-        wing->mode=human ? WINGMAN_PLAYER2_FLIGHT : WINGMAN_FORMATION;
-        if(human) {wing->interceptScreenX+=(in2->right-in2->left)*2;wing->screenY+=(in2->down-in2->up)*2;}
-        else {
-            WORD x=g->playerX-32,y=g->playerY-12;
-            if(wing->interceptScreenX<x)wing->interceptScreenX++;
-            else if(wing->interceptScreenX>x)wing->interceptScreenX--;
-            if(wing->screenY<y)wing->screenY++;
-            else if(wing->screenY>y)wing->screenY--;
-        }
-        if(wing->interceptScreenX<8)wing->interceptScreenX=8;
-        if(wing->interceptScreenX>296)wing->interceptScreenX=296;
-        if(wing->screenY<8)wing->screenY=8;
-        if(wing->screenY>108)wing->screenY=108;
-        wing->row=wing->screenY/8;
         if(!wing->rocket.active && (human ? in2->fire && g->rockets : !(battleship.clock%80))) {
             WeaponState* w=&wing->rocket;memset(w,0,sizeof(*w));w->active=1;
             w->worldX=g->scrollX+wing->interceptScreenX+8;w->x=wing->interceptScreenX+8;w->y=wing->screenY+2;w->dx=5;
@@ -401,7 +423,26 @@ static void battleshipUpdate(GameState* g,const InputState* in,const InputState*
             playSfxAt(SFX_DEPOT_BOOM,x);
         }
         if((age&15)==8) startWorldImpactQuiet(g,32+(age*7)%256,64+(age&31));
-        if(battleship.wait) battleship.wait--; else {g->ammoBlast.active=0;g->defence.bomberBlastTicks=0;battleship.finished=1;}
+        if(battleship.wait) battleship.wait--; else {
+            g->ammoBlast.active=0;g->defence.bomberBlastTicks=0;
+            battleship.phase=3;battleship.camera16=g->scrollX*16;
+            g->lowSpeedLanding=g->defence.fullVtol=0;g->speedLevel=GAME_SPEED_LEVEL_DEFAULT;
+            g->rocketShot.active=g->bombShot.active=g->wingman.rocket.active=g->wingman.bomb.active=0;
+            g->powerup.active=0;
+        }
+        return;
+    }
+    if(battleship.phase==3) {
+        /* Victory fly-past: pass the bow and leave a clear ocean screen.
+         * Never enter the return-pass camera reversal after the ship dies. */
+        battleshipMoveCamera(g);
+        if(in->up && g->playerY>8)g->playerY-=2;
+        if(in->down && g->playerY<108)g->playerY+=2;
+        if(in->left && g->playerX>24)g->playerX-=2;
+        if(in->right && g->playerX<280)g->playerX+=2;
+        battleshipMoveWingman(g,in2);
+        updateEngineSound(2,0);
+        if(g->scrollX>=BATTLESHIP_DEPART_CAMERA)battleship.finished=1;
         return;
     }
     WORD oldScroll=g->scrollX; battleshipMoveCamera(g);
@@ -509,6 +550,30 @@ static UBYTE referenceBattleship(void) {
     static GameState g;
     InputState in={0};Player2InputState in2={0};
     memset(&g,0,sizeof(g));g.gameMode=GAME_MODE_ENHANCED;g.missionNumber=1;g.levelDifficulty=1;
+#if HAR_HEADLESS_BATTLESHIP_EXIT_TEST_ONLY
+    for(UBYTE reverse=0;reverse<2;reverse++) {
+        battleship.finished=0;battleshipBegin(&g);
+        memset(battleship.hp,0,sizeof(battleship.hp));
+        battleship.phase=2;battleship.wait=224;
+        g.scrollX=reverse?BATTLESHIP_FIRST_RETURN:BATTLESHIP_LAST_CAMERA;
+        battleship.camera16=g.scrollX*16;battleship.velocity16=reverse?-40:16;
+        g.wingmanControl=WINGMAN_CONTROL_CPU;g.wingman.active=1;
+        g.wingman.interceptScreenX=24;g.wingman.screenY=24;
+        for(UWORD t=0;t<225;t++)battleshipUpdate(&g,&in,&in,&in2,0);
+        if(battleship.finished || battleship.phase!=3)return 51;
+        WORD beforeY=g.playerY;in.up=1;battleshipUpdate(&g,&in,&in,&in2,0);in.up=0;
+        if(g.playerY>=beforeY)return 52;
+        UWORD ticks=0;
+        while(!battleship.finished && ticks++<1200) {
+            WORD before=g.scrollX;battleshipUpdate(&g,&in,&in,&in2,0);
+            if(g.scrollX<before || battleship.phase!=3)return 53;
+            if(g.scrollX<BATTLESHIP_DEPART_CAMERA && battleship.finished)return 54;
+        }
+        if(!battleship.finished || g.scrollX<BATTLESHIP_DEPART_CAMERA || !g.wingman.active)return 55;
+    }
+    return 0;
+#endif
+
     g.wingmanControl=WINGMAN_CONTROL_CPU;
     battleship.finished=0;battleshipBegin(&g);g.armour=100;g.lives=3;resetPlayerFuel(&g);ammoForGame(&g,&g.bombs,&g.rockets);
     if(!battleship.active || g.scrollX || battleship.hp[8]!=9 || battleshipHealth()!=37 || !g.wingman.active || g.defence.fullVtol) return 1;
@@ -560,6 +625,15 @@ static UBYTE referenceBattleship(void) {
     battleshipSupport(&g,0,&in2);if(!g.powerup.active || g.powerup.type!=POWERUP_BOMBS)return 35;
     g.powerup.active=0;battleship.supplyClock=0;battleship.pass++;
     battleship.savedWingman=g.wingmanControl=WINGMAN_CONTROL_CPU;g.wingman.active=0;g.wingman.destroyed=1;
+    battleshipSupport(&g,0,&in2);if(!g.powerup.active || g.powerup.type!=POWERUP_BOMBS)return 46;
+    g.powerup.active=0;battleship.supplyClock=0;battleship.pass++;g.rockets=0;g.bombs=10;
+    battleshipSupport(&g,0,&in2);if(!g.powerup.active || g.powerup.type!=POWERUP_ROCKETS)return 47;
+    g.powerup.active=0;battleship.supplyClock=0;battleship.pass++;g.rockets=g.bombs=0;
+    battleshipSupport(&g,0,&in2);UBYTE emptyDrop=g.powerup.type;
+    if(emptyDrop!=POWERUP_ROCKETS && emptyDrop!=POWERUP_BOMBS)return 48;
+    g.powerup.active=0;battleship.supplyClock=0;battleship.pass++;
+    battleshipSupport(&g,0,&in2);if(g.powerup.type==emptyDrop || g.powerup.type==POWERUP_WINGMAN)return 49;
+    g.powerup.active=0;battleship.supplyClock=0;battleship.pass++;g.rockets=g.bombs=10;
     battleshipSupport(&g,0,&in2);if(!g.powerup.active || g.powerup.type!=POWERUP_WINGMAN)return 39;
     g.powerup.worldX=g.scrollX+g.playerX;g.powerup.y=g.powerup.logicalY=g.playerY;
     battleshipSupport(&g,0,&in2);if(!g.wingman.active)return 40;
@@ -612,7 +686,7 @@ static UBYTE referenceBattleship(void) {
         if(g.ammoBlast.active && g.defence.bomberBlastTicks)return 47;
         if(g.ammoBlast.active && (g.ammoBlast.timer>36 || (g.ammoBlast.worldX&7)))return 41;
     }
-    if(fireballs!=5 || finalBlast!=1 || !battleship.finished || g.ammoBlast.active || g.defence.bomberBlastTicks)return 42;
+    if(fireballs!=5 || finalBlast!=1 || battleship.phase!=3 || battleship.finished || g.ammoBlast.active || g.defence.bomberBlastTicks)return 42;
 
     /* Normal terrain must never leak through the boss, including cache-off builds. */
     for(UWORD col=0;col<120;col++) {
@@ -624,14 +698,17 @@ static UBYTE referenceBattleship(void) {
                 if(battleshipTiles[tile*40UL+y*5+4]!=255) return 22;
         }
     }
-    UBYTE* bitmap=AllocMem(GAME_WORLD_BITMAP_BYTES,MEMF_PUBLIC|MEMF_CLEAR);
+    const ULONG guardBytes=32UL*SCREEN_PLANES*GAME_WORLD_ROW_BYTES;
+    UBYTE* bitmap=AllocMem(GAME_WORLD_BITMAP_BYTES+guardBytes,MEMF_PUBLIC|MEMF_CLEAR);
     if(!bitmap)return 16;
+    memset(bitmap+GAME_WORLD_BITMAP_BYTES,0xa5,guardBytes);
     initRingWorldBuffer(bitmap,0);
+    for(ULONG n=0;n<guardBytes;n++)if(bitmap[GAME_WORLD_BITMAP_BYTES+n]!=0xa5){FreeMem(bitmap,GAME_WORLD_BITMAP_BYTES+guardBytes);return 50;}
     ULONG before=0,after=0;
     for(ULONG i=0;i<GAME_WORLD_BITMAP_BYTES;i++)before=(before<<1|before>>31)^bitmap[i];
     for(UWORD col=0;col<120;col++)renderRingWorldColumn(bitmap,col);
     for(ULONG i=0;i<GAME_WORLD_BITMAP_BYTES;i++)after=(after<<1|after>>31)^bitmap[i];
-    if(before!=after){FreeMem(bitmap,GAME_WORLD_BITMAP_BYTES);return 17;}
+    if(before!=after){FreeMem(bitmap,GAME_WORLD_BITMAP_BYTES+guardBytes);return 17;}
     /* Real pickup compositor: both sub-tile shifts and vertical fast path,
      * live overlays, collection/removal, and the duplicated ring margin. */
     battleship.hp[0]=2;battleship.hp[8]=5;
@@ -651,15 +728,15 @@ static UBYTE referenceBattleship(void) {
         }
         g.powerup.active=0;updatePowerupBob(bitmap,&g);after=0;
         for(ULONG i=0;i<GAME_WORLD_BITMAP_BYTES;i++)after=(after<<1|after>>31)^bitmap[i];
-        if(before!=after){FreeMem(bitmap,GAME_WORLD_BITMAP_BYTES);return 30;}
+        if(before!=after){FreeMem(bitmap,GAME_WORLD_BITMAP_BYTES+guardBytes);return 30;}
     }
     initRingWorldBuffer(bitmap,0);battleship.camera16=battleship.velocity16=0;battleship.phase=0;g.scrollX=0;
     for(UWORD tick=0;tick<2800;tick++) {
         battleshipMoveCamera(&g);serviceBattleshipStream(bitmap,&g);
         LONG first=g.scrollX/8;
-        for(LONG c=first;c<first+42;c++)if(battleshipResident[(UWORD)c&127]!=c){FreeMem(bitmap,GAME_WORLD_BITMAP_BYTES);return 36;}
+        for(LONG c=first;c<first+42;c++)if(battleshipResident[(UWORD)c&127]!=c){FreeMem(bitmap,GAME_WORLD_BITMAP_BYTES+guardBytes);return 36;}
     }
-    FreeMem(bitmap,GAME_WORLD_BITMAP_BYTES);
+    FreeMem(bitmap,GAME_WORLD_BITMAP_BYTES+guardBytes);
     UBYTE* hud=AllocMem(HUD_BITMAP_BYTES,MEMF_PUBLIC|MEMF_CLEAR);
     if(!hud)return 23;
     battleship.hudHealth=255;battleshipDrawHud(hud);

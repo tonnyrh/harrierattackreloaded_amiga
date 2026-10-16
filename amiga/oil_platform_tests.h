@@ -7,7 +7,7 @@ static UBYTE oilContract(void) {
  initGameState(&g,12040,12040,1);g.gameMode=GAME_MODE_ENHANCED;
  g.skillLevel=g.levelDifficulty=1;g.lives=3;g.wingmanControl=WINGMAN_CONTROL_PLAYER2;
  g.wingman.destroyed=0;oilBegin(&g);
- if(!oil.p2Present || oilQuota(1,0)!=8 || oilQuota(1,1)!=10 || oilQuota(1,2)!=12 || oilQuota(5,2)!=20)return 1;
+ if(!oil.p2Present || oilQuota(1,0)!=7 || oilQuota(1,1)!=9 || oilQuota(1,2)!=11 || oilQuota(5,2)!=19)return 1;
  /* Two live Harriers, attached sprite data, neutral preserves momentum. */
  static UWORD a[20],b[20];updateWingmanSprite(a,b,&g);
  if(!(b[1]&0x80))return 2;
@@ -25,12 +25,23 @@ static UBYTE oilContract(void) {
  g.wingman.active=1;g.wingman.screenY=OIL_PLAYER_Y-1;g.wingman.interceptScreenX=80;
  oil.vy=256;oil.vx=0;oil.subY=oil.ay=0;oilP2Update(&g,&p2);
  if(!oil.p2Landed || g.wingman.interceptScreenX!=80)return 10;
- /* Player service must not repair platform or consume carrier cargo. */
+ /* Shared kits repair only the platform, after a complete landing interval. */
  g.defence.hull=40;g.defence.cargo=20;g.defence.phase=DEFENCE_WAVE;
  g.defence.spawnDelay=200;g.defence.quota=8;g.defence.clock=7;
  g.playerX=66;g.playerY=OIL_PLAYER_Y;g.defence.landed=1;
  oilUpdate(&g,&in,&old,&p2,buffers);
  if(g.defence.hull!=40 || g.defence.cargo!=20)return 11;
+ UBYTE savedCarrierHull=oil.carrierHull;
+ for(UWORD t=1;t<CARRIER_REPAIR_TICKS;t++)oilUpdate(&g,&in,&old,&p2,buffers);
+ if(g.defence.hull!=50 || g.defence.cargo || oil.carrierHull!=savedCarrierHull)return 58;
+ g.defence.hull=95;g.defence.cargo=40;g.defence.landed=0;
+ for(UWORD t=0;t<CARRIER_REPAIR_TICKS;t++)carrierServiceRepair(&g,0);
+ if(g.defence.hull!=100 || g.defence.cargo!=20)return 59; /* P2 on pad. */
+ for(UWORD t=0;t<CARRIER_REPAIR_TICKS;t++)carrierServiceRepair(&g,0);
+ if(g.defence.cargo!=20)return 60; /* Never waste kits at full health. */
+ oil.p2Landed=0;g.defence.hull=40;
+ for(UWORD t=0;t<CARRIER_REPAIR_TICKS;t++)carrierServiceRepair(&g,0);
+ if(g.defence.hull!=40 || g.defence.cargo!=20)return 61;
  /* Wheel contact follows the visible top edge, not an unrelated carrier Y. */
  for(WORD px=OIL_PAD_LEFT;px<OIL_PAD_RIGHT;px++)
   if(!oilHullOverlap(px,OIL_DECK_Y,1,1))return 41;
@@ -145,9 +156,34 @@ static UBYTE oilContract(void) {
   }
   if(ticks==512 || !sawWheels || !sawVtol || g.scrollX || g.speedLevel ||
      g.defence.phase!=DEFENCE_ALARM || g.defence.phaseTicks!=150 ||
-     oil.carrierHull!=63 || oil.carrierCargo!=20)return 53;
+     oil.carrierHull!=63 || oil.carrierCargo || g.defence.cargo!=20)return 53;
   if((control==WINGMAN_CONTROL_PLAYER2)!=!!g.wingman.active)return 54;
  }
+
+ /* Platform loss ends the mission, but must not freeze a healthy aircraft. */
+ initGameState(&g,12040,12040,2);g.gameMode=GAME_MODE_ENHANCED;oilBegin(&g);
+ g.playerX=32;g.playerY=16;g.defence.phase=DEFENCE_SINKING;g.defence.hull=0;g.defence.phaseTicks=0;
+ g.defence.vtolVX=256;in.right=1;
+ oilUpdate(&g,&in,&old,&p2,buffers);
+ if(g.playerX<=32 || g.gameOver || g.defence.phaseTicks!=1)return 55;
+ /* Invulnerability also remains controllable after fuel runs out. */
+ UBYTE savedInvulnerable=debugInvulnerable;debugInvulnerable=1;g.fuel=0;
+ WORD beforeX=g.playerX;oilUpdate(&g,&in,&old,&p2,buffers);
+ debugInvulnerable=savedInvulnerable;
+ if(g.playerX<=beforeX || g.aircraftFailureState)return 56;
+ g.defence.phaseTicks=180;oilUpdate(&g,&in,&old,&p2,buffers);
+ if(!g.gameOver)return 57;
+ /* Modest platform-only resilience; verify common hits and carrier parity. */
+ oil.active=1;g.defence.phase=DEFENCE_WAVE;g.defence.hull=100;
+ carrierDefenceImpact(&g,112,CARRIER_BOMB_HULL_DAMAGE);
+ if(g.defence.hull!=92)return 62;
+ carrierDefenceImpact(&g,112,CARRIER_HEAVY_BOMB_HULL_DAMAGE);
+ if(g.defence.hull!=76)return 63;
+ carrierDefenceImpact(&g,112,CARRIER_ROCKET_HULL_DAMAGE);
+ if(g.defence.hull!=70)return 64;
+ oil.active=0;g.defence.hull=100;
+ carrierDefenceImpact(&g,112,CARRIER_BOMB_HULL_DAMAGE);
+ if(g.defence.hull!=88)return 65;
  memset(&oil,0,sizeof(oil));modPlaying=savedMod;return 0;
 }
 #endif

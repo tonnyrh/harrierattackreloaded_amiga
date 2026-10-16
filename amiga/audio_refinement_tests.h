@@ -43,10 +43,29 @@ static UBYTE referenceAudioRefinements(void) {
         g.defence.jetHits=1; g.defence.clock=30; serviceBomberDrone(&g);
         if(custom->aud[c].ac_vol) result=8;
         g.defence.clock=0; serviceBomberDrone(&g);
-        if(custom->aud[c].ac_vol!=AUDIO_MIX_VOLUME(12)) result=9;
+        if(custom->aud[c].ac_vol!=AUDIO_MIX_VOLUME(20)) result=9;
         g.enemyPlane.active=0; serviceBomberDrone(&g);
         if(sfxChannelFrames[c]) result=10;
     }
+    stopAllSfx();
+    static UBYTE idlePcm[CARRIER_IDLE_DECODE_BUFFER_BYTES];
+    UBYTE* savedIdle=carrierIdleDecodeBuffer;
+    carrierIdleDecodeBuffer=idlePcm;
+    for(UWORD tick=0;tick<150;tick++) { updateCarrierIdleSfx(1); updateSfx(); }
+    if(carrierIdleChannel!=0xff || carrierIdlePreparedVariant!=0 ||
+        !carrierIdlePreparedLength || carrierIdlePreparedLength>sizeof(idlePcm)) result=12;
+    carrierGullCallPending=1; updateCarrierIdleSfx(1); updateSfx();
+    c=carrierIdleChannel;
+    if(c>=4 || carrierGullCallPending) result=13;
+    else {
+        if(sfxChannelCurrentId[c]!=SFX_CARRIER_IDLE_1 ||
+            custom->aud[c].ac_ptr!=(volatile UWORD*)idlePcm) result=14;
+        updateCarrierIdleSfx(0);
+        if(sfxChannelFrames[c] || carrierIdleChannel!=0xff) result=15;
+    }
+    carrierGullCallPending=1; updateCarrierIdleSfx(0);
+    if(carrierGullCallPending) result=16;
+    carrierIdleDecodeBuffer=savedIdle;
     stopAllSfx(); custom=hardware; modPlaying=oldMod; return result;
 }
 #endif

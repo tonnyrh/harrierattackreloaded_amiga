@@ -1,7 +1,7 @@
-HARRIER ATTACK RELOADED - AMIGA PUBLIC BETA 5
+HARRIER ATTACK RELOADED - AMIGA PUBLIC BETA 6
 ===========================================
 
-Version: v0.9.0-beta.5 (prerelease)
+Version: v0.9.0-beta.6 (prerelease)
 
 Thank you for trying this unofficial, non-commercial Amiga port.
 
@@ -40,41 +40,35 @@ Classic mode preserves the CPC gameplay contract. Enhanced mode keeps that
 foundation while adding Amiga presentation and gameplay extensions such as
 smooth scrolling, terrain radar and aircraft rescue.
 
-BETA 5 - A RADICAL STEP
-----------------------
+BETA 6 - THE INTEGRATED CAMPAIGN
+-------------------------------
 
-This is a rather radical beta :-) Enhanced mode has taken a big step with
-carrier defence, new enemies and momentum-based VTOL flight. It still needs
-some polish, balancing and more real-hardware testing. Expect rough edges!
+One main ADF now contains all Enhanced encounters:
+  Sortie 1: terrain/city, landing and carrier defence.
+  Sortie 2: terrain/city, oil-platform defence, return and carrier defence.
+  Sortie 3: terrain/city, Battleship, then final carrier landing.
+The cycle repeats with increasing difficulty. Classic retains its regular loop.
 
-Defend the carrier against fighters, helicopters, bombers and a submarine.
-Intercept the submarine's returning parachute missile; two Harrier bombs
-sink its exposed tower. Collect R repair kits and land to repair the carrier.
-CPU/P2 operates the carrier weapons during raids; Wingman joins over land.
+Open-sea dogfights cover gradual preparation of the next scene. Colours and
+water motion are retained; enemies clear before the destination appears.
+After defeating Battleship, fly forwards clear of the ship before departure.
 
-Carrier VTOL keeps momentum when you release the stick. Countersteer to brake.
-Heading changes independently of drift, and dropped bombs inherit your speed.
-Land to refuel; after the raid, land before departing for the terrain mission.
+Land to refuel and deliver R kits. A kit now restores 10 hull points; kits
+also work on the oil platform. Its health bar appears below it. Fuel use is
+15% higher than Beta 5. Empty ammunition takes priority over a replacement
+Wingman in Battleship's return-pass supply drop.
 
-This beta also improves bomber rendering, restores carrier graphics behind
-falling pickups, shows ready Wingmen on deck and reduces Enhanced flak density.
-Busy carrier scenes can still slow down on A500; a stable 50 FPS is not promised.
+Carrier VTOL retains momentum; countersteer to brake. Heading turns
+independently of drift. CPU/P2 operates carrier weapons during raids.
+Wingman joins over land. Press primary fire after the E lamp lights to eject;
+release a held button first. The E key is also available.
 
-Enhanced adds Missile Silos and terrain-following helicopters from mission 2.
-Helicopters take two missile hits and fire small machine-gun rounds. Missile
-Tank shots climb faster and explode on terrain contact.
+Attack alarms use a tiny generated Paula waveform. Music and short idle
+bird cues share Chip memory. Original audio masters remain in the repository.
 
-At very low throttle, L mode deploys landing gear and uses triple fuel.
-Destroy an F depot for 20% fuel. Longer routes carry a larger fuel reserve.
-Fuel is turquoise; Armour is yellow. Parachutes do not supply fuel.
-
-Ordinary missiles remove one third of Harrier armour; tank missiles remove
-one half. Wingman is destroyed by one missile. Press primary fire after the E
-lamp lights to eject; release a held button first. The E key remains available.
-
-Wingman sprite updates now publish at vertical blank to address the reported
-A500 corruption. Please confirm this on real hardware, especially Kickstart
-1.2 with 512 KiB expansion. Busy scenes can still drop below 50 FPS.
+This is still a radical beta :-) Balance, transitions, two-player edge cases
+and real-hardware behaviour need more testing. Busy scenes can slow down;
+this is not a promise of locked 50 FPS. See release notes for test scope.
 
 Skill runs from 1 (Easiest) to 5 (Hardest). Tempo is independently selectable
 at 80%, 90% or 100%. Higher Skill and Tempo give higher score multipliers.

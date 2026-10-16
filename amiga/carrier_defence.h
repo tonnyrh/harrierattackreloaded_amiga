@@ -19,16 +19,16 @@ static void carrierBeginDefence(GameState* g) {
 }
 
 static DEFENCE_SMALL void carrierDeliverRepair(GameState* g, UBYTE hull, UBYTE cargo) {
-    g->defence.hull = hull + cargo > 100 ? 100 : hull + cargo;
+    g->defence.hull = hull + cargo / 2 > 100 ? 100 : hull + cargo / 2;
     g->defence.cargo = 0;
-    if (cargo >= 20) g->defence.gunHealth[0] = g->defence.gunHealth[1] = 2;
+    if (!oil.active && cargo >= 20) g->defence.gunHealth[0] = g->defence.gunHealth[1] = 2;
 }
 
 /* One kit per uninterrupted deck service interval. Never waste a kit. */
 static DEFENCE_SMALL void carrierServiceRepair(GameState* g, UBYTE departing) {
     CarrierDefenceState* d=&g->defence;
-    if (d->phase==DEFENCE_SINKING || g->gameOver || !d->landed || departing || g->crashTimer || g->ejectState || d->cargo<20 ||
-        (d->hull==100 && d->gunHealth[0]==2 && d->gunHealth[1]==2)) { d->service=0; return; }
+    if (d->phase==DEFENCE_SINKING || g->gameOver || (!d->landed && !(oil.active && oil.p2Present && oil.p2Landed)) || departing || g->crashTimer || g->ejectState || d->cargo<20 ||
+        (d->hull==100 && (oil.active || (d->gunHealth[0]==2 && d->gunHealth[1]==2)))) { d->service=0; return; }
     if (++d->service<CARRIER_REPAIR_TICKS) return;
     UBYTE remaining=d->cargo-20;
     carrierDeliverRepair(g,d->hull,20); d->cargo=remaining; d->service=0;
@@ -76,9 +76,9 @@ static DEFENCE_SMALL void carrierDropBomb(GameState* g, WORD x, WORD y, UBYTE he
 static DEFENCE_SMALL void carrierDefenceImpact(GameState* g, WORD x, UBYTE damage) {
     CarrierDefenceState* d = &g->defence;
     if (d->phase == DEFENCE_SINKING || !d->hull) return;
-    /* The platform cannot be repaired: give it a little more endurance.
+    /* Platform takes two thirds of base damage (previously four fifths).
      * Round up so even a small hit still counts; carrier damage is unchanged. */
-    if (oil.active) damage = ((UWORD)damage * 4 + 4) / 5;
+    if (oil.active) damage = ((UWORD)damage * 2 + 2) / 3;
     if (damage) d->raidDamaged = 1;
     d->hull = d->hull > damage ? d->hull - damage : 0;
     startWorldImpact(g, x, 108);
@@ -338,7 +338,7 @@ static DEFENCE_SMALL void carrierDefenceAircraft(GameState* g) {
         d->jetAge = d->jetTurnTicks = 0; d->jetBulletHits = d->jetHits = 0;
     }
     d->spawned++; d->spawnDelay = 130 - g->levelDifficulty * 10;
-    if (oil.active) d->spawnDelay += d->spawnDelay / 4;
+    if (oil.active) d->spawnDelay += d->spawnDelay / 3;
 }
 
 static DEFENCE_SMALL void carrierDefenceBombs(GameState* g) {
@@ -755,5 +755,13 @@ static DEFENCE_SMALL void carrierSyncSceneStatus(const GameState* g, UBYTE** buf
     }
     carrierSceneHull=hull; carrierSceneCargo=g->defence.cargo;
     if(!buffers || !buffers[0]) return;
-    if(old!=hull) bobCompositorErase(buffers[0],8,16,12);
+    if(old!=hull) {
+        bobCompositorErase(buffers[0],8,16,12);
+        if(oil.active) {
+            /* Restore extinguished fires using the newly published hull. */
+            bobCompositorErase(buffers[0],14,11,1);
+            bobCompositorErase(buffers[0],17,9,1);
+            bobCompositorErase(buffers[0],19,11,1);
+        }
+    }
 }

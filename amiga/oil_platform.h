@@ -2,12 +2,13 @@
  * VTOL arithmetic; no heap allocation, extra screen, audio bank or sprite RAM. */
 static UBYTE oilQuota(UBYTE skill,UBYTE control) {
  if(skill<1) skill=1; if(skill>5) skill=5;
- return 8+(skill-1)*2+(control==WINGMAN_CONTROL_CPU?2:control==WINGMAN_CONTROL_PLAYER2?4:0);
+ return 7+(skill-1)*2+(control==WINGMAN_CONTROL_CPU?2:control==WINGMAN_CONTROL_PLAYER2?4:0);
 }
 static void oilBegin(GameState* g) {
  memset(&oil,0,sizeof(oil)); oil.active=oil.scene=1;
  oil.carrierHull=g->defence.hull;oil.carrierCargo=g->defence.cargo;memcpy(oil.carrierGuns,g->defence.gunHealth,2);
  memset(&g->defence,0,sizeof(g->defence));
+ g->defence.cargo=oil.carrierCargo;oil.carrierCargo=0;
  g->defence.hull=100; g->defence.phase=DEFENCE_ALARM;
  g->defence.phaseTicks=150; g->defence.waves=1;
  g->defence.facing=MAVERICK_DIRECTION_RIGHT; g->defence.vtolPose=1;
@@ -28,7 +29,7 @@ static UBYTE oilPad(WORD x) { return x+2>=OIL_PAD_LEFT && x+14<=OIL_PAD_RIGHT; }
 /* A prebuilt ocean ring lets the rig enter from the right without moving
  * its tiles every frame. At the seam it becomes the existing stationary scene. */
 static void oilBeginApproach(GameState* g) {
- oilBegin(g);oil.approach=1;
+ oilBegin(g);oil.approach=1;oil.approachVX16=32;
  g->scrollX=GAME_WORLD_SCROLL_PAGE_BYTES*8-352;
  g->playerX=80;g->playerY=48;g->speedLevel=GAME_SPEED_LEVEL_DEFAULT;
  g->lowSpeedLanding=0;
@@ -41,7 +42,11 @@ static void oilBeginApproach(GameState* g) {
 static void oilApproachUpdate(GameState* g) {
  CarrierDefenceState* d=&g->defence;
  UWORD remaining=GAME_WORLD_SCROLL_PAGE_BYTES*8-g->scrollX;
- UBYTE step=remaining>224?2:remaining>64?1:!(d->clock&1);
+ WORD target=remaining>224?32:remaining>64?16:8;
+ if(oil.approachVX16>target)oil.approachVX16--;else if(oil.approachVX16<target)oil.approachVX16++;
+ oil.approachSub16+=oil.approachVX16;
+ UWORD step=oil.approachSub16/16;oil.approachSub16&=15;
+ if(step>remaining)step=remaining;
  g->scrollX+=step;
  g->speedLevel=remaining>224?GAME_SPEED_LEVEL_DEFAULT:remaining>64?1:0;
  g->lowSpeedLanding=remaining<=288;
@@ -50,9 +55,12 @@ static void oilApproachUpdate(GameState* g) {
   if(g->playerX>52)g->playerX--;else if(g->playerX<52)g->playerX++;
   if(g->playerY>48)g->playerY--;else if(g->playerY<48)g->playerY++;
  }
- if(g->wingman.active) {
-  g->wingman.interceptScreenX=g->playerX-24;
-  g->wingman.screenY=g->playerY-16;
+ if(g->wingman.active && !(d->clock&1)) {
+  WORD targetX=g->playerX-24,targetY=g->playerY-16;
+  if(g->wingman.interceptScreenX<targetX)g->wingman.interceptScreenX++;
+  else if(g->wingman.interceptScreenX>targetX)g->wingman.interceptScreenX--;
+  if(g->wingman.screenY<targetY)g->wingman.screenY++;
+  else if(g->wingman.screenY>targetY)g->wingman.screenY--;
  }
  updatePlayerFuel(g);updateEngineSound(engineSpeedForSpeedLevel(g->speedLevel),g->lowSpeedLanding);
  if(g->scrollX>=GAME_WORLD_SCROLL_PAGE_BYTES*8) {
@@ -121,7 +129,7 @@ static void oilP2Update(GameState* g,const Player2InputState* in) {
   if(in->up && g->defence.phase!=DEFENCE_SECURE) {oil.p2Landed=0;g->wingman.screenY-=3;}
  } else {
   if(!debugInfiniteFuel) {
-   oil.fuelTicks+=CPC_FUEL_CLOCK_HZ*3;
+   oil.fuelTicks+=GAME_FUEL_BURN_HZ*3;
    if(oil.fuelTicks>=playerFuelClockLimit(g)) {
     oil.fuelTicks-=playerFuelClockLimit(g);if(oil.p2FuelQuanta)oil.p2FuelQuanta--;
    }
@@ -203,11 +211,10 @@ static void oilFinish(GameState* g) {
  g->defence.phase=0;g->defence.landed=0;
  g->defence.hull=oil.carrierHull;memcpy(g->defence.gunHealth,oil.carrierGuns,2);UWORD cargo=(UWORD)g->defence.cargo+oil.carrierCargo; g->defence.cargo=cargo>180?180:cargo;
  g->takeoffState=TAKEOFF_STATE_AIRBORNE;g->speedLevel=GAME_SPEED_LEVEL_DEFAULT;g->lowSpeedLanding=0;
- g->playerY=64;g->playerX=80;g->rocketShot.active=g->bombShot.active=0;
+ g->rocketShot.active=g->bombShot.active=0;
  g->wingman.rocket.active=g->wingman.bomb.active=0;
  memset(g->helicopterBullets,0,sizeof(g->helicopterBullets));
  if(oil.p2Present) {
-  g->wingman.screenY=48;g->wingman.interceptScreenX=48;
   g->wingman.mode=WINGMAN_PLAYER2_FLIGHT;g->wingman.active=1;g->wingman.destroyed=0;
  } else {g->wingman.active=0;g->wingman.destroyed=1;}
  carrierSceneHull=255;
@@ -264,10 +271,12 @@ static void oilUpdate(GameState* g,const InputState* in,const InputState* previo
  g->scrollX=0;g->speedLevel=0;g->lowSpeedLanding=1;g->landingState=LANDING_STATE_NONE;
  if(d->bomberBlastTicks) d->bomberBlastTicks--;
  if(g->impact.active && g->impact.timer && !--g->impact.timer) g->impact.active=0;
- if(d->phase==DEFENCE_SINKING) {
+ UBYTE platformLost=d->phase==DEFENCE_SINKING;
+ if(platformLost) {
   if(!(d->clock&31)) startWorldImpact(g,72+((d->clock>>5)%5)*16,80);
-  if(++d->phaseTicks>180) triggerGameOver(g);
-  return;
+  if(++d->phaseTicks>180) {triggerGameOver(g);return;}
+  /* Keep both pilots responsive during the loss animation. The mission
+   * still ends after the same delay; a wreck must not freeze input. */
  }
  if(g->ejectState) {
   g->ejectX+=(in->right!=0)-(in->left!=0);
@@ -283,7 +292,7 @@ static void oilUpdate(GameState* g,const InputState* in,const InputState* previo
  } else if(g->aircraftFailureState) {
   if(in->eject)startPlayerEject(g);
   if(!g->ejectState){updateAircraftFailure(g,in);g->scrollX=0;}
- } else if(!g->fuel || !g->armour) {
+ } else if(!debugInvulnerable && (!g->fuel || !g->armour)) {
   startAircraftFailure(g,!g->fuel?AIRCRAFT_FAILURE_CAUSE_FUEL:AIRCRAFT_FAILURE_CAUSE_ARMOUR);
  } else {
   if(g->respawnSafeTimer)g->respawnSafeTimer--;
@@ -298,7 +307,9 @@ static void oilUpdate(GameState* g,const InputState* in,const InputState* previo
  }
  if(g->bombLaunchCooldown)g->bombLaunchCooldown--;
  if(g->gameOver)return;
- oilP2Update(g,in2);oilCpuUpdate(g);
+ oilP2Update(g,in2);
+ if(platformLost)return;
+ oilCpuUpdate(g);
  oilAdvanceBomb(g,&g->bombShot);
  carrierDefenceAircraft(g);serviceBomberDrone(g);carrierDefenceBombs(g);
  carrierDefenceShot(g,&g->rocketShot);
@@ -309,7 +320,8 @@ static void oilUpdate(GameState* g,const InputState* in,const InputState* previo
    carrierDefenceKillHeli(g);applyPlayerAircraftCollision(g);
   }
  }
- /* Repair kits remain cargo for the carrier; never repair this platform. */
+ /* Either landed pilot can deliver a shared repair kit to the platform. */
+ carrierServiceRepair(g,d->landed?in->up:in2->up);
  serviceCarrierRepairDrop(g);updatePowerup(g);
  if(d->phase==DEFENCE_ALARM) {
   carrierTryAlarm(d);

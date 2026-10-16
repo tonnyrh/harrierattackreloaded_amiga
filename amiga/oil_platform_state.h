@@ -17,6 +17,7 @@ typedef struct OilPlatformState {
  UBYTE facing, pose, turnTicks, turnTarget, previousFire, previousBomb;
  WORD vx,vy,ax,ay,subX,subY;
  UWORD fuelTicks,p2FuelQuanta;
+ WORD approachVX16,approachSub16;
 } OilPlatformState;
 static OilPlatformState oil;
 static void oilDamageP2(GameState* g, UBYTE amount);
