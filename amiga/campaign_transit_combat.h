@@ -4,7 +4,7 @@
 #if AUXILIARY_SPRITE_WORDS < ENEMY_SPRITE_WORDS || ENEMY_MISSILE_SPRITE_WORDS < ENEMY_SPRITE_WORDS
 #error Transit fighter pairs require two eight-line sprite buffers each
 #endif
-typedef struct { WORD x,y,vx; UWORD age; UBYTE active,burst; } TransitFighter;
+typedef struct { WORD x,y,vx; UWORD age; UBYTE active,burst,retreating; } TransitFighter;
 typedef struct { WORD x,y,vx,vy; UBYTE active,owner,bomb; } TransitShot;
 typedef struct {
  TransitFighter enemy[2]; TransitShot shot[TRANSIT_SHOTS];
@@ -72,10 +72,32 @@ static UBYTE campaignTransitBusy(const TransitCombat* c) {
 static void campaignTransitMark(UBYTE* display,WORD x,WORD y,UBYTE pen) {
  if(x>=0 && x<SCREEN_WIDTH && y>=0 && y<120)campaignOceanPixel(display,x,y,pen);
 }
+/* Use the same indexed rocket artwork as the world renderer. The compact
+ * buffer has a different stride, so only its final pixel writes are local. */
+static const UBYTE* campaignTransitShotArt(const TransitShot* s) {
+ BYTE index=enhancedProjectileIndex(s->vx<0?55:56,!s->owner);
+ return enhancedWeaponRows+(UWORD)index*40;
+}
 static void campaignTransitInk(UBYTE* display,const TransitCombat* c,UBYTE erase) {
  for(UBYTE i=0;i<TRANSIT_SHOTS;i++) {
   const TransitShot* s=&c->shot[i];if(!s->active)continue;
-  for(UBYTE n=0;n<5;n++)campaignTransitMark(display,s->x+(s->bomb?n/3:n),s->y+(s->bomb?n%3:0),erase?0:GAME_COLOR_WHITE);
+  if(s->bomb) {
+   for(UBYTE n=0;n<5;n++)campaignTransitMark(display,s->x+n/3,s->y+n%3,erase?0:GAME_COLOR_WHITE);
+  } else {
+   const UBYTE* art=campaignTransitShotArt(s);
+   WORD byteX=s->x>>3;UBYTE shift=s->x&7;
+   for(UBYTE y=0;y<8;y++,art+=5)if(art[4] && s->y+y>=0 && s->y+y<120) {
+    UWORD mask=((UWORD)art[4]<<8)>>shift;
+    UBYTE* row=display+((ULONG)(s->y+y)*4)*SCREEN_ROW_BYTES;
+    for(UBYTE p=0;p<4;p++,row+=SCREEN_ROW_BYTES) {
+     UWORD bits=erase?0:((UWORD)art[p]<<8)>>shift;
+     if(byteX>=0 && byteX<SCREEN_ROW_BYTES)
+      row[byteX]=(row[byteX]&~(mask>>8))|((bits&mask)>>8);
+     if(byteX+1>=0 && byteX+1<SCREEN_ROW_BYTES)
+      row[byteX+1]=(row[byteX+1]&~(UBYTE)mask)|(UBYTE)(bits&mask);
+    }
+   }
+  }
  }
  for(UBYTE i=0;i<2;i++)if(c->enemy[i].burst) {
   const TransitFighter* e=&c->enemy[i];WORD r=2+(12-e->burst)/2;
@@ -122,7 +144,7 @@ static void campaignTransitWeapons(TransitCombat* c,GameState* g,const InputStat
   UBYTE previousBomb=p?c->previousWingBomb:c->previousBomb;
   UBYTE fresh=fire && !(p?c->previousWingFire:c->previousFire);
   if(p && g->wingmanControl==WINGMAN_CONTROL_CPU)fresh=fire;
-  if(fresh && !c->cooldown[p] && g->rockets && campaignTransitShoot(c,x+16,y+4,5,0,p+1,0)) {
+  if(fresh && !c->cooldown[p] && g->rockets && campaignTransitShoot(c,x+16,y,ROCKET_SPEED_PIXELS,0,p+1,0)) {
    g->rockets--;c->cooldown[p]=24;
   }
   if(bomb && !previousBomb && !c->bombCooldown[p] && g->bombs &&
@@ -178,22 +200,35 @@ static void campaignTransitTick(TransitCombat* c,GameState* g,const InputState* 
  for(UBYTE i=0;i<2;i++) {
   TransitFighter* e=&c->enemy[i];
   if(e->burst)e->burst--;
-  /* Stagger both directions; cap the encounter to four fighters even if loading is slow. */
-  if(!c->closed && !e->active && !e->burst && c->spawned<4 &&
+  /* Stagger both directions; cap the encounter to eight fighters even if loading is slow. */
+  if(!c->closed && !e->active && !e->burst && c->spawned<8 &&
      c->ticks>=(UWORD)(35+c->spawned*65) && i==(c->spawned&1)) {
-   e->active=1;e->age=0;e->vx=i?2:-2;e->x=i?-16:320;
+   e->active=1;e->age=0;e->retreating=0;e->vx=i?2:-2;e->x=i?-16:320;
    e->y=24+(c->spawned*23)%64;c->spawned++;
   }
   if(!e->active)continue;
-  e->age++;e->x+=e->vx;
-  if(!c->closed && !(e->age&7)) {
-   WORD target=g->playerY+(i?12:-12);if(target<12)target=12;if(target>100)target=100;
-   e->y+=(e->y<target)-(e->y>target);
+  e->age++;
+  if(i) {
+   if(c->closed)e->retreating=1;
+   /* Left is braking in the corridor, just as over land. */
+   e->x=landPursuerStepX(e->x,g->playerX,in->left?4:g->speedLevel,&e->retreating);
+   if(!e->retreating && !(e->age&3))e->y+=(e->y<g->playerY)-(e->y>g->playerY);
+   if(!c->closed && !e->retreating && e->age>=100 && (e->age-100)%125==0 &&
+      e->x>=0 && e->x+16<g->playerX)
+    campaignTransitShoot(c,e->x+16,e->y,6,0,0,0);
+  } else {
+   e->x+=e->vx;
+   if(c->closed)e->retreating=1;
+   if(e->retreating) {if(!(e->age&1))e->y--;}
+   else {
+    e->y+=(e->y<g->playerY)-(e->y>g->playerY);
+    WORD distance=e->x-g->playerX;
+    if(distance>=0 && distance<ENEMY_CPC_FIRE_RANGE_TILES*GAME_TILE_WIDTH) {
+     if(campaignTransitShoot(c,e->x,e->y,-4,0,0,0))e->retreating=1;
+    }
+   }
   }
-  if(e->x < -16 || e->x>320){e->active=0;continue;}
-  if(!c->closed && e->age%55==25 && e->x>=0 && e->x<304 &&
-     ((e->vx>0 && e->x<g->playerX) || (e->vx<0 && e->x>g->playerX)))
-   campaignTransitShoot(c,e->x+8,e->y+4,e->vx>0?4:-4,0,0,0);
+  if(e->x < -16 || e->x>320 || e->y < -8){e->active=0;continue;}
   if(!g->gameOver && !g->aircraftFailureState && !g->ejectState &&
      rectsOverlap(e->x,e->y,16,8,g->playerX,g->playerY,16,8)) {
    applyPlayerAircraftCollision(g);campaignTransitKill(c,g,e,0);
@@ -204,44 +239,72 @@ static void campaignTransitTick(TransitCombat* c,GameState* g,const InputState* 
  for(UBYTE i=0;i<TRANSIT_SHOTS;i++) {
   TransitShot* s=&c->shot[i];if(!s->active)continue;
   s->x+=s->vx;s->y+=s->vy;
+  if(!s->bomb && s->owner==1 && g->rocketHeightLock && !g->ejectState && !g->aircraftFailureState)
+   s->y=g->playerY+2;
   if(s->bomb && !(c->ticks&7) && s->vy<4)s->vy++;
-  if(s->x<0 || s->x>314 || s->y<0 || s->y>=117){s->active=0;continue;}
+  if(s->x<=-8 || s->x>=SCREEN_WIDTH || s->y<=-8 || s->y>=120){s->active=0;continue;}
   if(s->owner) {
    for(UBYTE j=0;j<2;j++)if(c->enemy[j].active &&
-      rectsOverlap(s->x,s->y,5,3,c->enemy[j].x,c->enemy[j].y,16,8)) {
+      rectsOverlap(s->x,s->y,s->bomb?2:8,s->bomb?3:8,c->enemy[j].x,c->enemy[j].y,16,8)) {
     campaignTransitKill(c,g,&c->enemy[j],1);s->active=0;break;
    }
    if(s->active && g->friendlyFire) {
     if(s->owner==2 && !g->aircraftFailureState && !g->ejectState &&
-       rectsOverlap(s->x,s->y,5,3,g->playerX,g->playerY,16,8)) {
+       rectsOverlap(s->x,s->y,s->bomb?2:8,s->bomb?3:8,g->playerX,g->playerY,16,8)) {
      applyPlayerMissileDamage(g,0);s->active=0;
     } else if(s->owner==1 && g->wingman.active &&
-       rectsOverlap(s->x,s->y,5,3,g->wingman.interceptScreenX,g->wingman.screenY,16,8)) {
+       rectsOverlap(s->x,s->y,s->bomb?2:8,s->bomb?3:8,g->wingman.interceptScreenX,g->wingman.screenY,16,8)) {
      campaignTransitLoseWing(g);s->active=0;
     }
    }
   } else if(!g->gameOver && !g->aircraftFailureState && !g->ejectState &&
-     rectsOverlap(s->x,s->y,5,3,g->playerX,g->playerY,16,8)) {
+     rectsOverlap(s->x,s->y,s->bomb?2:8,s->bomb?3:8,g->playerX,g->playerY,16,8)) {
    applyPlayerMissileDamage(g,0);s->active=0;
-  } else if(g->wingman.active && rectsOverlap(s->x,s->y,5,3,g->wingman.interceptScreenX,g->wingman.screenY,16,8)) {
+  } else if(g->wingman.active && rectsOverlap(s->x,s->y,s->bomb?2:8,s->bomb?3:8,g->wingman.interceptScreenX,g->wingman.screenY,16,8)) {
    campaignTransitLoseWing(g);s->active=0;
   }
- }
- for(UBYTE i=0;i<2;i++) {
-  TransitFighter* e=&c->enemy[i];UWORD* a=campaignTransitSprites[2+i*2];UWORD* b=campaignTransitSprites[3+i*2];
-  if(e->active && e->x>=0 && e->x<=304) {
-   const UBYTE* art=e->vx>0?carrierFighterRight:carrierFighterLeft;
-   buildAttachedSpriteFromCpcPlusHalves(a,b,8,e->x,e->y,art,art+8);
-  } else {hideHardwareSprite(a);hideHardwareSprite(b);}
  }
  if(ready && !campaignTransitBusy(c) && !g->aircraftFailureState && !g->ejectState)c->quiet++;
  else c->quiet=0;
 }
 
+static void campaignTransitFighterSprites(TransitCombat* c) {
+ for(UBYTE i=0;i<2;i++) {
+  /* buildGameHudCopper routes storage slots 4/3 to HW 2/3 and
+   * slots 5/2 to HW 4/5. Storage order is NOT hardware channel order. */
+  TransitFighter* e=&c->enemy[i];UWORD* a=campaignTransitSprites[i?5:4];UWORD* b=campaignTransitSprites[i?2:3];
+  if(e->active && e->x>=0 && e->x<=304) {
+   if(i)buildAttachedSpriteFromCpcPlusHalves(a,b,ENEMY_SPRITE_HEIGHT,e->x,e->y,carrierFighterRight,carrierFighterRight+8);
+   else buildEnemyPlaneSprite(a,b,e->x,e->y);
+  } else {hideHardwareSprite(a);hideHardwareSprite(b);}
+ }
+}
+
 #if HAR_HEADLESS_CAMPAIGN_TRANSITION_TEST
+/* Inspect the displayed planes after loader work, not just shot.active. */
+static UBYTE campaignTransitShotsVisible(const UBYTE* display,const TransitCombat* c) {
+ for(UBYTE i=0;i<TRANSIT_SHOTS;i++) {
+  const TransitShot* s=&c->shot[i];
+  if(!s->active || s->bomb || s->x<0 || s->x>312 || s->y<0 || s->y>112)continue;
+  const UBYTE* art=campaignTransitShotArt(s);UBYTE visible=0;
+  for(UBYTE y=0;y<8 && !visible;y++,art+=5)for(UBYTE x=0,mask=128;x<8 && !visible;x++,mask>>=1) {
+   if(!(art[4]&mask))continue;
+   WORD sx=s->x+x,sy=s->y+y;
+   for(UBYTE p=0;p<4;p++)if(art[p]&mask) {
+    if(display[((ULONG)sy*4+p)*SCREEN_ROW_BYTES+(sx>>3)]&(128>>(sx&7)))visible=1;
+   }
+  }
+  if(!visible)return 0;
+ }
+ return 1;
+}
 static UBYTE campaignTransitContract(const GameState* source) {
  static GameState g;TransitCombat c={0};InputState in={0};Player2InputState in2={0};
  memcpy(&g,source,sizeof(g));g.wingman.active=0;g.rockets=2;g.bombs=1;
+ if(campaignTransitHardwareSprites[2]!=(ULONG)campaignTransitSprites[4] ||
+    campaignTransitHardwareSprites[3]!=(ULONG)campaignTransitSprites[3] ||
+    campaignTransitHardwareSprites[4]!=(ULONG)campaignTransitSprites[5] ||
+    campaignTransitHardwareSprites[5]!=(ULONG)campaignTransitSprites[2])return 13;
  g.playerX=48;g.playerY=40;g.aircraftFailureState=g.ejectState=g.gameOver=0;
  g.defence.phase=0;g.landingState=LANDING_STATE_NONE;
  in.fire=1;campaignTransitWeapons(&c,&g,&in,&in2);
@@ -266,6 +329,34 @@ static UBYTE campaignTransitContract(const GameState* source) {
  memset(&c,0,sizeof(c));c.ticks=99;c.spawned=1;
  campaignTransitTick(&c,&g,&in,&in2,0);
  if(!c.enemy[1].active || c.enemy[1].vx<=0 || c.spawned!=2)return 8;
+ /* Closing/loading readiness must never retire a live missile. */
+ memset(&c,0,sizeof(c));in.left=in.right=in.up=in.down=0;
+ c.shot[0].active=1;c.shot[0].owner=1;c.shot[0].x=20;c.shot[0].y=10;c.shot[0].vx=7;
+ for(UBYTE n=0;n<40;n++) {
+  campaignTransitTick(&c,&g,&in,&in2,1);
+  if(!c.shot[0].active || c.shot[0].x!=20+(n+1)*7)return 9;
+ }
+ /* Shared rear fighter holds station until the player brakes. */
+ UBYTE retreat=0;
+ if(landPursuerStepX(80,144,8,&retreat)!=80 || retreat)return 10;
+ if(landPursuerStepX(80,144,4,&retreat)!=82)return 11;
+ if(landPursuerStepX(140,144,8,&retreat)!=142 || !retreat)return 12;
+ /* Check the data actually addressed by the live Copper sprite pairs. */
+ memset(&c,0,sizeof(c));g.playerX=48;g.playerY=90;g.rocketHeightLock=1;
+ for(UBYTE i=0;i<2;i++) {c.enemy[i].active=1;c.enemy[i].x=100+i*120;c.enemy[i].y=20+i*30;c.enemy[i].vx=i?2:-2;}
+ c.shot[0].active=1;c.shot[0].owner=1;c.shot[0].x=20;c.shot[0].y=10;c.shot[0].vx=7;
+ campaignTransitTick(&c,&g,&in,&in2,1);
+ if(c.shot[0].y!=g.playerY+2 || !c.shot[0].active)return 14;
+ campaignTransitFighterSprites(&c);
+ static UWORD expectedA[ENEMY_SPRITE_WORDS],expectedB[ENEMY_SPRITE_WORDS];
+ for(UBYTE i=0;i<2;i++) {
+  TransitFighter* e=&c.enemy[i];
+  if(i)buildAttachedSpriteFromCpcPlusHalves(expectedA,expectedB,8,e->x,e->y,carrierFighterRight,carrierFighterRight+8);
+  else buildEnemyPlaneSprite(expectedA,expectedB,e->x,e->y);
+  const UWORD* a=(const UWORD*)campaignTransitHardwareSprites[2+i*2];
+  const UWORD* b=(const UWORD*)campaignTransitHardwareSprites[3+i*2];
+  for(UBYTE n=0;n<ENEMY_SPRITE_WORDS;n++)if(a[n]!=expectedA[n] || b[n]!=expectedB[n])return 15;
+ }
  return 0;
 }
 #endif

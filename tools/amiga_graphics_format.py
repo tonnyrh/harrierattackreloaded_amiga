@@ -329,6 +329,17 @@ def build_runtime_banks() -> dict[Path, bytes]:
         "03222440", "03222440", "04444440", "04333440") for p in row])
     carrier_header += c_array("carrierAaUpTile", encode_tiles(aa_up, ((0,0),)))
     carrier_header += "static const UBYTE* const carrierAaPoses[3] = {carrierAaMirrorTile, carrierAaUpTile, carrierAaTile};\n"
+    # Seven native 8x8 AA elevations. Keep the established base/palette;
+    # only the barrel changes. No runtime rotation or extra Chip allocation.
+    from PIL import ImageDraw
+    for pose, tip in enumerate(((0,3),(0,1),(2,0),(3,0),(5,0),(7,1),(7,3))):
+        art = aa_up.copy()
+        for y in range(4):
+            for x in range(8): art.putpixel((x,y),0)
+        ImageDraw.Draw(art).line(((3,4),tip),fill=2,width=1)
+        ImageDraw.Draw(art).line(((4,4),(min(7,tip[0]+1),tip[1])),fill=4,width=1)
+        carrier_header += c_array(f"smoothAaTile{pose}", encode_tiles(art, ((0,0),)))
+    carrier_header += "static const UBYTE* const smoothAaPoses[7] = {" + ",".join(f"smoothAaTile{i}" for i in range(7)) + "};\n"
     for pose in ("left", "up", "right"):
         carrier_header += c_array("carrierMissile"+pose.title()+"Tile", encode_tiles(images["carrier_missile_"+pose], ((0,0),)))
     carrier_header += "static const UBYTE* const carrierMissilePoses[3] = {carrierMissileLeftTile, carrierMissileUpTile, carrierMissileRightTile};\n"

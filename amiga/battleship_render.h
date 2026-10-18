@@ -64,7 +64,7 @@ static void battleshipDrawRow(UBYTE* bitmap,UWORD physical,LONG col,WORD row) {
             } else {
                 WORD sourceY=py-(16-battleship.lift[n]);
                 if(sourceY>=0 && sourceY<16) {
-                    const UBYTE* src=(battleshipIsMissile(n) ? carrierMissilePoses[battleship.pose[n]] : carrierAaPoses[battleship.pose[n]])+(sourceY/2)*5;
+                    const UBYTE* src=(battleshipIsMissile(n) ? carrierMissilePoses[battleship.pose[n]] : smoothAaPoses[battleship.pose[n]])+(sourceY/2)*5;
                     UBYTE mask=128>>(px/2);
                     if(src[4]&mask) for(UBYTE p=0;p<4;p++) if(src[p]&mask) pen|=1<<p;
                 }

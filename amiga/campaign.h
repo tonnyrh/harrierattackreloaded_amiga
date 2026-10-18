@@ -63,6 +63,8 @@ static void campaignBattleshipArrival(GameState* g,const CampaignCarry* keep) {
  g->landingState=LANDING_STATE_NONE;g->lowSpeedLanding=0;
  /* Sea phase is independent of the ship camera; avoid a visible wave jump. */
  battleship.water=keep->scroll&255;
+ /* Only 96 pixels of open sea remain before the stern enters view. */
+ battleship.camera16=96*16;g->scrollX=96;
  battleship.velocity16=scrollPixelsForSpeedLevel(keep->speed)*16;
  g->wingman.active=keep->wingActive && !keep->wingmanDestroyed;
  g->wingman.interceptScreenX=keep->wingX;g->wingman.screenY=keep->wingY;
@@ -123,6 +125,9 @@ static void campaignApplyScene(GameState* g,UBYTE scene) {
  } else if(scene==CAMPAIGN_OIL) oilBeginApproach(g);
  else if(scene==CAMPAIGN_BATTLESHIP) {battleship.finished=0;battleshipBegin(g);}
  else if(scene==CAMPAIGN_LANDING || scene==CAMPAIGN_TERRAIN || scene==CAMPAIGN_RETURN) {
+  /* The surviving Wingman arrives as a live aircraft. Do not bake a
+   * second copy into the destination carrier during lazy world loading. */
+  carrierParkedWingmanVisible=0;
   g->takeoffState=TAKEOFF_STATE_AIRBORNE;g->playerFrigateStatus=PLAYER_FRIGATE_STATUS_CLEAR;
   g->playerX=80;g->playerY=56;g->respawnSafeTimer=75;
   g->scrollX=scene==CAMPAIGN_LANDING?LANDING_HOVER_SCROLL_X:CPC_LAND_PROCEDURAL_WORLD_START*8;
@@ -141,6 +146,24 @@ static void campaignApplyScene(GameState* g,UBYTE scene) {
 #if HAR_HEADLESS_CAMPAIGN_TEST
 static UBYTE campaignContract(void) {
  static GameState g;InputState neutral={0};modPlaying=1;
+#if HAR_HEADLESS_CAMPAIGN_WINGMAN_TEST
+ static const UBYTE scenes[]={CAMPAIGN_TERRAIN,CAMPAIGN_LANDING,CAMPAIGN_RETURN};
+ for(UBYTE control=0;control<3;control++)for(UBYTE dead=0;dead<2;dead++)
+ for(UBYTE n=0;n<3;n++) {
+  initGameState(&g,123,123,2);g.gameMode=GAME_MODE_ENHANCED;
+  g.wingmanControl=control;g.wingman.destroyed=dead;
+  g.wingman.active=control && !dead;
+  CampaignCarry keep;campaignSave(&keep,&g);
+  /* Match the session reset before restore/apply in the live handoff. */
+  g.wingman.active=0;g.wingman.mode=WINGMAN_ON_DECK;
+  campaignRestore(&g,&keep);campaignApplyScene(&g,scenes[n]);
+  if(carrierParkedWingmanVisible)return 80;
+  if(!!g.wingman.active!=!!(control && !dead))return 81;
+  if(g.wingman.active && g.wingman.mode!=(control==WINGMAN_CONTROL_PLAYER2?WINGMAN_PLAYER2_FLIGHT:WINGMAN_FORMATION))return 82;
+ }
+ return 0;
+#endif
+
  /* Still-frame extraction must preserve every pixel at all 16 scroll phases. */
  UBYTE source[44],copy[40];for(UWORD i=0;i<44;i++)source[i]=(i*71)^0xa5;
  for(UWORD skip=0;skip<=16;skip++) {

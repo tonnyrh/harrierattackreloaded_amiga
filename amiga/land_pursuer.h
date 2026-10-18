@@ -50,17 +50,18 @@ static UBYTE trySpawnLandPursuer(GameState* game, UWORD decisionColumn) {
     return 1;
 }
 
+/* Shared with the ocean corridor: braking lets a trailing fighter overshoot. */
+static WORD landPursuerStepX(WORD x,WORD playerX,UBYTE speed,UBYTE* retreating) {
+    if(x>=playerX-8)*retreating=1;
+    if(*retreating || speed<5)return x+2;
+    WORD holdX=playerX-64;if(holdX<0)holdX=0;
+    return x+(x<holdX)-(x>holdX);
+}
 static UBYTE updateLandPursuer(GameState* game) {
     WeaponState* p = &game->enemyPlane;
     /* Braking makes it overshoot. Once ahead it continues out of the screen,
      * leaving a window for Harrier's forward rockets. Never teleports back. */
-    if (p->x >= game->playerX - 8) game->enemyPlaneRetreating = 1;
-    if (game->enemyPlaneRetreating || game->speedLevel < 5) p->x += 2;
-    else {
-        WORD holdX = game->playerX - 64;
-        if (p->x < holdX) p->x++;
-        else if (p->x > holdX) p->x--;
-    }
+    p->x=landPursuerStepX(p->x,game->playerX,game->speedLevel,&game->enemyPlaneRetreating);
     p->timer++;
     if (!game->enemyPlaneRetreating && !(p->timer & 3)) {
         if (p->y < game->playerY) p->y++;

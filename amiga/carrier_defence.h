@@ -78,7 +78,11 @@ static DEFENCE_SMALL void carrierDefenceImpact(GameState* g, WORD x, UBYTE damag
     if (d->phase == DEFENCE_SINKING || !d->hull) return;
     /* Platform takes two thirds of base damage (previously four fifths).
      * Round up so even a small hit still counts; carrier damage is unchanged. */
-    if (oil.active) damage = ((UWORD)damage * 2 + 2) / 3;
+    if (oil.active) {
+        damage = ((UWORD)damage * 2 + 2) / 3;
+        if(damage && oil.cpuState==2) {oil.cpuState=0;oil.crewDropTicks=0;}
+    }
+    damage=easyIncomingDamage(g,damage);
     if (damage) d->raidDamaged = 1;
     d->hull = d->hull > damage ? d->hull - damage : 0;
     startWorldImpact(g, x, 108);
@@ -103,6 +107,18 @@ static DEFENCE_SMALL UBYTE carrierGunAimPose(WORD dx, WORD rise, UBYTE previous)
     if (dx < -threshold - 3) return 0;
     if (dx > threshold + 3) return 2;
     return 1;
+}
+
+/* Seven elevations, left through vertical to right. Shared by rig/boss AA. */
+static UBYTE smoothAaAimPose(WORD dx,WORD rise) {
+    if(rise<1)rise=1;
+    WORD side=dx<0?-dx:dx;
+    UBYTE offset=side*4<rise?0:side<rise?1:side<rise*3?2:3;
+    return dx<0?3-offset:3+offset;
+}
+static UBYTE smoothAaTurn(UBYTE current,UBYTE target,UWORD clock) {
+    if(clock%3)return current;
+    return current<target?current+1:current>target?current-1:current;
 }
 
 static DEFENCE_SMALL void carrierSyncGuns(GameState* g, UBYTE** buffers) {
@@ -422,13 +438,13 @@ static UBYTE carrierHardLanding(GameState* g,WORD* y) {
 
 static DEFENCE_SMALL void carrierMoveVtol(GameState* g, const InputState* in) {
     CarrierDefenceState* d=&g->defence;
+    if(g->groundBounceTicks) {carrierResetVtol(d);updatePlayerGroundBounce(g);return;}
     WORD x,y; carrierVtolStep(g,in,&x,&y);
     if (carrierHullOverlap(x + 2, y, 12, y < 112 ? (112 - y < 7 ? 112 - y : 7) : 0)) {
-        /* Preserve the existing short respawn grace without passing through. */
-        if (!g->respawnSafeTimer) {
-            g->playerX = x; g->playerY = y; g->defence.landed = 0;
-            startPlayerCrash(g, x, y);
-        }
+        WORD clearY=y;
+        while(clearY>PLAYER_MIN_Y && carrierHullOverlap(x+2,clearY,12,7))clearY--;
+        g->playerX=x;g->playerY=clearY;d->landed=0;carrierResetVtol(d);
+        startEnhancedSurfaceBounce(g,clearY+PLAYER_SPRITE_HEIGHT+1,115);
         return;
     }
     if (y >= TAKEOFF_PLAYER_DECK_Y && g->playerY <= TAKEOFF_PLAYER_DECK_Y && carrierDefenceOnDeck(x, TAKEOFF_PLAYER_DECK_Y)) {

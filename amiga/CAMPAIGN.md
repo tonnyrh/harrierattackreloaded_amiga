@@ -295,3 +295,173 @@ WinUAE: A500/KS1.3/512K Chip + 512K Slow, floppy only. Loading, Enhanced menu,
 Start Game, carrier deck, takeoff and terrain entry were visually confirmed.
 Startup logged 92,800 free Chip bytes. Evidence: `.tmp/beta6-boot/001` through
 `005` screenshots and `winuaelog.txt`. This is a boot smoke test, not a full run.
+
+## Enhanced Easy and supply balance (2026-10-17)
+Menu Skill 1 and 2 reduce nonfatal damage amounts to 85% (rounded up),
+including carrier/platform hull. Their flak hit budget increases to match.
+This uses starting menu skill, so assistance persists as mission difficulty
+rises. Fatal geometry/fuel failure, Classic and Skill 3-5 are unchanged.
+Enhanced regular supply admissions retain their existing gates and empty
+rotation slot. Empty ammunition takes reward priority; at <=25% capacity,
+three of four selector outcomes favour ammunition. Compare remaining fractions
+of capacity, varying tie outcomes. Urgent supplies can precede replacement
+Wingman. Battleship return-pass supply uses the same need selector, still one
+drop per pass; repair and extra-aircraft rewards remain dedicated rewards.
+Muted WinUAE focused contract: PASS enhanced-easy-and-needed-ammo.
+
+## Seven-position AA guns (2026-10-17)
+Oil-platform CPU AA and Battleship cannon turrets now share seven prepacked
+8x8 elevations, generated alongside carrier art in the existing grey palette.
+The original carrier and missile launcher poses are unchanged. Turns advance
+at most one pose every three logic ticks; oil starts at the vertical pose.
+Battleship computes its ahead-of-aircraft flak point before selecting the
+graphic, using the same vector as shell launch rather than tracking Harrier.
+A cannon waits until aligned before firing. Only changed poses dirty boss
+tiles; no runtime pixel rotation or extra Chip buffer. The additional seven
+tiles occupy 280 bytes of ordinary constant data plus their pointer table.
+Muted focused contract passed seven distinct masks, angle ordering, bounded
+turn cadence and a lead-angle case. Packed-pixel preview visually inspected
+at `.tmp/oct17-aa-poses.png`. No full gameplay performance claim from this test.
+
+### Oil-platform pilot rescue (2026-10-17)
+
+A parachute touchdown anywhere on the visible helipad now queues the shared
+carrier restart at the beginning of the same mission, instead of placing a new
+Harrier on the rig. The eject completion consumes one reserve aircraft; the
+restart does not charge again. Score and destroyed terrain targets follow the
+existing rescue rules. Carrier hull/guns and remaining repair kits are restored
+from the platform encounter before taking the rescue snapshot. The oil encounter
+is not counted as completed. Water and a destroyed platform cannot rescue pilots.
+
+### Enhanced Easiest balance (2026-10-17)
+
+Menu skill 1 now takes 65% of base incoming damage instead of 85%, for
+Harrier and the defended carrier/platform. Flak tolerance uses the same
+percentage. Skill 2 stays at 85%; higher skills and Classic stay unchanged.
+The modifier follows the selected menu skill throughout campaign progression.
+
+### Shared ocean fighters and visible rockets (2026-10-17)
+
+The compact lazy-loading display now uses the ordinary land interceptor art
+for frontal attacks, and the land pursuer's shared horizontal movement for
+rear attacks. Left input lets the rear fighter overshoot. Frontal fighters
+align, fire within the ordinary ten-tile attack range, then climb away.
+The compact renderer/pools remain separate: world BOB stride and terrain
+queries cannot safely address the loader display or unfinished destination.
+
+Transit rockets reuse the Enhanced indexed rocket art instead of five-pixel
+white strokes. Bytewise masked writes retain the compact display stride and
+clip at screen edges; no new Chip RAM is allocated. Shots persist until a
+collision or full departure from the screen, including while loading closes
+the encounter. The transition contract checks shot lifetime, pursuer braking,
+and actual visible bitplanes after loader work. An unexplained mid-flight
+missile disappearance has not yet been reproduced.
+
+Validation: muted A500 WinUAE transition test passed all four handoffs
+(`max-work-vsyncs=01`, stable buffer equivalence); missile visual checks
+reported zero failures in all four corridors.
+
+### Solid-surface recoil and transit sprite repair (2026-10-18)
+
+Enhanced carrier, oil-platform and Battleship structure contacts now use the
+land collision damage, bounce sound and upward recoil policy. Repeated contact
+during recoil does not stack damage. P2 on the rig also bounces with equivalent
+health loss. Water, exhausted armour and existing hard-touchdown rules remain
+separate. The focused muted WinUAE test passed actual carrier, rig P1/P2 and
+Battleship collision paths, clearance, recoil and low-armour failure.
+
+Transit attached fighters now use the actual Copper hardware pairs 2/3 and
+4/5 rather than assuming that compact storage order equals hardware order.
+Reusing that storage also invalidates attached-sprite residency before copying:
+otherwise subsequent corridors could reuse stale crash/missile imagery.
+The regression test decodes Copper DMA pointers and compares both actual
+fighter pairs word-for-word with the normal aircraft builders on each handoff.
+Transit player rockets also honour the normal rocket-height-lock option.
+
+Validation: muted A500 WinUAE passed all four transitions with both actual
+hardware sprite pairs matching on every handoff, zero missile visibility
+failures, stable destination-buffer equivalence and max-work-vsyncs=01.
+This catches the reproduced sprite corruption; it does not establish a
+separate gameplay cause for the previously reported disappearing rockets.
+
+### Oil-platform CPU crew and beam-safe transit ink (2026-10-18)
+
+An arriving CPU Wingman now parachutes to the shared AA gun. A platform hit
+removes a stationed crew; after 450 wave ticks without a crew, an unoccupied
+pickup slot can receive a red Wingman supply. Repair drops retain priority.
+Collecting red supply starts another crew descent, never a replacement aircraft
+on the rig. A crew still stationed when departure begins awards 500 base points
+through the ordinary skill/tempo scoring path, once. The CPU aircraft remains
+unavailable after departure until the ordinary revival path. Human P2 retains
+its existing aircraft controls.
+
+Transit simulation now runs while the previous frame's weapon ink remains
+visible. Erase/draw is committed together immediately after WaitVbl; fighter
+sprite updates follow. Previously simulation ran between erase and redraw on
+the actively displayed bitmap. The hardware test additionally compares the
+commit raster with the earliest affected projectile row, since checking final
+bitmap contents alone cannot detect an erased weapon at DMA fetch time.
+
+Validation: the extended muted oil-platform contract passed crew descent,
+platform-hit loss, red supply/collection, remanning, one-time base bonus and
+unchanged P2/mission progression. Four muted campaign transitions passed with
+zero missile visibility failures and zero late projectile commits; latest
+commit rasters were 32, 32, 17 and 26, all ahead of the affected shot rows.
+Destination buffers remained equivalent and max-work-vsyncs stayed 01.
+The supplied 18.10.2026 snapshot was inspected offline: the compact Copper
+uses the expected four-plane stride and the captured sky bitmap contains no
+weapon ink. A single snapshot cannot reconstruct a projectile already hit.
+
+### No duplicate parked Wingman on arrival (2026-10-18)
+
+Campaign restore marks an intact companion available on the deck; airborne
+terrain, landing and return scenes then restore the live flying companion.
+Those scenes now explicitly clear the parked composite before lazy loading
+builds any carrier columns, avoiding a baked duplicate alongside the sprite.
+The focused HAR_HEADLESS_CAMPAIGN_WINGMAN_TEST passed in muted WinUAE for all
+18 combinations of scene, CPU/P2/off and destroyed/intact status. This was the
+focused branch of the campaign contract, not the unrelated full contract.
+
+### Campaign completion fireworks (2026-10-18)
+
+Enhanced sortie-three landing replaces LANDED with a single centered CAMPAIGN
+COMPLETE! label inside the existing panel. After the carrier slide, a roughly
+480-tick fireworks show replaces that finale's MOD fanfare so existing Paula
+launch/ground-impact samples can sound (the MOD otherwise owns all channels).
+Normal landing fanfares remain unchanged. Fire/Space or Up skips the show.
+Three fixed eight-spark groups launch overlapping colored salvos from deck
+height. No new samples, Chip allocation or sprite channels. Saved pixels are
+restored in reverse order, including ring mirrors, before rebasing the carrier.
+Session initialization clears the effect state. Muted focused WinUAE test
+passed bounded particle storage and byte-exact background restoration through
+a full show. Exported renderer frame inspected in .tmp/oct18-finale-preview.png;
+this is not a full hardware frame-rate or audible mix verification.
+
+### Battleship desperation and restrained storm (2026-10-18)
+
+Below 35% combined health, surviving cannon batteries get three opportunities
+per two old firing periods, grouped with a pause; missile turrets use 85 rather
+than 100 ticks. A surviving visible bridge can attempt one sector-limited
+emergency missile every 150 ticks. The single missile pool, four-cloud/shared
+shell budget, damage and destroyed-target state remain unchanged.
+
+The distinct 160-tick foghorn loops the existing 32-byte procedural waveform
+at a much lower period, with a gentle envelope/drift; no new Chip sample.
+The sky fades over roughly six seconds toward a dark blue-grey gradient.
+A subdued four-tick palette flash every 700 ticks has delayed, low-volume
+existing ground-impact thunder. No rain overlay or extra cloud BOBs.
+
+Lazy combat can admit up to eight fighters while loading remains unfinished,
+with two simultaneous actors still the limit. Once ready, no new admissions;
+all enemies/projectiles still leave before handoff. Campaign boss entry starts
+96 pixels farther into the empty-ocean lead-in, with earlier horn/warning fire.
+Compact wave speed now eases toward the ordinary flight-speed pixel rate,
+instead of a fixed two pixels per frame. This does not unify the separate
+idle wave artwork with the compact corridor pattern.
+
+Muted four-transition test passed stable buffer equivalence, water checks,
+missile visibility and raster deadlines (max-work-vsyncs=01). Focused
+HAR_HEADLESS_BATTLESHIP_MOOD_TEST_ONLY passed the 20/30 firing-opportunity
+comparison, bridge missile pool guard and palette fade/flash restoration.
+The latter is a focused branch, not the full existing Battleship contract.
+Foghorn/timing mix has not been auditioned aloud; WinUAE tests stay muted.

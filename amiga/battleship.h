@@ -37,8 +37,9 @@ static void battleshipBegin(GameState* g) {
     if(battleship.finished==1) { battleship.finished=2; battleship.active=0; return; }
     if(!battleshipTileCache) battleshipTileCache=AllocMem(16*sizeof(BattleshipTileCache),MEMF_FAST|MEMF_CLEAR);
     memset(&battleship,0,sizeof(battleship)); battleship.active=1; battleship.pass=1; battleship.hudHealth=255;
+    battleship.stormSky[0]=currentSkyTopRgb;battleship.stormSky[1]=currentSkyMidRgb;battleship.stormSky[2]=currentSkyLowRgb;
     for(UBYTE i=0;i<BATTLESHIP_TARGETS;i++) {
-        battleship.hp[i]=i==8 ? 9 : i==9 ? 4 : (i==10 || i==11) ? 1 : 2; battleship.pose[i]=1; battleship.lift[i]=i>=12 ? 0 : 16;
+        battleship.hp[i]=i==8 ? 9 : i==9 ? 4 : (i==10 || i==11) ? 1 : 2; battleship.pose[i]=battleshipIsMissile(i)?1:3; battleship.lift[i]=i>=12 ? 0 : 16;
     }
     if(!campaign.transition) {
         UWORD visualStep=0;while(!battleshipPrepareVisualStep(&visualStep)) {}
@@ -57,10 +58,42 @@ static void battleshipBegin(GameState* g) {
     g->defence.fullVtol=0; battleship.supplyClock=160; battleship.heliClock=220;
     carrierSceneHull=255; carrierParkedWingmanVisible=0;
 }
+static void battleshipPlayerSurfaceCollision(GameState* g) {
+    LONG left=(((LONG)g->scrollX+g->playerX+2)>>3)-BATTLESHIP_START_COLUMN;
+    LONG right=(((LONG)g->scrollX+g->playerX+13)>>3)-BATTLESHIP_START_COLUMN;
+    WORD top=SEA_SURFACE_Y;
+    for(LONG col=left;col<=right;col++)
+        if(col>=0 && col<120 && battleshipSurface[col]<top)top=battleshipSurface[col];
+    if(top<SEA_SURFACE_Y && g->playerY+7>=top) {
+        startEnhancedSurfaceBounce(g,top,115);
+        battleship.vy16=-48;
+    }
+}
 static UBYTE battleshipHealth(void) {
     UBYTE hp=battleship.hp[8]+battleship.hp[9];
     for(UBYTE i=0;i<BATTLESHIP_TARGETS;i++) if(battleshipIsGun(i)) hp+=battleship.hp[i];
     return hp;
+}
+/* More urgent salvos, unchanged ordnance pools and damage. */
+static UBYTE battleshipDesperate(void) {return battleshipHealth()*100<=BATTLESHIP_MAX_HEALTH*35;}
+static UBYTE battleshipCannonDue(UBYTE i) {
+ UWORD period=60-battleship.stage*9;
+ if(!battleshipDesperate())return !((battleship.clock+i*19)%period);
+ /* Two quicker opportunities followed by a deliberate breathing gap. */
+ UWORD phase=(battleship.clock+i*19)%(period*2);
+ return phase==0 || phase==period/2 || phase==period;
+}
+static void battleshipWeather(void) {
+ UWORD phase=battleship.clock%700;
+ if(!(battleship.clock&15) || phase==600 || phase==604) {
+  UWORD step=battleship.clock/64;if(step>CITY_FADE_STEP_COUNT)step=CITY_FADE_STEP_COUNT;
+  currentSkyTopRgb=lerpFadeRgb(battleship.stormSky[0],0x223,step);
+  currentSkyMidRgb=lerpFadeRgb(battleship.stormSky[1],0x345,step);
+  currentSkyLowRgb=lerpFadeRgb(battleship.stormSky[2],0x567,step);
+  if(phase>=600 && phase<604) {currentSkyTopRgb=0x556;currentSkyMidRgb=0x667;currentSkyLowRgb=0x789;}
+  patchCopperSkyGradient();
+ }
+ if(phase==612)playSfxAtTuned(SFX_GROUND_TARGET_HIT_3,160,28,SFX_PAULA_PERIOD*2);
 }
 static void battleshipDrawHud(UBYTE* hud) {
     UBYTE health=battleshipHealth();
@@ -268,6 +301,8 @@ static void battleshipSupport(GameState* g,WORD delta,const Player2InputState* i
          * Both empty: alternate using supplyId, still one drop per pass. */
         if(g->rockets && g->bombs && battleship.savedWingman!=WINGMAN_CONTROL_OFF && !g->wingman.active)
             type=POWERUP_WINGMAN;
+        UBYTE needed=neededAmmoPowerup(g,(UBYTE)(battleship.supplyId<<2));
+        if(needed!=POWERUP_NONE)type=needed;
         battleship.supplyPass=battleship.pass;
         spawnPowerup(g,type,1);
         g->powerup.worldX=g->scrollX+g->playerX+24;
@@ -385,14 +420,18 @@ static void battleshipUpdate(GameState* g,const InputState* in,const InputState*
         for(UBYTE i=0;i<BATTLESHIP_TARGETS;i++) {battleship.lift[i]=16;while(battleship.hp[i])battleshipHitTarget(g,i,1);}
 #endif
 
-    if(battleship.pass==1 && battleship.clock>=90 && battleship.clock<140)carrierTryAlarm(&g->defence);
+    battleshipWeather();
+    if(battleship.pass==1 && battleship.clock==24)playSfxAt(SFX_BATTLESHIP_HORN,240);
+    if(!battleship.desperationAlarm && battleshipDesperate() && battleshipHealth()) {
+        battleship.desperationAlarm=1;playSfxAt(SFX_BATTLESHIP_HORN,160);
+    }
     /* Shoreless opening: offscreen batteries warn the player before the stern arrives. */
-    if(battleship.pass==1 && (battleship.clock==140 || battleship.clock==180) && battleshipFlakRoom(g)) {
+    if(battleship.pass==1 && (battleship.clock==65 || battleship.clock==95) && battleshipFlakRoom(g)) {
         for(UBYTE n=0;n<HELICOPTER_BULLET_MAX;n++)if(!g->helicopterBullets[n].active) {
             HelicopterBullet* b=&g->helicopterBullets[n];memset(b,0,sizeof(*b));
             b->active=1;b->worldX=(LONG)g->scrollX+312;b->y=92;
             b->vx16=(g->playerX+64-312)*16/12;
-            b->vy16=(g->playerY+(battleship.clock==140 ? -16 : 16)-92)*16/12;
+            b->vy16=(g->playerY+(battleship.clock==65 ? -16 : 16)-92)*16/12;
             playSfxAtTuned(SFX_FLAK_GUN_1,319,56,SFX_PAULA_PERIOD*3/2);break;
         }
     }
@@ -449,10 +488,11 @@ static void battleshipUpdate(GameState* g,const InputState* in,const InputState*
     WORD delta=(WORD)g->scrollX-oldScroll;
     g->lowSpeedLanding=battleship.phase==1;
     WORD oldX=g->playerX,oldY=g->playerY;
-    if(in->up && g->playerY>8) g->playerY-=2;
-    if(in->down && g->playerY<108) g->playerY+=2;
+    if(!g->groundBounceTicks && in->up && g->playerY>8) g->playerY-=2;
+    if(!g->groundBounceTicks && in->down && g->playerY<108) g->playerY+=2;
     if(in->left && g->playerX>24) g->playerX-=2;
     if(in->right && g->playerX<280) g->playerX+=2;
+    updatePlayerGroundBounce(g);
     battleship.vx16=(g->playerX-oldX)*16;
     battleship.vy16=(g->playerY-oldY)*16;
     if(g->bombLaunchCooldown) g->bombLaunchCooldown--;
@@ -487,13 +527,12 @@ static void battleshipUpdate(GameState* g,const InputState* in,const InputState*
         WORD sx=battleshipTargetX[i]-g->scrollX;
         if(!battleshipIsGun(i) || battleship.lift[i]<16 || !battleship.hp[i] || sx<12 || sx>304) continue;
         WORD dx=playerWorld+8-battleshipTargetX[i];
-        UBYTE pose=dx < -24 ? 0 : dx>24 ? 2 : 1;
-        if(pose!=battleship.pose[i]) {battleship.pose[i]=pose;battleship.dirty[i]=1;}
         if(battleshipIsMissile(i)) {
-            if(!((battleship.clock+i*19)%100))battleshipLaunchMissile(g,i);
+            UBYTE pose=dx < -24 ? 0 : dx>24 ? 2 : 1;
+            if(pose!=battleship.pose[i]) {battleship.pose[i]=pose;battleship.dirty[i]=1;}
+            if(!((battleship.clock+i*19)%(battleshipDesperate()?85:100)))battleshipLaunchMissile(g,i);
             continue;
         }
-        if((battleship.clock+i*19)%(60-battleship.stage*9) || !battleshipFlakRoom(g)) continue;
         /* Burst ahead rather than directly on the aircraft; alternate heights. */
         static const BYTE heights[5]={-24,12,-12,24,0};
         WORD aimY=g->playerY+heights[(i+battleship.clock/35)%5];
@@ -501,12 +540,20 @@ static void battleshipUpdate(GameState* g,const InputState* in,const InputState*
         WORD ahead=g->playerX+64+(i%3)*8;
         if(ahead>300)ahead=300;
         LONG aimX=(LONG)g->scrollX+ahead+(battleship.velocity16*12)/16;
+        UBYTE target=smoothAaAimPose(aimX-(battleshipTargetX[i]+8),battleship.targetY[i]-aimY);
+        UBYTE pose=smoothAaTurn(battleship.pose[i],target,battleship.clock+i);
+        if(pose!=battleship.pose[i]) {battleship.pose[i]=pose;battleship.dirty[i]=1;}
+        if(pose!=target || !battleshipCannonDue(i) || !battleshipFlakRoom(g)) continue;
         for(UBYTE n=0;n<HELICOPTER_BULLET_MAX;n++) if(!g->helicopterBullets[n].active) {
             HelicopterBullet* b=&g->helicopterBullets[n];memset(b,0,sizeof(*b));
             b->active=1;b->worldX=battleshipTargetX[i]+8;b->y=battleship.targetY[i];
             b->vx16=(aimX-b->worldX)*16/12;b->vy16=(aimY-b->y)*16/12;
             playSfxAtTuned(SFX_FLAK_GUN_1,sx,56,SFX_PAULA_PERIOD*3/2);break;
         }
+    }
+    if(battleshipDesperate() && battleship.hp[BATTLESHIP_BRIDGE] && !(battleship.clock%150)) {
+        WORD bridgeX=battleshipTargetX[BATTLESHIP_BRIDGE]-g->scrollX;
+        if(bridgeX>=12 && bridgeX<=304)battleshipLaunchMissile(g,BATTLESHIP_BRIDGE);
     }
     battleshipMoveMissile(g);
     battleshipMoveFlak(g,delta);
@@ -526,14 +573,7 @@ static void battleshipUpdate(GameState* g,const InputState* in,const InputState*
         g->helicopter.active=0;startWorldImpact(g,g->playerX,g->playerY);
         applyPlayerAircraftCollision(g);
     }
-    LONG col=((playerWorld+8)>>3)-BATTLESHIP_START_COLUMN;
-    if(col>=0 && col<120 && g->playerY+7>=battleshipSurface[col]) {
-        g->playerY=battleshipSurface[col]-12;battleship.vy16=-16;
-        if(!battleship.hitSafe && !g->respawnSafeTimer) {
-            applyPlayerMissileDamage(g,1);battleship.hitSafe=30;
-            startImpact(g,g->playerX,g->playerY+8);
-        }
-    }
+    battleshipPlayerSurfaceCollision(g);
     if(!(battleship.clock&7)) updatePlayerFuel(g);
     if(!g->armour || !g->fuel || g->aircraftFailureState) {
         if(g->lives>1) {
@@ -550,6 +590,24 @@ static UBYTE referenceBattleship(void) {
     static GameState g;
     InputState in={0};Player2InputState in2={0};
     memset(&g,0,sizeof(g));g.gameMode=GAME_MODE_ENHANCED;g.missionNumber=1;g.levelDifficulty=1;
+#if HAR_HEADLESS_BATTLESHIP_MOOD_TEST_ONLY
+    UBYTE music=modPlaying;modPlaying=1;battleship.finished=0;battleshipBegin(&g);
+    UWORD normal=0,desperate=0;battleship.stage=2;
+    for(UWORD t=0;t<840;t++){battleship.clock=t;normal+=battleshipCannonDue(0);}
+    memset(battleship.hp,0,sizeof(battleship.hp));battleship.hp[8]=9;
+    for(UWORD t=0;t<840;t++){battleship.clock=t;desperate+=battleshipCannonDue(0);}
+    if(normal!=20 || desperate!=30)return 81;
+    g.scrollX=1000;g.playerX=20;g.playerY=battleship.targetY[8];
+    battleshipLaunchMissile(&g,8);if(!g.enemyMissile.active)return 82;
+    LONG first=g.enemyMissile.worldX;battleshipLaunchMissile(&g,8);
+    if(g.enemyMissile.worldX!=first)return 83;
+    battleship.stormSky[0]=0x7af;battleship.stormSky[1]=0x69e;battleship.stormSky[2]=0x79f;
+    battleship.clock=0;battleshipWeather();if(currentSkyTopRgb!=0x7af)return 84;
+    battleship.clock=400;battleshipWeather();if(currentSkyTopRgb!=0x223 || currentSkyLowRgb!=0x567)return 85;
+    battleship.clock=600;battleshipWeather();if(currentSkyTopRgb!=0x556)return 86;
+    battleship.clock=604;battleshipWeather();if(currentSkyTopRgb!=0x223)return 87;
+    modPlaying=music;battleship.active=0;return 0;
+#endif
 #if HAR_HEADLESS_BATTLESHIP_EXIT_TEST_ONLY
     for(UBYTE reverse=0;reverse<2;reverse++) {
         battleship.finished=0;battleshipBegin(&g);

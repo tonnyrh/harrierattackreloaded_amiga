@@ -11,6 +11,9 @@ static void campaignCopyVisibleRow(UBYTE* dst,const UBYTE* src,UWORD skip) {
  for(UWORD x=0;x<SCREEN_ROW_BYTES;x++)dst[x]=(src[x]<<shift)|(src[x+1]>>(8-shift));
 }
 static UWORD* campaignTransitSprites[8];
+#if HAR_HEADLESS_CAMPAIGN_TRANSITION_TEST
+static ULONG campaignTransitHardwareSprites[8];
+#endif
 static HudRenderState campaignTransitHudState;
 static UWORD campaignTransitFrames,campaignTransitMaxFields;
 /* Compact ocean entry needs no shifted full-screen snapshot. The blitter
@@ -54,11 +57,28 @@ static void freezeCampaignDisplay(UBYTE* storage,UWORD* liveCopper,const UBYTE* 
  const UWORD words[8]={PLAYER_SPRITE_WORDS,PLAYER_SPRITE_WORDS,AUXILIARY_SPRITE_WORDS,
   AUXILIARY_SPRITE_WORDS,ENEMY_SPRITE_WORDS,ENEMY_MISSILE_SPRITE_WORDS,PLAYER_SPRITE_WORDS,PLAYER_SPRITE_WORDS};
  UWORD* sprites[8];UBYTE* next=stillHud+HUD_BITMAP_BYTES;
- for(UBYTE i=0;i<8;i++){sprites[i]=campaignTransitSprites[i]=(UWORD*)next;memcpy(next,sources[i],words[i]*2);next+=words[i]*2;}
+ for(UBYTE i=0;i<8;i++) {
+  sprites[i]=campaignTransitSprites[i]=(UWORD*)next;
+  /* This address may still be cached from the previous ocean corridor. */
+  invalidateAttachedSpriteResident(sprites[i]);
+  memcpy(next,sources[i],words[i]*2);next+=words[i]*2;
+ }
  UWORD* stillCopper=(UWORD*)next;
  campaignFrozenDisplay=1;
  buildGameHudCopper(stillCopper,storage,stillHud,(const UWORD*)gamePalette,0,0,
   sprites[0],sprites[1],sprites[2],sprites[3],sprites[4],sprites[5],sprites[6],sprites[7]);
+#if HAR_HEADLESS_CAMPAIGN_TRANSITION_TEST
+ memset(campaignTransitHardwareSprites,0,sizeof(campaignTransitHardwareSprites));
+ for(UWORD n=0;n<COPPER_BYTES/2-1;n+=2) {
+  UWORD reg=stillCopper[n],value=stillCopper[n+1];
+  if(reg==0xffff && value==0xfffe)break;
+  if(reg>=0x120 && reg<=0x13e && !(reg&1)) {
+   UBYTE channel=(reg-0x120)/4;
+   if(reg&2)campaignTransitHardwareSprites[channel]|=value;
+   else campaignTransitHardwareSprites[channel]|=(ULONG)value<<16;
+  }
+ }
+#endif
  campaignFrozenDisplay=0;
  WaitVbl();custom->cop1lc=(ULONG)stillCopper;custom->copjmp1=0x7fff;
  /* Subsequent palette/session resets must patch the hidden live list only. */
@@ -107,6 +127,7 @@ static void prepareCampaignOceanWorld(UBYTE* display,UBYTE* world,GameState* g) 
   * debug jumps deliberately replace their old scenery with this same sea. */
  /* Empty sea was prepared before display handoff, not cleared live here. */
  for(UBYTE i=2;i<6;i++)hideHardwareSprite(campaignTransitSprites[i]);
+ WORD waveSpeed16=scrollPixelsForSpeedLevel(g->speedLevel)*16,waveSub16=0;
  UWORD waveX[8];for(UBYTE i=0;i<8;i++)waveX[i]=(i*83+19)%315;
  ULONG cleared=0;
  UWORD bossVisualStep=0;UBYTE bossVisualReady=!battleship.active;
@@ -118,14 +139,14 @@ static void prepareCampaignOceanWorld(UBYTE* display,UBYTE* world,GameState* g) 
  TransitCombat combat={0};
 #if HAR_HEADLESS_CAMPAIGN_TRANSITION_TEST
  UBYTE combatContract=campaignTransitContract(g);
- UBYTE waterMoved=0,waterWrapped=0,waterFailed=0;
+ UBYTE waterMoved=0,waterWrapped=0,waterFailed=0,shotVisualFailed=0,shotCommitLate=0;
+ UWORD shotCommitRasterMax=0;
  KPrintF("TRANSIT combat contract=%ld\n",(ULONG)combatContract);
 #endif
  UBYTE savedPhase=g->defence.phase,savedLanding=g->landingState,savedLowSpeed=g->lowSpeedLanding;
  g->defence.phase=0;g->landingState=LANDING_STATE_NONE;g->lowSpeedLanding=0;
  UBYTE* transitHud=display+CAMPAIGN_STILL_WORLD_BYTES;
  while(combat.quiet<35) {
-  WaitVbl();ULONG start=campaignHardwareField();
   serviceModMusicToCurrentVbl();
   InputState in={0};Player2InputState in2={0};ReadInput(&in,g->wingmanControl==WINGMAN_CONTROL_PLAYER2);
   if(g->wingmanControl==WINGMAN_CONTROL_PLAYER2)ReadPlayer2Input(&in2,g->gameMode);
@@ -139,11 +160,27 @@ static void prepareCampaignOceanWorld(UBYTE* display,UBYTE* world,GameState* g) 
   UBYTE pause=in.p || in.cancel;
   if(pause && !combat.previousPause)combat.paused=!combat.paused;
   combat.previousPause=pause;
-  if(combat.paused){updateSfx();continue;}
+  if(combat.paused){updateSfx();WaitVbl();continue;}
   UBYTE ready=bossVisualReady && cleared>=GAME_WORLD_BITMAP_BYTES && done>=count;
-  campaignTransitInk(display,&combat,1);
+  /* Keep the displayed projectiles intact throughout simulation. Commit
+   * old/new ink together in vertical blank, before DMA reaches the sky. */
+  TransitCombat previousCombat=combat;
   campaignTransitTick(&combat,g,&in,&in2,ready);
+  WaitVbl();ULONG start=campaignHardwareField();
+  campaignTransitInk(display,&previousCombat,1);
   campaignTransitInk(display,&combat,0);
+#if HAR_HEADLESS_CAMPAIGN_TRANSITION_TEST
+  UWORD commitRaster=currentRasterY();
+  if(commitRaster<311 && commitRaster>shotCommitRasterMax)shotCommitRasterMax=commitRaster;
+  WORD earliest=120;
+  for(UBYTE i=0;i<TRANSIT_SHOTS;i++) {
+   if(combat.shot[i].active && combat.shot[i].y<earliest)earliest=combat.shot[i].y;
+   if(previousCombat.shot[i].active && previousCombat.shot[i].y<earliest)earliest=previousCombat.shot[i].y;
+  }
+  if(earliest<0)earliest=0;
+  if(earliest<120 && commitRaster>=24+earliest && commitRaster<311)shotCommitLate=1;
+#endif
+  campaignTransitFighterSprites(&combat);
 #if HAR_HEADLESS_CAMPAIGN_TRANSITION_TEST
   ULONG combatEnd=campaignHardwareField();UWORD combatRaster=currentRasterY();
 #endif
@@ -160,10 +197,13 @@ static void prepareCampaignOceanWorld(UBYTE* display,UBYTE* world,GameState* g) 
 #if HAR_HEADLESS_CAMPAIGN_TRANSITION_TEST
   UWORD previousWaveX=waveX[0];
 #endif
+  WORD waveTarget16=scrollPixelsForSpeedLevel(g->speedLevel)*16;
+  if(waveSpeed16<waveTarget16)waveSpeed16++;else if(waveSpeed16>waveTarget16)waveSpeed16--;
+  waveSub16+=waveSpeed16;UWORD waveStep=waveSub16/16;waveSub16%=16;
   for(UBYTE i=0;i<8;i++) {
    UWORD y=126+i*4;
    for(UBYTE n=0;n<5;n++)campaignOceanPixel(display,waveX[i]+n,y,GAME_COLOR_SEA);
-   waveX[i]=waveX[i]>=2?waveX[i]-2:314;
+   waveX[i]=(waveX[i]+315-waveStep)%315;
    for(UBYTE n=0;n<5;n++)campaignOceanPixel(display,waveX[i]+n,y,GAME_COLOR_WHITE);
   }
 #if HAR_HEADLESS_CAMPAIGN_TRANSITION_TEST
@@ -206,6 +246,9 @@ static void prepareCampaignOceanWorld(UBYTE* display,UBYTE* world,GameState* g) 
     done++;row=0;
    }
   }
+#if HAR_HEADLESS_CAMPAIGN_TRANSITION_TEST
+  if(!campaignTransitShotsVisible(display,&combat))shotVisualFailed=1;
+#endif
   UWORD fields=(campaignHardwareField()-start)&0xffff;
 #if HAR_HEADLESS_CAMPAIGN_TRANSITION_TEST
   if(fields>1)KPrintF("TRANSIT slow tick=%ld combat=%ld/%ld hud=%ld/%ld end=%ld/%ld\n",(ULONG)combat.ticks,(combatEnd-start)&65535,(ULONG)combatRaster,(hudEnd-start)&65535,(ULONG)hudRaster,(ULONG)fields,(ULONG)currentRasterY());
@@ -217,7 +260,9 @@ static void prepareCampaignOceanWorld(UBYTE* display,UBYTE* world,GameState* g) 
  campaignTransitClear=!campaignTransitBusy(&combat) && combat.quiet>=35;
 #if HAR_HEADLESS_CAMPAIGN_TRANSITION_TEST
  KPrintF("TRANSIT water moved=%ld wrapped=%ld failed=%ld\n",(ULONG)waterMoved,(ULONG)waterWrapped,(ULONG)waterFailed);
- if(combatContract || !waterMoved || !waterWrapped || waterFailed)campaignTransitClear=0;
+ KPrintF("TRANSIT missile visual failed=%ld\n",(ULONG)shotVisualFailed);
+ KPrintF("TRANSIT projectile commit max-raster=%ld late=%ld\n",(ULONG)shotCommitRasterMax,(ULONG)shotCommitLate);
+ if(combatContract || !waterMoved || !waterWrapped || waterFailed || shotVisualFailed || shotCommitLate)campaignTransitClear=0;
 #endif
  g->defence.phase=savedPhase;g->landingState=savedLanding;g->lowSpeedLanding=savedLowSpeed;
  g->impact.active=0;

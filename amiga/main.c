@@ -3016,6 +3016,8 @@ static void resetTargetLock(void);
 static void resetCpcRandomSequence(UWORD worldSeed);
 static void ammoForSkill(UBYTE skillLevel, UBYTE* bombs, UBYTE* rockets);
 static void ammoForGame(const GameState* game, UBYTE* bombs, UBYTE* rockets);
+static UBYTE smoothAaAimPose(WORD dx,WORD rise);
+static UBYTE smoothAaTurn(UBYTE current,UBYTE target,UWORD clock);
 static void resetDestroyedShipColumns(void);
 static UBYTE isShipCellDestroyed(LONG worldColumn, WORD tileY);
 static void resetLandCraters(void);
@@ -3285,7 +3287,7 @@ enum {
 	SFX_CARRIER_IDLE_2,
 	SFX_HELICOPTER,
     SFX_CARRIER_KLAXON,
-    SFX_GROUND_BOUNCE, SFX_BOMBER_DRONE, SFX_DEPOT_BOOM,
+    SFX_GROUND_BOUNCE, SFX_BOMBER_DRONE, SFX_DEPOT_BOOM, SFX_BATTLESHIP_HORN,
 	SFX_COUNT
 };
 
@@ -3296,6 +3298,7 @@ static UBYTE sfxRetriggerGuard[SFX_COUNT];
 static UBYTE depotBoomReload[4], depotBoomSecond[4], depotBoomVariant;
 
 static const SfxSample sfxSamples[SFX_COUNT] = {
+    [SFX_BATTLESHIP_HORN]={sfxCarrierKlaxon,sizeof(sfxCarrierKlaxon),1480,48,SFX_PRIORITY_PLAYER,SFX_PAN_ANY,160},
     [SFX_BOMBER_DRONE]={sfxBomberDrone,sizeof(sfxBomberDrone),700,20,SFX_PRIORITY_AMBIENT,SFX_PAN_ANY,12},
     [SFX_DEPOT_BOOM]={sfxGroundTargetHit1Sample,sizeof(sfxGroundTargetHit1Sample),SFX_PAULA_PERIOD,64,SFX_PRIORITY_IMPACT,SFX_PAN_ANY,
         SFX_FRAMES_FOR_BYTES(sizeof(sfxGroundTargetHit1Sample))},
@@ -4106,6 +4109,7 @@ static void startPendingSfxChannel(UBYTE channel) {
 	sfxChannelSilenceQueueDelay[channel] =
 		(sfxChannelCurrentId[channel] == SFX_RADAR_ALARM ||
          sfxChannelCurrentId[channel] == SFX_CARRIER_KLAXON ||
+         sfxChannelCurrentId[channel] == SFX_BATTLESHIP_HORN ||
          sfxChannelCurrentId[channel] == SFX_BOMBER_DRONE) ? 0 : 1;
 }
 
@@ -4161,6 +4165,13 @@ static void updateSfx(void) {
 			}
 		}
 
+        if(sfxChannelCurrentId[channel]==SFX_BATTLESHIP_HORN && sfxChannelFrames[channel]) {
+            UWORD age=160-sfxChannelFrames[channel],volume=48;
+            if(age<24)volume=volume*age/24;
+            if(sfxChannelFrames[channel]<40)volume=volume*sfxChannelFrames[channel]/40;
+            custom->aud[channel].ac_per=1480+((age>>3)&3)*12;
+            custom->aud[channel].ac_vol=AUDIO_MIX_VOLUME(volume);
+        }
         if (sfxChannelCurrentId[channel] == SFX_CARRIER_KLAXON && sfxChannelFrames[channel]) {
             UWORD age = CARRIER_SIREN_FRAMES - sfxChannelFrames[channel];
             UWORD phase = age % 100;
@@ -8970,7 +8981,7 @@ static void drawHudValues(UBYTE* hud, const GameState* game, ULONG highScore, UB
 			 * transitions restore the same HUD rectangle. Green/yellow marks a
 			 * successful carrier recovery without borrowing the fatal red box. */
 			drawHudStatusPanel(hud, HUD_COLOR_SAFE);
-			drawTextCentered(hud, 45, "LANDED", HUD_COLOR_SAFE);
+			drawTextCentered(hud, 45, game->gameMode==GAME_MODE_ENHANCED && campaignSortie(game->missionNumber)==3 ? "CAMPAIGN COMPLETE!" : "LANDED", HUD_COLOR_SAFE);
 		} else if (overlayMode == 3) {
 			drawHudStatusPanel(hud, HUD_COLOR_SAFE);
 			drawTextCentered(hud, 38, "HIGH SCORE", HUD_COLOR_SAFE);
@@ -10870,7 +10881,7 @@ static const char* const debugSfxNames[] = {
 	"CARRIER IDLE 2",
 	"HELICOPTER ROTOR",
     "CARRIER KLAXON",
-    "GROUND IMPACT", "BOMBER DRONE", "DEPOT DOUBLE HIT"
+    "GROUND IMPACT", "BOMBER DRONE", "DEPOT DOUBLE HIT", "BATTLESHIP HORN"
 };
 typedef char DebugSfxNamesMustMatchCount[(sizeof(debugSfxNames) / sizeof(debugSfxNames[0]) == SFX_COUNT) ? 1 : -1];
 
@@ -17703,11 +17714,26 @@ static void updateWingmanSprite(UWORD* sprite, UWORD* unusedSprite7, const GameS
         if(game->gameOver || (!oil.p2Present && !oil.cpuState)) {
             hideHardwareSprite(sprite);if(unusedSprite7)hideHardwareSprite(unusedSprite7);return;
         }
+        if(oil.cpuState==1) {
+            if(unusedSprite7)hideHardwareSprite(unusedSprite7);
+            invalidateAttachedSpriteResident(sprite);
+            setHardwareSpritePosition(sprite,HAR_CPC_PARACHUTE_HEIGHT,oil.crewX,oil.crewY);
+            for(UBYTE y=0;y<HAR_CPC_PARACHUTE_HEIGHT;y++) {
+                UWORD a=0,b=0;
+                for(UBYTE x=0;x<HAR_CPC_PARACHUTE_WIDTH;x++) {
+                    UBYTE pen=harCpcParachutePixels[y*HAR_CPC_PARACHUTE_WIDTH+x];
+                    if(pen){b|=0x8000>>x;if(pen==15)a|=0x8000>>x;}
+                }
+                sprite[2+y*2]=a;sprite[3+y*2]=b;
+            }
+            sprite[2+HAR_CPC_PARACHUTE_HEIGHT*2]=sprite[3+HAR_CPC_PARACHUTE_HEIGHT*2]=0;
+            return;
+        }
         if(oil.cpuState) {
             if(unusedSprite7)hideHardwareSprite(unusedSprite7);
             invalidateAttachedSpriteResident(sprite);
             setHardwareSpritePosition(sprite,8,104,OIL_PLAYER_Y);
-            const UBYTE* gun=carrierAaPoses[oil.cpuGunPose];
+            const UBYTE* gun=smoothAaPoses[oil.cpuGunPose];
             for(UBYTE row=0;row<8;row++) {
                 /* Reuse carrier gun art: playfield greys 4/3/2 become
                  * sprite greys 1/2/3, with the existing opacity mask. */
@@ -19760,6 +19786,32 @@ static UBYTE nextPowerupTypeForSpawnId(UBYTE spawnId) {
 	}
 }
 
+/* Menu skill stays fixed as mission difficulty rises. Classic is unchanged. */
+static UBYTE enhancedEasyMode(const GameState* g) {
+    return g->gameMode==GAME_MODE_ENHANCED && g->skillLevel>=1 && g->skillLevel<=2;
+}
+static UBYTE easyIncomingDamagePercent(const GameState* g) {
+    if(!enhancedEasyMode(g))return 100;
+    return g->skillLevel==1?65:85;
+}
+static UWORD easyIncomingDamage(const GameState* g,UWORD damage) {
+    return ((ULONG)damage*easyIncomingDamagePercent(g)+99)/100;
+}
+/* Compare fractions, not raw counts: rocket and bomb capacities differ. */
+static UBYTE neededAmmoPowerup(const GameState* g,UBYTE roll) {
+    if(g->gameMode!=GAME_MODE_ENHANCED)return POWERUP_NONE;
+    UBYTE bombs,rockets; ammoForGame(g,&bombs,&rockets);
+    UBYTE lowBombs=(UWORD)g->bombs*4<=bombs;
+    UBYTE lowRockets=(UWORD)g->rockets*4<=rockets;
+    if(!lowBombs && !lowRockets)return POWERUP_NONE;
+    if(g->bombs && g->rockets && (roll&3)==3)return POWERUP_NONE;
+    if(!lowBombs)return POWERUP_ROCKETS;
+    if(!lowRockets)return POWERUP_BOMBS;
+    UWORD b=(UWORD)g->bombs*rockets,r=(UWORD)g->rockets*bombs;
+    if(b==r)return (roll&4)?POWERUP_BOMBS:POWERUP_ROCKETS;
+    return b<r?POWERUP_BOMBS:POWERUP_ROCKETS;
+}
+
 static UBYTE enhancedPowerupRollPasses(UBYTE rState) {
 	return (rState & POWERUP_SPAWN_ROLL_MASK) == 0 &&
 		(rState & POWERUP_ENHANCED_REJECT_MASK) !=
@@ -19808,6 +19860,20 @@ static void trySpawnPowerup(GameState* game) {
 	 * in updateClassicAirAdmission() never calls this function. */
 	if (!enhancedPowerupRollPasses(rState))
 		return;
+
+    /* Keep the normal second admission roll; only substitute the reward. */
+    if(((rState+13)&CPC_R_MASK)>=100) {
+        UWORD entropy=cpcRandomStateForWorldColumn(checkColumn);
+        UBYTE needed=neededAmmoPowerup(game,(UBYTE)(entropy>>3));
+        UBYTE nextId=game->powerup.spawnId>=6?1:game->powerup.spawnId+1;
+        UBYTE eligibleWing=game->wingman.destroyed && !game->wingmanReviveDelayColumns;
+        if(needed!=POWERUP_NONE && (eligibleWing ||
+            (!game->wingman.destroyed && nextPowerupTypeForSpawnId(nextId)!=POWERUP_NONE))) {
+            if(!game->wingman.destroyed)game->powerup.spawnId=nextId;
+            spawnPowerup(game,needed,(UBYTE)(entropy&POWERUP_SPAWN_MAX_ROW));
+            return;
+        }
+    }
 
 	/* CPC's wingman-resurrection branch: if wingman was destroyed (status
 	 * 254), every qualifying spawn becomes a wingman powerup instead of
@@ -19906,6 +19972,13 @@ static void activatePowerup(GameState* game, UBYTE type) {
 			refillWeaponPowerup(game, POWERUP_BOMBS);
 			break;
 		case POWERUP_WINGMAN:
+            if(oil.active && game->wingmanControl==WINGMAN_CONTROL_CPU) {
+                oil.cpuState=1;oil.cpuGunPose=3;oil.crewDropTicks=0;
+                oil.crewX=(WORD)(game->powerup.worldX-game->scrollX);oil.crewY=game->powerup.logicalY;
+                if(oil.crewY>OIL_DECK_Y-HAR_CPC_PARACHUTE_HEIGHT)oil.crewY=OIL_DECK_Y-HAR_CPC_PARACHUTE_HEIGHT;
+                game->wingman.active=0;game->wingman.destroyed=1;
+                break;
+            }
 			if (game->wingman.destroyed) {
 				/* Revive at the pickup point. CPU reuses WINGMAN_TAKEOFF's
 				 * existing smooth converge-into-formation logic (its own
@@ -21695,7 +21768,7 @@ static void applyPlayerDamageThirds(GameState* game, UWORD damage) {
     if (game->gameMode != GAME_MODE_ENHANCED) {
         startAircraftFailure(game, AIRCRAFT_FAILURE_CAUSE_MISSILE); return;
     }
-    game->missileDamageThirds += damage;
+    game->missileDamageThirds += easyIncomingDamage(game,damage);
     if (game->missileDamageThirds > 300) game->missileDamageThirds = 300;
     updatePlayerDamageArmour(game);
     if (!game->armour) startAircraftFailure(game, AIRCRAFT_FAILURE_CAUSE_MISSILE);
@@ -21921,7 +21994,8 @@ static UBYTE updatePlayerEject(GameState* game) {
 	WORD surfaceY = terrainSurfacePixelYForWorldColumn(worldColumn);
     WORD pilotX = game->ejectX + HAR_CPC_PARACHUTE_WIDTH / 2;
     UBYTE overDeck = pilotX >= 64 && pilotX < 160;
-    if(oil.active) overDeck=pilotX>=66 && pilotX<=100;
+    if(oil.active) overDeck=pilotX>=OIL_PAD_LEFT && pilotX<OIL_PAD_RIGHT &&
+        game->defence.hull && game->defence.phase!=DEFENCE_SINKING;
     if (carrierRescue) surfaceY = overDeck ? (oil.active?OIL_DECK_Y:CARRIER_DECK_PIXEL_Y) : SEA_SURFACE_Y;
 	if (game->ejectY + HAR_CPC_PARACHUTE_HEIGHT >= surfaceY ||
 		game->ejectY >= HUD_TOP - HAR_CPC_PARACHUTE_HEIGHT) {
@@ -21972,6 +22046,8 @@ static UBYTE flakDamageThresholdForGame(const GameState* game) {
 	 * much larger jump when the CPC hit budget is represented as an integer. */
 	/* Enhanced has roughly 30% more hit tolerance than the previous 115% budget. */
 	UWORD budgetPercent = game->gameMode == GAME_MODE_ENHANCED ? 150 : 100;
+    UBYTE damagePercent=easyIncomingDamagePercent(game);
+    budgetPercent=(budgetPercent*100+damagePercent-1)/damagePercent;
 	return (UBYTE)(((UWORD)threshold * budgetPercent + pressure - 1) / pressure);
 }
 
@@ -23077,6 +23153,8 @@ static UBYTE referenceEnhancedEncountersMatch(void);
 static UBYTE referenceHardwareFeedbackMatch(void);
 static UBYTE referenceFuelSupplyMatch(void);
 static UBYTE referenceFriendlyFireMatches(void);
+static UBYTE referenceSurfaceBounce(void);
+static UBYTE referenceFinale(void);
 static UBYTE referenceCarrierDefenceMatches(void);
 static UBYTE referenceCarrierBonusMatches(void);
 static UBYTE referenceCarrierRescueContinuity(void);
@@ -23228,6 +23306,16 @@ static int runClassicGameplayContractTest(void) {
     return groundResult!=0;
 #endif
 
+#if HAR_HEADLESS_FINALE_TEST
+    UBYTE result=referenceFinale();
+    writeClassicContractResult(result ? "FAIL finale-restoration" : "PASS finale-bounded-particles-and-background-restoration");return result==0;
+#endif
+#if HAR_HEADLESS_SURFACE_BOUNCE_TEST_ONLY
+    UBYTE result=referenceSurfaceBounce();char message[]="FAIL surface-bounce 00";
+    message[sizeof(message)-3]='0'+result/10;message[sizeof(message)-2]='0'+result%10;
+    writeClassicContractResult(result?message:"PASS carrier-oil-battleship-shared-surface-bounce");return result!=0;
+#endif
+
 #if HAR_HEADLESS_BATTLESHIP_TEST_ONLY
     UBYTE bossResult=referenceBattleship();
     KPrintF("Battleship contract result %ld\n",(ULONG)bossResult);
@@ -23298,6 +23386,42 @@ static int runClassicGameplayContractTest(void) {
     message[19]='0'+bonusResult/10; message[20]='0'+bonusResult%10;
     writeClassicContractResult(bonusResult ? message : "PASS carrier-super-and-perfect");
     return bonusResult;
+#endif
+
+#if HAR_HEADLESS_AA_ANGLES_TEST_ONLY
+    UBYTE ok=1;
+    static const WORD dx[7]={-80,-40,-12,0,12,40,80};
+    for(UBYTE i=0;i<7;i++) {
+        ok &= smoothAaAimPose(dx[i],24)==i;
+        for(UBYTE j=0;j<i;j++) { UBYTE different=0;for(UBYTE k=0;k<40;k++)different |= smoothAaPoses[i][k]!=smoothAaPoses[j][k];ok &= different; }
+        for(UBYTE row=0;row<8;row++)for(UBYTE plane=0;plane<4;plane++)
+            ok &= !(smoothAaPoses[i][row*5+plane]&~smoothAaPoses[i][row*5+4]);
+    }
+    UBYTE pose=0;
+    for(UWORD tick=0;tick<18;tick++) {
+        UBYTE next=smoothAaTurn(pose,6,tick);ok &= next>=pose && next<=pose+1;pose=next;
+    }
+    ok &= pose==6 && smoothAaAimPose(-20,40)!=smoothAaAimPose(60,40);
+    writeClassicContractResult(ok?"PASS seven-aa-poses-and-turn-cadence":"FAIL seven-aa-poses-and-turn-cadence");return ok?0:1;
+#endif
+
+#if HAR_HEADLESS_EASY_SUPPLY_TEST_ONLY
+    GameState g; memset(&g,0,sizeof(g));g.gameMode=GAME_MODE_ENHANCED;g.skillLevel=1;g.levelDifficulty=5;
+    UBYTE ok=easyIncomingDamage(&g,100)==65 && easyIncomingDamage(&g,1)==1;
+    UBYTE easiestFlak=flakDamageThresholdForGame(&g);
+    UBYTE b,r;ammoForGame(&g,&b,&r);g.bombs=b;g.rockets=0;
+    for(UBYTE roll=0;roll<8;roll++)ok &= neededAmmoPowerup(&g,roll)==POWERUP_ROCKETS;
+    g.bombs=0;g.rockets=r;ok &= neededAmmoPowerup(&g,7)==POWERUP_BOMBS;
+    g.bombs=0;g.rockets=0;ok &= neededAmmoPowerup(&g,0)==POWERUP_ROCKETS && neededAmmoPowerup(&g,4)==POWERUP_BOMBS;
+    g.bombs=b;g.rockets=r;ok &= neededAmmoPowerup(&g,0)==POWERUP_NONE;
+    g.bombs=b/4;g.rockets=r;ok &= neededAmmoPowerup(&g,0)==POWERUP_BOMBS && neededAmmoPowerup(&g,3)==POWERUP_NONE;
+    g.skillLevel=2;ok &= easyIncomingDamage(&g,100)==85;
+    UBYTE easyFlak=flakDamageThresholdForGame(&g);
+    ok &= easiestFlak>easyFlak;
+    g.skillLevel=3;ok &= easyIncomingDamage(&g,100)==100 && easyFlak>flakDamageThresholdForGame(&g);
+    g.gameMode=GAME_MODE_CLASSIC;g.skillLevel=1;g.bombs=0;g.rockets=0;
+    ok &= easyIncomingDamage(&g,100)==100 && neededAmmoPowerup(&g,0)==POWERUP_NONE;
+    writeClassicContractResult(ok?"PASS enhanced-easy-and-needed-ammo":"FAIL enhanced-easy-and-needed-ammo");return ok?0:1;
 #endif
 
 #if HAR_HEADLESS_AUDIO_REFINEMENT_TEST_ONLY
@@ -25632,6 +25756,7 @@ static void driveAttractDemoInput(AttractDemoState* demo, GameState* game,
 #include "ammunition_depot_tests.h"
 #include "enhanced_encounters.h"
 #include "enhanced_encounter_tests.h"
+#include "ground_bounce.h"
 #include "carrier_defence.h"
 #if HAR_HEADLESS_VTOL_RENDER_TEST_ONLY
 #include "vtol_render_tests.h"
@@ -25640,8 +25765,8 @@ static void driveAttractDemoInput(AttractDemoState* demo, GameState* game,
 #include "battleship.h"
 #include "oil_platform_tests.h"
 #include "carrier_repair.h"
-#include "ground_bounce.h"
 #include "carrier_defence_tests.h"
+#include "surface_bounce_tests.h"
 
 static UBYTE updateGameCollisions(GameState* game, UBYTE** worldBuffers,
 	UBYTE* hudChanged, UBYTE* weaponChanged, UBYTE* enemyMissileChanged,
@@ -26219,6 +26344,8 @@ static void updateEnemyMissileSprite(UWORD* enemyMissileSprite, const GameState*
 #endif
 }
 
+#include "campaign_finale.h"
+
 static void startGameSession(GameState* game,
 	USHORT* copper,
 	UBYTE** worldBuffers,
@@ -26246,6 +26373,7 @@ static void startGameSession(GameState* game,
 	UBYTE gameModeSetting,
 	UBYTE wingmanControl,
 	UBYTE preserveVisibleWorld) {
+    memset(&finale,0,sizeof(finale));
 #if HAR_HARDWARE_PLAYER_ROCKET
 	hardwareProjectileWeapon = 0;
 	hardwareProjectileVisible = 0;
@@ -27911,7 +28039,7 @@ int main(void) {
                     pendingWingmanSpriteUpdate=pendingPlayerSpriteUpdate=pendingEnemyMissileSpriteUpdate=pendingGameScrollCopperUpdate=1;
                     if(!(battleship.clock&7)) {drawHudValues(hudBuffer,&game,highScore,0);battleshipDrawHud(hudBuffer);}
                     if(battleship.finished==1) {campaign.specialDone=1;campaign.request=CAMPAIGN_RETURN;}
-                } else if (game.defence.phase && game.gameMode == GAME_MODE_ENHANCED &&
+                } else if (!oil.rescueRestart && game.defence.phase && game.gameMode == GAME_MODE_ENHANCED &&
                     game.takeoffState != TAKEOFF_STATE_ROLLING_IN) {
                     UBYTE wasOilApproach=oil.approach;
                     if(oil.active) oilUpdate(&game,&input,&previousInput,&input2,worldBuffers);
@@ -27993,7 +28121,7 @@ int main(void) {
 
 						hudDirty = 0;
 					}
-				} else if (game.ejectState) {
+				} else if (game.ejectState || oil.rescueRestart) {
 					if (updateAbandonedAircraft(&game)) {
 						pendingEnemySpriteUpdate = 1;
 						if (game.crashTimer)
@@ -28008,13 +28136,21 @@ int main(void) {
 						pendingEnemySpriteUpdate = 1;
 						pendingEnemyMissileSpriteUpdate = 1;
 					}
-					UBYTE ejectUpdate = updatePlayerEject(&game);
+					UBYTE ejectUpdate = oil.rescueRestart ? EJECT_UPDATE_CARRIER_RESTART : updatePlayerEject(&game);
 					if (ejectUpdate) {
 						hudDirty = 1;
 						pendingPlayerSpriteUpdate = 1;
 						pendingWingmanSpriteUpdate = 1;
 					}
 					if (ejectUpdate == EJECT_UPDATE_CARRIER_RESTART) {
+                        if(oil.rescueRestart) {
+                            /* The defence hull currently belongs to the rig. Restore
+                             * the real carrier before the shared rescue snapshot. */
+                            game.defence.hull=oil.carrierHull;
+                            memcpy(game.defence.gunHealth,oil.carrierGuns,2);
+                            UWORD cargo=(UWORD)game.defence.cargo+oil.carrierCargo;
+                            game.defence.cargo=cargo>180?180:cargo;
+                        }
 						/* Rescue restarts the carrier sequence without resetting the
 						 * sortie's score or damage map.  startGameSession gives us one
 						 * canonical actor/audio/display reset; the run-persistent CPC
@@ -28185,19 +28321,21 @@ int main(void) {
 						 * motion and its ring-buffer streaming work are finished. */
 						if (!game.postLandingMusicStarted) {
 							stopAllSfx();
-							startCarrierLandingMusic();
-                            if(game.gameMode==GAME_MODE_ENHANCED && campaignSortie(game.missionNumber)==3)
-                                drawTextCentered(hudBuffer,58,"CAMPAIGN COMPLETE!",HUD_COLOR_LABEL);
+                            if(game.gameMode==GAME_MODE_ENHANCED && campaignSortie(game.missionNumber)==3)finaleStart();
+                            else startCarrierLandingMusic();
 							game.postLandingMusicStarted = 1;
 						}
 
 						/* Fire/Space or Up means "fly on". End the non-looping
 						 * fanfare immediately; otherwise let it finish naturally. */
 						if ((Pressed(input.select, previousInput.select) ||
-							 Pressed(input.up, previousInput.up)) && modPlaying)
-							stopModMusic();
+							 Pressed(input.up, previousInput.up))) {
+                            if(modPlaying)stopModMusic();
+                            finale.active=0;
+                        }
 
-						if (!modPlaying) {
+						if (!modPlaying && !finale.active) {
+                            finaleErase(worldBuffers[activeWorldBuffer]);
 						/* CPC beginlandingapproach: after four delays, raise
 						 * difficulty (up to 5), replenish, reset level
 						 * progress and return to newlevelloop/checkliftoff.
@@ -28740,6 +28878,7 @@ int main(void) {
 			if (redrawFailureSmoke)
 				eraseAircraftFailureSmokeFootprint(
 					worldBuffers[activeWorldBuffer], activeWorldBuffer);
+			finaleErase(worldBuffers[activeWorldBuffer]);
 			UBYTE redrawCarrierGulls = carrierGullsNeedRedraw(&game);
 			UBYTE seaWaveUpdate = seaWavesUpdateKind(&game);
 			UBYTE seaWaveKeep = 0;
@@ -28790,6 +28929,7 @@ int main(void) {
 #if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
 			perfStageMark(6);
 #endif
+			finaleDraw(worldBuffers[activeWorldBuffer],&game);
 			if(!battleship.active) updateBombImpactBob(worldBuffers[0], &game);
 #if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
 			perfStageMark(7);

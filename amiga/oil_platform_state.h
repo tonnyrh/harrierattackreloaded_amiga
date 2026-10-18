@@ -12,9 +12,12 @@
 /* Own actor state, never a duplicate GameState or a Chip bitmap. */
 typedef struct OilPlatformState {
  UBYTE carrierHull,carrierCargo,carrierGuns[2];
+ UBYTE rescueRestart; /* Pilot recovered: main loop performs canonical carrier restart. */
  UBYTE active, scene, completed, approach, cpuState, cpuGunPose, fireFrame, lastBurn;
  UBYTE p2Present, p2Landed, p2Health, p2Safe, p2Respawn;
  UBYTE facing, pose, turnTicks, turnTarget, previousFire, previousBomb;
+ WORD crewX,crewY;
+ UWORD crewDropTicks;
  WORD vx,vy,ax,ay,subX,subY;
  UWORD fuelTicks,p2FuelQuanta;
  WORD approachVX16,approachSub16;

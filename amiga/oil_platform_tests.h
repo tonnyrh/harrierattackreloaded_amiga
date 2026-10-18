@@ -4,6 +4,37 @@ static UBYTE oilContract(void) {
  UBYTE* buffers[GAME_WORLD_BUFFER_COUNT]={0};
  InputState in={0},old={0};Player2InputState p2={0};
  UBYTE savedMod=modPlaying;modPlaying=1;
+#if HAR_HEADLESS_OIL_RESCUE_TEST
+ /* Every visible pad pixel accepts the pilot, including its right edge. */
+ for(WORD px=OIL_PAD_LEFT;px<OIL_PAD_RIGHT;px++) {
+  initGameState(&g,12040,12040,2);g.gameMode=GAME_MODE_ENHANCED;
+  g.lives=3;g.defence.hull=63;g.defence.cargo=40;
+  oilBegin(&g);g.defence.hull=37;
+  g.ejectState=2;g.ejectTimer=2;
+  g.ejectX=px-HAR_CPC_PARACHUTE_WIDTH/2;
+  g.ejectY=OIL_DECK_Y-HAR_CPC_PARACHUTE_HEIGHT-1;
+  oilUpdate(&g,&in,&old,&p2,buffers);
+  if(!oil.rescueRestart || g.ejectState || g.gameOver || g.lives!=2)return 70;
+  if(oil.carrierHull!=63 || g.defence.cargo!=40 || g.missionNumber!=2)return 71;
+  if(oil.completed || g.takeoffState!=TAKEOFF_STATE_AIRBORNE)return 72;
+ }
+ /* Landing waits for the wreck animation, then charges exactly one life. */
+ oil.rescueRestart=0;g.lives=3;g.ejectState=3;g.crashTimer=1;
+ if(updatePlayerEject(&g)!=EJECT_UPDATE_NONE || g.lives!=3)return 73;
+ g.crashTimer=0;
+ if(updatePlayerEject(&g)!=EJECT_UPDATE_CARRIER_RESTART || g.lives!=2)return 74;
+ if(updatePlayerEject(&g)!=EJECT_UPDATE_NONE || g.lives!=2)return 75;
+ /* Water beside the helipad is not a rescue surface. */
+ for(UBYTE side=0;side<2;side++) {
+  initGameState(&g,12040,12040,2);g.gameMode=GAME_MODE_ENHANCED;g.lives=3;oilBegin(&g);
+  g.ejectState=2;g.ejectTimer=2;
+  g.ejectX=(side?OIL_PAD_RIGHT:OIL_PAD_LEFT-1)-HAR_CPC_PARACHUTE_WIDTH/2;
+  g.ejectY=SEA_SURFACE_Y-HAR_CPC_PARACHUTE_HEIGHT-1;
+  updatePlayerEject(&g);
+  if(!g.gameOver || oil.rescueRestart)return 76;
+ }
+ memset(&oil,0,sizeof(oil));modPlaying=savedMod;return 0;
+#endif
  initGameState(&g,12040,12040,1);g.gameMode=GAME_MODE_ENHANCED;
  g.skillLevel=g.levelDifficulty=1;g.lives=3;g.wingmanControl=WINGMAN_CONTROL_PLAYER2;
  g.wingman.destroyed=0;oilBegin(&g);
@@ -52,7 +83,8 @@ static UBYTE oilContract(void) {
  g.defence.landed=0;g.playerY=OIL_PLAYER_Y-1;g.armour=100;
  g.flakDamageCount=g.missileDamageThirds=0;g.defence.vtolVY=384;
  oilPlayerMove(&g,&in);
- if(g.defence.landed || g.armour!=70 || g.defence.vtolVY>=0)return 44;
+ /* Easiest scales 90 thirds to 59; the HUD rounds remaining armour up. */
+ if(g.defence.landed || g.armour!=81 || g.missileDamageThirds!=59 || g.defence.vtolVY>=0)return 44;
  g.playerX=80;g.playerY=OIL_PLAYER_Y;g.defence.landed=1;g.defence.hull=40;
  /* Enemy bombs hit a solid rig tile above the former carrier deck. */
  WeaponState* bomb=&g.defence.bombs[0];memset(bomb,0,sizeof(*bomb));
@@ -115,6 +147,20 @@ static UBYTE oilContract(void) {
  g.wingmanControl=WINGMAN_CONTROL_CPU;g.wingman.destroyed=0;oilBegin(&g);
  for(UWORD t=0;t<140;t++){g.defence.clock++;oilCpuUpdate(&g);}
  if(oil.cpuState!=2 || !g.wingman.destroyed)return 16;
+ /* Bombing removes the gun, then a collected red drop remans it without
+  * creating an aircraft. Only a surviving crew earns the departure reward. */
+ g.defence.phase=DEFENCE_WAVE;carrierDefenceImpact(&g,108,12);
+ if(oil.cpuState || g.wingman.active)return 74;
+ g.powerup.active=0;g.defence.repairDropPending=0;
+ for(UWORD t=0;t<451;t++)oilCrewSupply(&g);
+ if(!g.powerup.active || g.powerup.type!=POWERUP_WINGMAN)return 75;
+ g.powerup.logicalY=24;activatePowerup(&g,POWERUP_WINGMAN);g.powerup.active=0;
+ if(oil.cpuState!=1 || g.wingman.active || !g.wingman.destroyed)return 76;
+ for(UWORD t=0;t<160;t++){g.defence.clock++;oilCpuUpdate(&g);}
+ if(oil.cpuState!=2)return 77;
+ ULONG crewScore=g.missionBaseScore;oilCrewBonus(&g);
+ if(g.missionBaseScore!=crewScore+500)return 78;
+ oilCrewBonus(&g);if(g.missionBaseScore!=crewScore+500)return 79;
  oilFinish(&g);if(g.wingman.active || !g.wingman.destroyed)return 17;
  /* Drive actual spawn/kill/secure states for all three party sizes. No
   * artificial transition to SECURE, and no unlimited simultaneous enemies. */
@@ -173,7 +219,8 @@ static UBYTE oilContract(void) {
  if(g.playerX<=beforeX || g.aircraftFailureState)return 56;
  g.defence.phaseTicks=180;oilUpdate(&g,&in,&old,&p2,buffers);
  if(!g.gameOver)return 57;
- /* Modest platform-only resilience; verify common hits and carrier parity. */
+ /* Platform-only resilience, without the separate Easy damage reduction. */
+ g.skillLevel=3;
  oil.active=1;g.defence.phase=DEFENCE_WAVE;g.defence.hull=100;
  carrierDefenceImpact(&g,112,CARRIER_BOMB_HULL_DAMAGE);
  if(g.defence.hull!=92)return 62;

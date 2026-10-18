@@ -12,6 +12,7 @@
 #define BATTLESHIP_LAST_CAMERA 1312
 #define BATTLESHIP_DEPART_CAMERA ((BATTLESHIP_START_COLUMN + 120) * 8 + 64)
 static struct {
+    UWORD stormSky[3];UBYTE desperationAlarm;
     UBYTE burning,fireDirty,fireFrame[5],fireRow[5];
     UBYTE active,phase,passed,hp[BATTLESHIP_TARGETS],pose[BATTLESHIP_TARGETS];
     UBYTE dirty[BATTLESHIP_TARGETS],flakLife,hitSafe,finished;

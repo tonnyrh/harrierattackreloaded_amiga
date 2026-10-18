@@ -2,11 +2,30 @@
 static void updatePlayerGroundBounce(GameState* g) {
     if (!g->groundBounceTicks) return;
     if (g->gameMode != GAME_MODE_ENHANCED || g->crashTimer || g->ejectState ||
-        g->aircraftFailureState || g->defence.phase) { g->groundBounceTicks = 0; return; }
+        g->aircraftFailureState) { g->groundBounceTicks = 0; return; }
     WORD rise = g->groundBounceTicks > 6 ? 3 : (g->groundBounceTicks > 2 ? 2 : 1);
     g->playerY -= rise;
     if (g->playerY < PLAYER_MIN_Y) g->playerY = PLAYER_MIN_Y;
     g->groundBounceTicks--;
+}
+
+/* One damage/sound/recoil policy for land and solid encounter structures. */
+static void startEnhancedSurfaceBounce(GameState* g,WORD top,UWORD damage) {
+    WORD clearY=top-PLAYER_SPRITE_HEIGHT-1;
+    if(clearY<PLAYER_MIN_Y)clearY=PLAYER_MIN_Y;
+    if(g->playerY>clearY)g->playerY=clearY;
+    if(g->groundBounceTicks || g->crashTimer || g->ejectState || g->aircraftFailureState)return;
+    if(g->respawnSafeTimer)return;
+    /* Reuse the existing single smoke BOB; ground impact takes priority over
+     * a distant helicopter puff without adding any draw slots on A500. */
+    startEncounterSmoke(&g->helicopterSmoke, (LONG)g->scrollX+g->playerX,
+        g->playerX, top >= 8 ? top - 8 : 0);
+    if (!debugInvulnerable) g->missileDamageThirds += damage;
+    if (g->missileDamageThirds > 300) g->missileDamageThirds = 300;
+    updatePlayerDamageArmour(g);
+    playSfxAt(SFX_GROUND_BOUNCE, g->playerX);
+    if (!g->armour) startAircraftFailure(g, AIRCRAFT_FAILURE_CAUSE_ARMOUR);
+    else g->groundBounceTicks = 8;
 }
 
 static UBYTE handleEnhancedGroundBounce(GameState* g, UBYTE** buffers,
@@ -17,7 +36,7 @@ static UBYTE handleEnhancedGroundBounce(GameState* g, UBYTE** buffers,
     ObjectCell cell;
     if (!aircraftObjectCell(column, row, &cell) ||
         (cell.id != HAR_OBJ_LAND && cell.id != HAR_OBJ_GROUND_TARGET &&
-         cell.id != HAR_OBJ_TOWN_BLOCK)) return 0;
+         cell.id != HAR_OBJ_TOWN_BLOCK && cell.id != HAR_OBJ_OWN_FRIGATE)) return 0;
     /* Clear the contacted cell and the steepest surface under the full body.
      * Repeated geometry contact during recoil separates without extra damage. */
     WORD top = row * GAME_TILE_HEIGHT;
@@ -43,15 +62,6 @@ static UBYTE handleEnhancedGroundBounce(GameState* g, UBYTE** buffers,
         awardGameScore(g, GROUND_TARGET_SCORE_VALUE); g->hitsCount++;
         startWorldImpactQuiet(g, (WORD)(column * 8 - g->scrollX), row * 8);
     }
-    /* Reuse the existing single smoke BOB; ground impact takes priority over
-     * a distant helicopter puff without adding any draw slots on A500. */
-    startEncounterSmoke(&g->helicopterSmoke, column * GAME_TILE_WIDTH,
-        (WORD)(column * GAME_TILE_WIDTH - g->scrollX), top >= 8 ? top - 8 : 0);
-    if (!debugInvulnerable) g->missileDamageThirds += target ? 92 : 115;
-    if (g->missileDamageThirds > 300) g->missileDamageThirds = 300;
-    updatePlayerDamageArmour(g);
-    playSfxAt(SFX_GROUND_BOUNCE, g->playerX);
-    if (!g->armour) startAircraftFailure(g, AIRCRAFT_FAILURE_CAUSE_ARMOUR);
-    else g->groundBounceTicks = 8;
+    startEnhancedSurfaceBounce(g,top,target?92:115);
     return 1;
 }
