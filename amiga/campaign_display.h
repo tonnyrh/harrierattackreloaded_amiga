@@ -200,6 +200,7 @@ static void prepareCampaignOceanWorld(UBYTE* display,UBYTE* world,GameState* g) 
   WORD waveTarget16=scrollPixelsForSpeedLevel(g->speedLevel)*16;
   if(waveSpeed16<waveTarget16)waveSpeed16++;else if(waveSpeed16>waveTarget16)waveSpeed16--;
   waveSub16+=waveSpeed16;UWORD waveStep=waveSub16/16;waveSub16%=16;
+  scrollOceanSurface(display,waveStep);
   for(UBYTE i=0;i<8;i++) {
    UWORD y=126+i*4;
    for(UBYTE n=0;n<5;n++)campaignOceanPixel(display,waveX[i]+n,y,GAME_COLOR_SEA);
@@ -219,18 +220,31 @@ static void prepareCampaignOceanWorld(UBYTE* display,UBYTE* world,GameState* g) 
   }
 #endif
   updateSfx();
-  if(currentRasterY()>=160) { /* Combat owns the field; loading can wait. */
-  } else if(!bossVisualReady) {
+  /* A busy frame gets a tiny slice, never zero: otherwise a consistently
+   * late HUD/water pass starves loading forever after the fighters leave. */
+  UBYTE lateLoad=currentRasterY()>=160;
+#if HAR_HEADLESS_TRANSIT_FORCE_LATE_LOAD
+  lateLoad=1;
+#endif
+  if(!bossVisualReady) {
    bossVisualReady=battleshipPrepareVisualStep(&bossVisualStep);
   } else if(cleared<GAME_WORLD_BITMAP_BYTES) {
-   ULONG bytes=GAME_WORLD_BITMAP_BYTES-cleared;if(bytes>2048)bytes=2048;
+   ULONG limit=lateLoad?128:2048;
+   ULONG bytes=GAME_WORLD_BITMAP_BYTES-cleared;if(bytes>limit)bytes=limit;
    memset(world+cleared,0,bytes);cleared+=bytes;
   } else if(done<count) {
    UWORD col=first+done,x=ringWorldTileXForColumn(col);
-   if(!row)buildWorldTileColumn(col,&column);
+   if(!row) {
+    buildWorldTileColumn(col,&column);
+    /* The entire destination was cleared first. Encounter sky contains no
+     * clouds: only sea and the bounded structure rows need rebuilding. */
+    if(oil.scene)row=(col>=OIL_ORIGIN_X/8 && col<(OIL_ORIGIN_X+OIL_WIDTH)/8)?OIL_ORIGIN_Y/8:15;
+    else if(battleship.active)row=(col>=BATTLESHIP_START_COLUMN && col<BATTLESHIP_START_COLUMN+120)?3:15;
+   }
+   UWORD lastRow=(GAME_WORLD_HEIGHT+7)/8;
    /* Stop with raster time in reserve, including unusually costly artwork.
     * At least one row advances each field; never spend a whole column at once. */
-   UBYTE budget=13;
+   UBYTE budget=lateLoad?1:13;
    do {
     drawWorldColumnRowsFromCache(world,x,&column,row,1);
     drawDirectColumnRangeObjectRow(world,x,col,row);
@@ -240,8 +254,8 @@ static void prepareCampaignOceanWorld(UBYTE* display,UBYTE* world,GameState* g) 
     }
     row++;
     if(currentRasterY()>=180)break;
-   } while(--budget && row<GAME_OBJECT_MAP_HEIGHT_TILES);
-   if(row==GAME_OBJECT_MAP_HEIGHT_TILES) {
+   } while(--budget && row<lastRow);
+   if(row==lastRow) {
     if(battleship.active)battleshipResident[col&127]=col;
     done++;row=0;
    }

@@ -21,7 +21,11 @@ static void finalePoint(UBYTE* bitmap,const GameState* g,WORD x,WORD y,UBYTE pen
  if(px<(GAME_WORLD_BUFFER_MARGIN_TILES+GAME_FETCH_BYTES)*8)
   finalePixel(bitmap,px+GAME_WORLD_SCROLL_PAGE_BYTES*8,y,pen);
 }
-static void finaleStart(void) {memset(&finale,0,sizeof(finale));finale.active=1;}
+static void finaleStart(void) {
+ memset(&finale,0,sizeof(finale));finale.active=1;
+ /* Leave footprints intact for normal late-frame erasure. */
+ resetCarrierGullActors();carrierGullCallPending=0;
+}
 static void finaleDraw(UBYTE* bitmap,const GameState* g) {
  if(!finale.active)return;
  UWORD t=finale.tick++;
@@ -60,7 +64,12 @@ static UBYTE referenceFinale(void) {
  UBYTE* b=AllocMem(GAME_WORLD_BITMAP_BYTES,MEMF_CHIP);if(!b)return 1;
  memset(b,0x5a,GAME_WORLD_BITMAP_BYTES);static GameState g;
  initGameState(&g,123,123,3);g.playerX=88;g.scrollX=LANDING_HOVER_SCROLL_X;
- UBYTE music=modPlaying;modPlaying=1;finaleStart();UWORD peak=0;
+ UBYTE music=modPlaying;modPlaying=1;
+ carrierGulls[0].active=1;carrierGullCallPending=1;
+ finaleStart();UWORD peak=0;
+ if(carrierGulls[0].active || carrierGullCallPending)return 4;
+ for(UWORD t=0;t<300;t++)updateCarrierGulls(&g,0,!finale.active);
+ for(UBYTE i=0;i<CARRIER_GULL_MAX;i++)if(carrierGulls[i].active)return 5;
  for(UWORD t=0;t<481;t++) {finaleErase(b);finaleDraw(b,&g);if(finale.count>peak)peak=finale.count;}
  finaleErase(b);UBYTE result=finale.active || !peak || peak>128 ? 2:0;
  for(ULONG n=0;n<GAME_WORLD_BITMAP_BYTES;n++)if(b[n]!=0x5a){result=3;break;}

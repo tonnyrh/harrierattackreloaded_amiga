@@ -13,6 +13,24 @@ static UBYTE referenceAmmoDepotMatches(void) {
     g.gameMode=GAME_MODE_CLASSIC; startAmmoDepotBlast(&g,origin);
     if(g.ammoBlast.active) return 0;
     g.gameMode=GAME_MODE_ENHANCED; g.scrollX=origin*8-160;
+    /* Low release: the tip is below the depot, but the body still overlaps.
+     * Also cover crossing a complete tile between two frames. */
+    ObjectCell contact; LONG contactColumn; WORD contactRow;
+    WORD depotY=(terrainYForWorldColumn(origin,levelSegmentForWorldColumn(origin),HAR_TERRAIN_CPC_RANDOM_LAND)-1)*8;
+    WeaponState bomb={0}; bomb.worldX=origin*8+2; bomb.y=depotY+7;
+    if(!explosiveDepotBombContact(&g,&bomb,bomb.worldX,bomb.y,&contact,&contactColumn,&contactRow) || contactColumn!=origin) return 0;
+    bomb.y=depotY+8;
+    if(explosiveDepotBombContact(&g,&bomb,bomb.worldX,bomb.y,&contact,&contactColumn,&contactRow)) return 0;
+    bomb.y=depotY+3; bomb.worldX=origin*8+9;
+    if(!explosiveDepotBombContact(&g,&bomb,origin*8-5,depotY+2,&contact,&contactColumn,&contactRow)) return 0;
+    g.gameMode=GAME_MODE_CLASSIC;
+    if(explosiveDepotBombContact(&g,&bomb,origin*8-5,depotY+2,&contact,&contactColumn,&contactRow)) return 0;
+    g.gameMode=GAME_MODE_ENHANCED;
+    g.takeoffState=TAKEOFF_STATE_AIRBORNE; g.landingState=LANDING_STATE_NONE;
+    g.defence.phase=0; g.radarDetection=750; g.radarThreshold=20; g.radarClearance=10; g.speedLevel=12;
+    if(radarHudFeedback(&g)!=(128|15)) return 0;
+    g.speedLevel=0; if(radarHudFeedback(&g)!=15) return 0;
+    g.speedLevel=12; g.radarClearance=30; if(radarHudFeedback(&g)!=15) return 0;
     startAmmoDepotBlast(&g,origin);
     if(!g.ammoBlast.active || g.ammoBlast.timer!=36) return 0;
     markTargetDestroyedAtColumn(origin);

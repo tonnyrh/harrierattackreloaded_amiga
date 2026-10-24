@@ -12,9 +12,14 @@ static void battleshipDrawRow(UBYTE* bitmap,UWORD physical,LONG col,WORD row) {
          * every 256 pixels. Repeat the wave pattern at exactly that period.
          * Use physical columns so BOB repairs reproduce the same water. */
         UBYTE column=(physical-GAME_WORLD_BUFFER_MARGIN_TILES)&31;
+        /* Keep the normal sea's rippled horizon instead of flattening it.
+         * Select by physical phase, like the independently scrolling wavelets. */
+        if(row==BATTLESHIP_SEA_Y/8)
+            drawGameScrollTile(bitmap,physical,row,seaTileForColumn(column,row));
         UBYTE waveY=125+(((column*13+7)>>2)&3)*8;
         for(UBYTE y=0;y<8;y++) {
             WORD screenY=row*8+y;
+            if(screenY<BATTLESHIP_SEA_Y+2)continue;
             UBYTE mask=0, color=GAME_COLOR_WHITE;
             if(!(column&3)) {
                 if(screenY==waveY) mask=(column&4)?0x3c:0x7e;

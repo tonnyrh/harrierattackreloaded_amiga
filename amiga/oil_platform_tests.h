@@ -39,9 +39,11 @@ static UBYTE oilContract(void) {
  g.skillLevel=g.levelDifficulty=1;g.lives=3;g.wingmanControl=WINGMAN_CONTROL_PLAYER2;
  g.wingman.destroyed=0;oilBegin(&g);
  if(!oil.p2Present || oilQuota(1,0)!=7 || oilQuota(1,1)!=9 || oilQuota(1,2)!=11 || oilQuota(5,2)!=19)return 1;
- /* Two live Harriers, attached sprite data, neutral preserves momentum. */
+ /* P2 uses its own three-grey channel, not P1's attached green palette. */
  static UWORD a[20],b[20];updateWingmanSprite(a,b,&g);
- if(!(b[1]&0x80))return 2;
+ if(b[0] || b[1])return 2;
+ UWORD visible=0;for(UBYTE i=2;i<18;i++)visible|=a[i];
+ if(!visible)return 2;
  oil.vx=256;WORD x=g.wingman.interceptScreenX;oilP2Update(&g,&p2);
  if(g.wingman.interceptScreenX!=x+1 || oil.vx!=256)return 3;
  oil.p2Safe=0;oilDamageP2(&g,50);if(oil.p2Health!=50 || g.lives!=3)return 4;
@@ -122,6 +124,19 @@ static UBYTE oilContract(void) {
  for(WORD row=7;row<15;row++)bobCompositorErase(bitmap,8,row,12);
  for(ULONG n=0;n<GAME_WORLD_BITMAP_BYTES;n++)after=after*33+bitmap[n];
  if(before!=after)return 14;
+ /* Repair drops must restore the overlay, including one-pixel movement
+  * and removal at every horizontal alignment, on both ring placements. */
+ g.gameOver=0;g.powerup.type=POWERUP_CARRIER_REPAIR;
+ for(UBYTE shift=0;shift<8;shift++) {
+  static const WORD dropY[]={63,64,89,90,119,120,128,129};
+  g.powerup.active=1;g.powerup.worldX=104+shift;
+  for(UBYTE step=0;step<sizeof(dropY)/sizeof(dropY[0]);step++) {
+   g.powerup.y=dropY[step];updatePowerupBob(bitmap,&g);
+  }
+  g.powerup.active=0;updatePowerupBob(bitmap,&g);
+  after=0;for(ULONG n=0;n<GAME_WORLD_BITMAP_BYTES;n++)after=after*33+bitmap[n];
+  if(before!=after)return 81;
+ }
  /* Right -> front -> left; hovering uses front, wrecks retain side heading. */
  g.helicopter.active=1;g.helicopter.type=0;g.helicopterHits=0;
  g.helicopterAge=1;g.helicopter.direction=1;updateHelicopterHeading(&g);

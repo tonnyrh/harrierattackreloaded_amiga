@@ -79,9 +79,9 @@ static UBYTE battleshipDesperate(void) {return battleshipHealth()*100<=BATTLESHI
 static UBYTE battleshipCannonDue(UBYTE i) {
  UWORD period=60-battleship.stage*9;
  if(!battleshipDesperate())return !((battleship.clock+i*19)%period);
- /* Two quicker opportunities followed by a deliberate breathing gap. */
+ /* A short four-shot salvo, then a deliberate breathing gap. */
  UWORD phase=(battleship.clock+i*19)%(period*2);
- return phase==0 || phase==period/2 || phase==period;
+ return phase==0 || phase==period/3 || phase==(period*2)/3 || phase==period;
 }
 static void battleshipWeather(void) {
  UWORD phase=battleship.clock%700;
@@ -231,6 +231,35 @@ static UBYTE battleshipFlakRoom(const GameState* g) {
     for(UBYTE i=0;i<4;i++)used+=battleship.flak[i].active!=0;
     for(UBYTE i=0;i<HELICOPTER_BULLET_MAX;i++)used+=g->helicopterBullets[i].active!=0;
     return used<4;
+}
+/* Emergency deck fire keeps the last intact section fighting even when
+ * the bridge and most turrets are gone. No destroyed target is resurrected,
+ * and the existing four-shell/cloud budget still applies. */
+static UBYTE battleshipEmergencyFire(GameState* g) {
+    if(!battleshipDesperate() || !battleshipHealth() || battleship.phase>=2 ||
+        !battleshipFlakRoom(g))return 0;
+    UWORD period=g->skillLevel<=1?150:110, beat=battleship.clock%period;
+    if(beat!=0 && beat!=20)return 0;
+    UBYTE guns=0,source=255;
+    for(UBYTE i=0;i<BATTLESHIP_TARGETS;i++) {
+        WORD sx=battleshipTargetX[i]-g->scrollX;
+        if(!battleship.hp[i] || (i==10 || i==11) || battleship.lift[i]<16 || sx<12 || sx>296)continue;
+        source=i;
+        if(battleshipIsGun(i))guns++;
+    }
+    if(source==255 || guns>2)return 0;
+    for(UBYTE n=0;n<HELICOPTER_BULLET_MAX;n++)if(!g->helicopterBullets[n].active) {
+        HelicopterBullet* b=&g->helicopterBullets[n];memset(b,0,sizeof(*b));
+        WORD aimY=g->playerY+(beat?18:-18),ahead=g->playerX+64;
+        if(aimY<12)aimY=12;if(aimY>88)aimY=88;if(ahead>300)ahead=300;
+        b->active=1;b->worldX=battleshipTargetX[source]+8;b->y=battleship.targetY[source];
+        b->vx16=((LONG)g->scrollX+ahead+battleship.velocity16*12/16-b->worldX)*16/12;
+        b->vy16=(aimY-b->y)*16/12;
+        battleship.flash[source]=4;battleship.dirty[source]=1;
+        playSfxAtTuned(SFX_FLAK_GUN_1,b->worldX-g->scrollX,56,SFX_PAULA_PERIOD*3/2);
+        return 1;
+    }
+    return 0;
 }
 static UBYTE battleshipMissileSector(WORD dx,WORD dy) {
     return battleshipAbs(dx)>=48 && battleshipAbs(dx)>=battleshipAbs(dy);
@@ -555,6 +584,7 @@ static void battleshipUpdate(GameState* g,const InputState* in,const InputState*
         WORD bridgeX=battleshipTargetX[BATTLESHIP_BRIDGE]-g->scrollX;
         if(bridgeX>=12 && bridgeX<=304)battleshipLaunchMissile(g,BATTLESHIP_BRIDGE);
     }
+    battleshipEmergencyFire(g);
     battleshipMoveMissile(g);
     battleshipMoveFlak(g,delta);
     for(UBYTE n=0;n<HELICOPTER_BULLET_MAX;n++) {
@@ -596,7 +626,20 @@ static UBYTE referenceBattleship(void) {
     for(UWORD t=0;t<840;t++){battleship.clock=t;normal+=battleshipCannonDue(0);}
     memset(battleship.hp,0,sizeof(battleship.hp));battleship.hp[8]=9;
     for(UWORD t=0;t<840;t++){battleship.clock=t;desperate+=battleshipCannonDue(0);}
-    if(normal!=20 || desperate!=30)return 81;
+    if(normal!=20 || desperate!=40)return 81;
+    /* Bridge and all guns gone: the surviving helipad still defends itself. */
+    memset(battleship.hp,0,sizeof(battleship.hp));battleship.hp[9]=3;
+    g.scrollX=battleshipTargetX[9]-160;g.playerX=80;g.playerY=40;
+    battleship.clock=150;
+    if(!battleshipEmergencyFire(&g) || !g.helicopterBullets[0].active)return 88;
+    battleship.clock=170;if(!battleshipEmergencyFire(&g))return 89;
+    battleship.clock=171;if(battleshipEmergencyFire(&g))return 90;
+    memset(g.helicopterBullets,0,sizeof(g.helicopterBullets));
+    for(UBYTE i=0;i<4;i++)battleship.flak[i].active=1;
+    battleship.clock=300;if(battleshipEmergencyFire(&g))return 91;
+    memset(battleship.flak,0,sizeof(battleship.flak));
+    battleship.hp[9]=0;if(battleshipEmergencyFire(&g))return 92;
+    battleship.hp[8]=9;
     g.scrollX=1000;g.playerX=20;g.playerY=battleship.targetY[8];
     battleshipLaunchMissile(&g,8);if(!g.enemyMissile.active)return 82;
     LONG first=g.enemyMissile.worldX;battleshipLaunchMissile(&g,8);
@@ -691,7 +734,9 @@ static UBYTE referenceBattleship(void) {
     if(emptyDrop!=POWERUP_ROCKETS && emptyDrop!=POWERUP_BOMBS)return 48;
     g.powerup.active=0;battleship.supplyClock=0;battleship.pass++;
     battleshipSupport(&g,0,&in2);if(g.powerup.type==emptyDrop || g.powerup.type==POWERUP_WINGMAN)return 49;
-    g.powerup.active=0;battleship.supplyClock=0;battleship.pass++;g.rockets=g.bombs=10;
+    g.powerup.active=0;battleship.supplyClock=0;battleship.pass++;
+    /* Wingman is preferred only after the newer low-ammo priority is satisfied. */
+    ammoForGame(&g,&g.bombs,&g.rockets);
     battleshipSupport(&g,0,&in2);if(!g.powerup.active || g.powerup.type!=POWERUP_WINGMAN)return 39;
     g.powerup.worldX=g.scrollX+g.playerX;g.powerup.y=g.powerup.logicalY=g.playerY;
     battleshipSupport(&g,0,&in2);if(!g.wingman.active)return 40;
@@ -760,7 +805,20 @@ static UBYTE referenceBattleship(void) {
     UBYTE* bitmap=AllocMem(GAME_WORLD_BITMAP_BYTES+guardBytes,MEMF_PUBLIC|MEMF_CLEAR);
     if(!bitmap)return 16;
     memset(bitmap+GAME_WORLD_BITMAP_BYTES,0xa5,guardBytes);
+    /* The displayed horizon must retain the ordinary sea tiles, and the
+     * compact corridor must move it even before the boss becomes visible. */
+    memset(bitmap,0,GAME_WORLD_BITMAP_BYTES);
+    bitmap[120UL*SCREEN_PLANES*SCREEN_ROW_BYTES+2]=0x80;
+    scrollOceanSurface(bitmap,3);
+    if(bitmap[120UL*SCREEN_PLANES*SCREEN_ROW_BYTES+1]!=4)return 61;
+    for(UWORD step=0;step<317;step++)scrollOceanSurface(bitmap,1);
+    if(bitmap[120UL*SCREEN_PLANES*SCREEN_ROW_BYTES+2]!=0x80)return 62;
     initRingWorldBuffer(bitmap,0);
+    for(UBYTE c=0;c<32;c++) {
+        const UBYTE* sea=worldRenderTileData(seaTileForColumn(c,15));
+        for(UBYTE y=0;y<2;y++)for(UBYTE p=0;p<GAME_WORLD_DISPLAY_PLANES;p++)
+            if(bitmap[(120UL+y)*SCREEN_PLANES*GAME_WORLD_ROW_BYTES+p*GAME_WORLD_ROW_BYTES+GAME_WORLD_BUFFER_MARGIN_TILES+c]!=sea[y*GAME_TILE_PLANES+p])return 63;
+    }
     for(ULONG n=0;n<guardBytes;n++)if(bitmap[GAME_WORLD_BITMAP_BYTES+n]!=0xa5){FreeMem(bitmap,GAME_WORLD_BITMAP_BYTES+guardBytes);return 50;}
     ULONG before=0,after=0;
     for(ULONG i=0;i<GAME_WORLD_BITMAP_BYTES;i++)before=(before<<1|before>>31)^bitmap[i];

@@ -465,3 +465,110 @@ HAR_HEADLESS_BATTLESHIP_MOOD_TEST_ONLY passed the 20/30 firing-opportunity
 comparison, bridge missile pool guard and palette fade/flash restoration.
 The latter is a focused branch, not the full existing Battleship contract.
 Foghorn/timing mix has not been auditioned aloud; WinUAE tests stay muted.
+
+### Distinct P2 VTOL and manual carrier approach (2026-10-20)
+
+Human P2 now uses the existing three-grey Wingman sprite palette for all five
+VTOL headings on the oil platform and during final carrier approach. The
+existing Harrier silhouettes are converted only when the pose changes; movement
+only updates sprite position. The attached channel is hidden. No duplicate art
+bank, new DMA buffer or Chip allocation is required.
+
+Enhanced carrier hover no longer hands human P2 to the CPU landing waypoints.
+P2 uses the same fixed-point acceleration, retained neutral momentum, opposing
+input braking and heading transition as P1. Safe touchdown holds position;
+Up lifts off again. Hard landing costs 30 health and bounces, tower contact costs
+38 with contact grace, and water loses the companion. Completion still waits
+for an active P2 to land. CPU Wingman and Classic retain their existing approach.
+
+Muted focused WinUAE checks passed movement, neutral momentum, braking, native
+deck contact, settled position, takeoff, hard-landing recoil and five grey sprite
+poses. The oil-platform contract passed with its updated single-channel check.
+Main ADF rebuilt; floppy-only A500/KS1.3 with 512 KB Chip + 512 KB Slow reported
+78,176 free Chip bytes after runtime allocation. Pose preview:
+`.tmp/oct20-p2-poses.png`. Logs: `.tmp/oct20-p2-test.log`,
+`.tmp/oct20-p2-oil-test.log`, `.tmp/oct20-p2-main-build.log` and
+`.tmp/oct20-p2-boot/winuaelog.txt`.
+
+### Enhanced radar feedback and low-release depot contact (2026-10-22)
+
+The R lamp now has a small 20-step detection meter beneath it during ordinary
+flight. LOW+FAST appears when speed is at least 8 and clearance is below the
+radar threshold. This exposes the existing radar benefit without changing
+balance; updates are cached and quantized rather than drawn every frame.
+
+P1 and human P2 bombs check their swept 4x3 footprint against intact ammunition
+and fuel depots before checking the ground beneath them. Low releases can no
+longer miss a depot merely because the bomb tip is below its bottom edge.
+Classic and other object contact rules are unchanged. The ammunition depot
+contract covers low releases, swept contact, misses below the target, Classic
+isolation and radar feedback states.
+
+### Oil platform repair-drop restoration (2026-10-22)
+
+Power-up background restoration now treats the oil platform and its health
+bar as composed overlays, like carriers and battleships. Only overlapping
+drops use the existing row compositor; ordinary sky drops retain the fast
+scanline path. The oil contract moves and removes an R drop across the rig
+and health bar at all eight pixel alignments and checks the whole ring buffer
+against its original checksum, including the duplicate placement.
+
+### Moving sea surface at Battleship arrival (2026-10-22)
+
+The compact ocean corridor now scrolls its two retained surface scanlines at
+the same eased speed as the wavelets. Previously these scanlines were a still
+snapshot. Battleship retains the ordinary sea tiles on those two lines instead
+of overwriting them with solid water; its existing independent Copper scroll
+moves the surface as well as the lower wavelets, including the opening approach.
+No new graphics allocation is needed (40 bytes of temporary CPU stack only).
+The boss contract checks the actual surface bytes against the ordinary tiles
+and exercises a three-pixel shift and full wrap in the compact display.
+
+### Battleship last stand and quiet finale sky (2026-10-22)
+
+Below 35% health, surviving cannons now have four salvo opportunities per two
+normal firing periods (previously three). With at most two visible live guns,
+an intact visible gun/bridge/helipad can additionally fire a pair of emergency
+shells, 20 ticks apart, every 150 ticks on Easy or 110 otherwise. These use the
+existing shell/cloud pool and four-projectile combined limit, unchanged damage,
+and burst ahead at alternating heights. Destroyed targets and fuel stores do
+not fire; sinking disables this support.
+
+Fireworks clear gull actors without discarding their saved backgrounds and
+suppress both new flocks and idle calls throughout the show. Focused contracts
+cover emergency fire after bridge loss, pause/budget limits, zero-health
+shutdown and gull suppression alongside finale background restoration.
+
+### Ocean-loader starvation fix (2026-10-24)
+
+The 24.10.2026 USS was inside prepareCampaignOceanWorld on sortie 2 after
+2296 transit ticks. Both fighters and all eight projectiles were inactive;
+eight fighters had spawned, six were shot down, but closed and quiet were
+still zero. The destination had not become ready. The loader previously
+skipped every unit of work whenever the HUD/water pass reached raster 160.
+A consistently late frame could therefore wait forever despite an empty sky.
+
+Late frames now receive a bounded minimum slice: 128 clear bytes or one world
+tile row (including its duplicate and overlays), or one boss preparation step.
+Earlier frames retain the larger adaptive budget. Enemy clearance and the
+35-tick quiet guard remain mandatory. HAR_HEADLESS_TRANSIT_FORCE_LATE_LOAD
+forces this path during the complete four-handoff WinUAE regression run.
+
+The first forced-late run also exposed excessive CPU cost in the recent
+byte-at-a-time surface ripple rotation. The compact surface now rotates ten
+32-bit words per plane/line instead of forty individual bytes, retaining the
+same pixels, phase and 40-byte scratch space. The transition performance gate
+remains one display field; it was not relaxed to accommodate the slowdown.
+
+A larger raster window was rejected because it produced two-field updates.
+The final loader retains the 160/180 raster thresholds and instead skips
+already-cleared empty encounter sky and rows below the allocated world bitmap.
+Oil loads only its structure rows and sea; Battleship keeps all possible raised
+weapon rows within the ship bounds. Full buffer equivalence remains checked
+against an ordinary complete render in the live transition test.
+
+Final live regression: PASS campaign-oil-battleship-ocean-transits-buffer-equivalence;
+4 handoffs, stable=1, max-work-vsyncs=1. Oil/return/boss/return used
+1707/822/1410/885 update fields respectively. The deliberately forced minimum
+budget separately completed oil and return before its original 6500-frame
+fixture limit; that partial stress run was not reported as a full pass.

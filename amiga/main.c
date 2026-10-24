@@ -1496,6 +1496,10 @@ typedef struct WingmanState {
 	 * instead of the enemy - until they actually coincide, only then
 	 * handing off to WINGMAN_FORMATION's normal derived positioning. */
 	UBYTE returningToFormation;
+    /* Human P2 carrier approach: CPU memory only, existing sprite buffer. */
+    WORD landingVX, landingVY, landingAX, landingAY, landingSubX, landingSubY;
+    UBYTE landingVtol, landingPose, landingFacing, landingTurn, landingTarget;
+    UBYTE landingHealth, landingSafe;
 } WingmanState;
 
 #define HELICOPTER_BULLET_MAX 2
@@ -8449,6 +8453,7 @@ static UBYTE updateLandingApproach(GameState* game) {
 		game->enemyMissileFromShip = 0;
 		game->powerup.active = 0;
 		if (game->wingman.active) {
+			game->wingman.landingVtol = 0;
 			game->wingman.mode = WINGMAN_LANDING_APPROACH;
 			game->wingman.returningToFormation = 0;
 			game->wingman.interceptReason = 0;
@@ -8499,6 +8504,16 @@ static UBYTE radarHudLampVisualForGame(const GameState* game) {
 	if (game->enemyPlane.active)
 		return RADAR_LAMP_RED;
 	return radarHudLampVisualForValue(game->radarDetection);
+}
+
+/* Quantized feedback: redraw only when one of 20 meter cells changes. */
+static UBYTE radarHudFeedback(const GameState* g) {
+    if (g->gameMode != GAME_MODE_ENHANCED || g->defence.phase || oil.active ||
+        battleship.active || g->landingState != LANDING_STATE_NONE ||
+        g->takeoffState != TAKEOFF_STATE_AIRBORNE) return 255;
+    return (UBYTE)(g->radarDetection / 50) |
+        ((g->speedLevel >= 8 && g->radarThreshold &&
+          g->radarClearance < g->radarThreshold) ? 128 : 0);
 }
 
 /* The illustrated annunciator replaces both the RADAR label and its round
@@ -8709,6 +8724,7 @@ typedef struct HudRenderState {
 	UWORD bombs;
 	UBYTE bombsLevel;
 	UBYTE radarIndicatorVisual;
+    UBYTE radarFeedback;
 	UBYTE ejectIndicatorVisual;
 	UBYTE landingIndicatorVisual;
 	UBYTE lives;
@@ -9004,6 +9020,18 @@ static void drawHudValues(UBYTE* hud, const GameState* game, ULONG highScore, UB
 		(!state->valid || state->landingIndicatorVisual != landingIndicatorVisual))
 		drawCockpitIndicator(hud, 248, 'L', landingIndicatorVisual);
 	state->landingIndicatorVisual = landingIndicatorVisual;
+    UBYTE feedback = radarHudFeedback(game);
+    if (!overlayMode && (!state->valid || state->overlayMode || state->radarFeedback != feedback)) {
+        fillRect(hud,168,31,64,13,HUD_COLOR_BACKGROUND);
+        if (feedback != 255) {
+            fillRect(hud,168,31,24,4,HUD_COLOR_LABEL);
+            fillRect(hud,169,32,22,2,HUD_COLOR_BACKGROUND);
+            if (feedback & 31) fillRect(hud,170,32,feedback & 31,2,
+                (feedback & 31) >= 16 ? HUD_COLOR_WARN : HUD_COLOR_SAFE);
+            if (feedback & 128) drawText(hud,168,36,"LOW+FAST",HUD_COLOR_SAFE);
+        }
+    }
+    state->radarFeedback = feedback;
 	drawCarrierInstruments(hud, game, state, overlayMode);
 	state->valid = 1;
 	state->score = game->score;
@@ -10469,6 +10497,24 @@ static void buildSpriteFromGameTile(UWORD* sprite, UWORD height, WORD x, WORD y,
 
 #include "assets/enhanced/harrier_poses.h"
 #include "assets/enhanced/carrier_art.h"
+static UBYTE seaTileForColumn(LONG worldColumn, UWORD tileY);
+/* Compact transit display: rotate only the two surface scanlines. No new
+ * graphics or world redraw; the retained ripple travels with the wavelets. */
+static void scrollOceanSurface(UBYTE* display, UWORD step) {
+    if (!step) return;
+    ULONG saved[SCREEN_ROW_BYTES/4];
+    UWORD words=step/32, bits=step&31;
+    for (UBYTE y=0;y<2;y++) for (UBYTE p=0;p<SCREEN_PLANES;p++) {
+        ULONG* row=(ULONG*)(display+((120UL+y)*SCREEN_PLANES+p)*SCREEN_ROW_BYTES);
+        memcpy(saved,row,SCREEN_ROW_BYTES);
+        UWORD src=words%(SCREEN_ROW_BYTES/4);
+        for(UWORD x=0;x<SCREEN_ROW_BYTES/4;x++) {
+            UWORD next=src+1;if(next==SCREEN_ROW_BYTES/4)next=0;
+            row[x]=(saved[src]<<bits)|(bits?saved[next]>>(32-bits):0);
+            src=next;
+        }
+    }
+}
 #include "battleship_render.h"
 
 static void buildPlayerSprite(UWORD* sprite, UWORD* attachSprite, WORD x, WORD y) {
@@ -15548,6 +15594,7 @@ static UBYTE carrierDeckIdleEligible(const GameState* game) {
 static void updateCarrierGulls(const GameState* game, UBYTE idleEligible,
 	UBYTE sceneActive) {
 	if (!sceneActive || game->gameOver) {
+        carrierGullCallPending = 0;
 		/* Keep the old footprints valid until the late renderer restores them.
 		 * Clearing footprint metadata here used to strand the final gull pixels
 		 * in the single world buffer when Game Over deactivated the actors. */
@@ -17006,6 +17053,11 @@ static void retirePowerupOverlaps(UBYTE* bitmap, LONG x, WORD y, UBYTE columns, 
 
 /* Base-tile caches omit promoted ships and carrier/submarine overlays. */
 static UBYTE powerupOverlapsPromotedObject(LONG left, WORD y, UBYTE columns) {
+    /* The platform and its health bar are overlays too. Include the bar's
+     * row so falling repair crates cannot replace either with plain sea/sky. */
+    if(oil.scene && left<(OIL_ORIGIN_X+OIL_WIDTH)/8 &&
+        left+columns>OIL_ORIGIN_X/8 && y<17*8 &&
+        y+POWERUP_SPRITE_HEIGHT>OIL_ORIGIN_Y) return 1;
     /* Boss hull and raised guns are overlays, never present in base-tile caches. */
     if(battleship.active && left<BATTLESHIP_START_COLUMN+120 && left+columns>BATTLESHIP_START_COLUMN && y<120 && y+POWERUP_SPRITE_HEIGHT>24) return 1;
     if((carrierSubHeight || carrierSubBubbleFrame) &&
@@ -17571,6 +17623,8 @@ static void setWingmanDestroyedState(GameState* game, UBYTE** worldBuffers) {
  * (asm:2673-2702), this is that same rule translated to this port's actual
  * play area. */
 static void resetWingmanBombMotion(WingmanState* wingman);
+static void updatePlayer2LandingVtol(GameState* game, UBYTE** worldBuffers,
+    const Player2InputState* input2);
 
 static void updateWingmanPlayer2Control(GameState* game, UBYTE** worldBuffers,
 	const Player2InputState* input2, const Player2InputState* previousInput2,
@@ -17610,6 +17664,11 @@ static void updateWingmanPlayer2Control(GameState* game, UBYTE** worldBuffers,
 		return;
 	}
 
+    if (game->gameMode == GAME_MODE_ENHANCED &&
+        game->landingState == LANDING_STATE_HOVER && !game->missionComplete) {
+        updatePlayer2LandingVtol(game, worldBuffers, input2);
+        return;
+    }
 	if (wingman->mode != WINGMAN_PLAYER2_FLIGHT)
 		return;
 
@@ -17705,9 +17764,33 @@ static const UBYTE* oilPoseArt(UBYTE pose) {
  return pose>=3?harrierVtolIntermediate+(pose-3)*128:
         pose==2?harrierLandingEnhancedReverse:pose==1?harrierLandingEnhanced:harrierFront;
 }
+/* Same silhouette/turn frames, packed directly into the existing three-grey
+ * Wingman channel. No second attached channel or duplicated art bank. */
+static UBYTE p2VtolPen(UBYTE pen) {
+    if (!pen) return 0;
+    if (pen==7 || pen==8) return 1;
+    if (pen==9 || pen==10) return 2;
+    if (pen==6 || pen>=11) return 3;
+    return cpcPlusPenToWingmanHardwareColor(pen);
+}
+static UBYTE p2VtolPayload;
+static void buildP2VtolSprite(UWORD* sprite, UWORD* attach, WORD x, WORD y, UBYTE pose) {
+    static UWORD* resident;static UBYTE residentPose;
+    const UBYTE* art=oilPoseArt(pose);
+    if(!p2VtolPayload || resident!=sprite || residentPose!=pose) {
+        invalidateAttachedSpriteResident(sprite);
+        buildSpriteFromCpcPlusHalves(sprite,8,x,y,art,art+8,p2VtolPen);
+        resident=sprite;residentPose=pose;p2VtolPayload=1;
+    } else setHardwareSpritePosition(sprite,8,x,y);
+    if(attach)hideHardwareSprite(attach);
+}
 /* Wingman uses channel 6. Channel 7 is independent and is used by the
  * player's ejector-seat/parachute sequence. */
 static void updateWingmanSprite(UWORD* sprite, UWORD* unusedSprite7, const GameState* game) {
+    if(!((oil.active && !oil.approach && oil.p2Present && !oil.cpuState && !game->gameOver) ||
+        (!oil.active && !game->defence.phase && game->gameMode==GAME_MODE_ENHANCED &&
+        game->wingmanControl==WINGMAN_CONTROL_PLAYER2 && game->landingState==LANDING_STATE_HOVER && game->wingman.active)))
+        p2VtolPayload=0;
     if(oil.approach && unusedSprite7) hideHardwareSprite(unusedSprite7);
     if(oil.active && !oil.approach) {
         wingmanCrosshairPayload=1;
@@ -17744,9 +17827,8 @@ static void updateWingmanSprite(UWORD* sprite, UWORD* unusedSprite7, const GameS
             sprite[18]=sprite[19]=0;
             return;
         }
-        const UBYTE* art=oilPoseArt(oil.pose);
-        if(unusedSprite7) buildAttachedSpriteFromCpcPlusHalves(sprite,unusedSprite7,8,
-            game->wingman.interceptScreenX,game->wingman.screenY,art,art+8);
+        buildP2VtolSprite(sprite,unusedSprite7,game->wingman.interceptScreenX,
+            game->wingman.screenY,oil.pose);
         return;
     }
     if (game->gameMode == GAME_MODE_ENHANCED && game->defence.phase && !oil.approach) {
@@ -17763,6 +17845,13 @@ static void updateWingmanSprite(UWORD* sprite, UWORD* unusedSprite7, const GameS
         return;
     }
 
+    if(game->gameMode==GAME_MODE_ENHANCED && game->wingmanControl==WINGMAN_CONTROL_PLAYER2 &&
+        game->landingState==LANDING_STATE_HOVER && game->wingman.active) {
+        wingmanCrosshairPayload=1;
+        buildP2VtolSprite(sprite,unusedSprite7,game->wingman.interceptScreenX,
+            game->wingman.screenY,game->wingman.landingVtol?game->wingman.landingPose:1);
+        return;
+    }
 	/* The CPC pixels and pen mapping are immutable.  Converting all 16x16
 	 * pixels through a function pointer on every movement frame used to cost
 	 * 256 mapping calls plus all sprite-plane packing each time.  Hardware
@@ -18198,12 +18287,34 @@ static void advanceWingmanBombMotion(GameState* game, UBYTE scrollPixels) {
 	bomb->worldAnchored = 1;
 }
 
+/* Check the bomb's swept footprint before the ground beneath a small depot.
+ * Only explosive depots get this test; other targets retain pixel-tip contact. */
+static UBYTE explosiveDepotBombContact(const GameState* g, const WeaponState* bomb,
+    LONG oldX, WORD oldY, ObjectCell* cell, LONG* columnOut, WORD* rowOut) {
+    if (g->gameMode != GAME_MODE_ENHANCED) return 0;
+    LONG left = oldX < bomb->worldX ? oldX : bomb->worldX;
+    LONG right = (oldX > bomb->worldX ? oldX : bomb->worldX) + 3;
+    WORD top = oldY < bomb->y ? oldY : bomb->y;
+    WORD bottom = (oldY > bomb->y ? oldY : bomb->y) + BOMB_SHOT_PIXEL_BOB_HEIGHT - 1;
+    for (LONG c = left >> 3; c <= (right >> 3); ++c) {
+        if ((!isAmmoDepotColumn(c) && !isFuelDepotColumn(c)) || isTargetDestroyedAtColumn(c)) continue;
+        WORD row = terrainYForWorldColumn(c, levelSegmentForWorldColumn(c), HAR_TERRAIN_CPC_RANDOM_LAND) - 1;
+        if (bottom < row * 8 || top >= row * 8 + 8) continue;
+        if (!objectCellForWorldColumnTile(c,row,cell) || cell->id != HAR_OBJ_GROUND_TARGET) continue;
+        *columnOut=c; *rowOut=row;
+        return 1;
+    }
+    return 0;
+}
+
 static void updateWingmanPlayer2Bomb(GameState* game, UBYTE scrollPixels,
 	UBYTE** worldBuffers, UBYTE* hudDirty) {
 	WingmanState* wingman = &game->wingman;
 	if (!wingman->bomb.active || game->wingmanControl != WINGMAN_CONTROL_PLAYER2)
 		return;
 
+	LONG oldBombX = wingman->bomb.worldX;
+	WORD oldBombY = wingman->bomb.y;
 	advanceWingmanBombMotion(game, scrollPixels);
 
 	if (wingman->bomb.x < -16) {
@@ -18219,7 +18330,8 @@ static void updateWingmanPlayer2Bomb(GameState* game, UBYTE scrollPixels,
 	WORD tileY = -1;
 	WORD probeX = bombShotContactX(&wingman->bomb);
 	WORD probeY = bombShotContactY(&wingman->bomb);
-	UBYTE bombHitObject = objectCellForWorldPoint(game,
+	UBYTE bombHitObject = explosiveDepotBombContact(game, &wingman->bomb, oldBombX, oldBombY, &cell, &worldColumn, &tileY);
+	if (!bombHitObject) bombHitObject = objectCellForWorldPoint(game,
 		probeX, probeY, &cell, &worldColumn, &tileY) &&
 		(cell.id == HAR_OBJ_LAND || cell.id == HAR_OBJ_GROUND_TARGET ||
 		 cell.id == HAR_OBJ_ENEMY_SHIP || cell.id == HAR_OBJ_FLAK ||
@@ -18339,6 +18451,10 @@ static UBYTE wingmanObjectMapCollision(const GameState* game) {
 	const WingmanState* wingman = &game->wingman;
 	if (!wingman->active || wingman->destroyed)
 		return 0;
+    /* Manual landing already resolves pixel deck contact and tower recoil.
+     * The coarse map must not kill P2 on that same valid touchdown. */
+    if(game->gameMode==GAME_MODE_ENHANCED && game->wingmanControl==WINGMAN_CONTROL_PLAYER2 &&
+        game->landingState==LANDING_STATE_HOVER && wingman->landingVtol)return 0;
 
 	WORD screenX = wingmanScreenX(game);
 	LONG firstWorldColumn = ((LONG)game->scrollX + screenX) >> 3;
@@ -18826,6 +18942,8 @@ static UBYTE updateWeapons(GameState* game, UBYTE scrollPixels, UBYTE** worldBuf
 #endif
 	if (game->bombShot.active) {
 		/* CPC changes logical rows; the mini-BOB interpolates between them. */
+		LONG oldBombX = game->bombShot.worldX;
+		WORD oldBombY = game->bombShot.y;
 		advancePlayerBombMotion(game, scrollPixels);
 		game->bombShot.worldAnchored = 1;
 		if (game->bombMomentumSteps < BOMB_MOMENTUM_LOGICAL_STEPS) {
@@ -18845,7 +18963,8 @@ static UBYTE updateWeapons(GameState* game, UBYTE scrollPixels, UBYTE** worldBuf
 		 * especially during the diagonal momentum phase. */
 		WORD bombProbeX = bombShotContactX(&game->bombShot);
 		WORD bombProbeY = bombShotContactY(&game->bombShot);
-		UBYTE bombHitObject = objectCellForWorldPoint(game, bombProbeX,
+		UBYTE bombHitObject = explosiveDepotBombContact(game, &game->bombShot, oldBombX, oldBombY, &bombCell, &bombWorldColumn, &bombTileY);
+		if (!bombHitObject) bombHitObject = objectCellForWorldPoint(game, bombProbeX,
 			bombProbeY, &bombCell, &bombWorldColumn, &bombTileY) &&
 			(bombCell.id == HAR_OBJ_LAND || bombCell.id == HAR_OBJ_GROUND_TARGET || bombCell.id == HAR_OBJ_ENEMY_SHIP || bombCell.id == HAR_OBJ_FLAK || bombCell.id == HAR_OBJ_SMOKE || bombCell.id == HAR_OBJ_OWN_FRIGATE || bombCell.id == HAR_OBJ_PIER);
 		if (!bombHitObject)
@@ -21395,6 +21514,8 @@ static WORD wingmanLandingDeckLeftX(const GameState* game) {
  * carrier-relative coordinates but moves between them pixel by pixel. */
 static void updateWingmanLanding(GameState* game) {
 	WingmanState* wingman = &game->wingman;
+    if(game->gameMode==GAME_MODE_ENHANCED && game->wingmanControl==WINGMAN_CONTROL_PLAYER2 &&
+        game->landingState==LANDING_STATE_HOVER)return;
 	if (!wingman->active ||
 		(wingman->mode != WINGMAN_LANDING_APPROACH &&
 		 wingman->mode != WINGMAN_LANDING_DECK))
@@ -23155,6 +23276,7 @@ static UBYTE referenceFuelSupplyMatch(void);
 static UBYTE referenceFriendlyFireMatches(void);
 static UBYTE referenceSurfaceBounce(void);
 static UBYTE referenceFinale(void);
+static UBYTE referenceP2Landing(void);
 static UBYTE referenceCarrierDefenceMatches(void);
 static UBYTE referenceCarrierBonusMatches(void);
 static UBYTE referenceCarrierRescueContinuity(void);
@@ -23296,6 +23418,12 @@ static int runClassicGameplayContractTest(void) {
  UBYTE result=campaignContract();char message[]="FAIL campaign 00";
  message[sizeof(message)-3]='0'+result/10;message[sizeof(message)-2]='0'+result%10;
  writeClassicContractResult(result?message:"PASS campaign-order-preservation-hard-landing-helicopter");return result!=0;
+#endif
+
+#if HAR_HEADLESS_P2_LANDING_TEST
+ UBYTE result=referenceP2Landing();char message[]="FAIL p2-landing 00";
+ message[sizeof(message)-3]='0'+result/10;message[sizeof(message)-2]='0'+result%10;
+ writeClassicContractResult(result?message:"PASS P2-grey-poses-manual-VTOL-momentum-braking-touchdown");return result!=0;
 #endif
 
 #if HAR_HEADLESS_POWERUP_GROUND_TEST
@@ -25758,6 +25886,7 @@ static void driveAttractDemoInput(AttractDemoState* demo, GameState* game,
 #include "enhanced_encounter_tests.h"
 #include "ground_bounce.h"
 #include "carrier_defence.h"
+#include "player2_landing.h"
 #if HAR_HEADLESS_VTOL_RENDER_TEST_ONLY
 #include "vtol_render_tests.h"
 #endif
@@ -26891,14 +27020,14 @@ int main(void) {
 		updateSfx();
 		UBYTE carrierAmbienceEligible =
 			inGameScene && !telemetryStatsPaused && !gamePaused &&
-			!modPlaying && !game.gameOver &&
+			!modPlaying && !game.gameOver && !finale.active &&
             carrierDeckIdleEligible(&game);
 		updateCarrierIdleSfx(carrierAmbienceEligible);
 		updateSeaAmbience(seaAmbienceTargetForGame(&game,
 			carrierAmbienceEligible,
 			(UBYTE)(inGameScene && !telemetryStatsPaused && !gamePaused && !game.gameOver)));
 		if (inGameScene && !telemetryStatsPaused && !gamePaused && !game.gameOver)
-			updateCarrierGulls(&game, carrierAmbienceEligible, 1);
+			updateCarrierGulls(&game, carrierAmbienceEligible, !finale.active);
 		else if (!inGameScene)
 			resetCarrierAmbienceVisuals();
 		if (!inGameScene && !telemetryStatsPaused && !controlsActive &&
@@ -28643,6 +28772,7 @@ int main(void) {
 			maybeStartWingmanBombingRun(&game);
 			updatePowerup(&game);
 				{
+					UBYTE radarFeedbackBeforeEnemyUpdate = radarHudFeedback(&game);
 					UBYTE radarVisualBeforeEnemyUpdate =
 						radarHudLampVisualForGame(&game);
 					if (tryLaunchMissileTank(&game, scrollPixels))
@@ -28650,8 +28780,9 @@ int main(void) {
 					if (updateEnemyPlane(&game))
 						pendingEnemySpriteUpdate = 1;
 					if (game.gameMode == GAME_MODE_ENHANCED &&
-						radarVisualBeforeEnemyUpdate !=
-							radarHudLampVisualForGame(&game))
+						(radarVisualBeforeEnemyUpdate !=
+							radarHudLampVisualForGame(&game) ||
+                        radarFeedbackBeforeEnemyUpdate != radarHudFeedback(&game)))
 						hudDirty = 1;
 				}
 			/* Enhanced resolves a radar-qualified aircraft before either drop
