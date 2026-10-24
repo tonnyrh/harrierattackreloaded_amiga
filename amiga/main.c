@@ -14,7 +14,7 @@
 #include <stddef.h>
 #include <string.h>
 #include "assets/harrier_menu_text.h"
-#define HAR_BUILD_LABEL "PUBLIC BETA 6"
+#define HAR_BUILD_LABEL "RELEASE CANDIDATE 1"
 #ifndef HAR_CARRIER_BLITTER
 #define HAR_CARRIER_BLITTER 1
 #endif

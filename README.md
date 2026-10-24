@@ -12,13 +12,13 @@ kept here.
 
 ## Project status
 
-**Public Beta 6 (v0.9.0-beta.6) is a prerelease.** The main ADF integrates
+**Release Candidate 1 (v0.9.0-rc.1) is a prerelease.** The main ADF integrates
 terrain/city missions, carrier defence, oil-platform defence and Battleship.
 Enhanced follows a repeating three-sortie campaign, with open-sea transitions
 and increasing difficulty. Classic retains its regular mission loop.
 
-This is still a radical beta that needs polish, balancing and real-hardware
-feedback. See [release notes](RELEASE_NOTES_PUBLIC_BETA.md) and
+This release candidate still needs final polish, balancing and real-hardware
+feedback. See [release notes](RELEASE_NOTES_RC.md) and
 [campaign flow](amiga/CAMPAIGN.md) for changes and validation limits.
 
 The port includes the CPC-derived weapon, collision, scoring, difficulty and
