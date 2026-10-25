@@ -12,6 +12,7 @@
 /* Own actor state, never a duplicate GameState or a Chip bitmap. */
 typedef struct OilPlatformState {
  UBYTE carrierHull,carrierCargo,carrierGuns[2];
+ UBYTE p1Gunner, p1GunFire; /* Rescued P1 mans the gun until P2 collects red. */
  UBYTE rescueRestart; /* Pilot recovered: main loop performs canonical carrier restart. */
  UBYTE active, scene, completed, approach, cpuState, cpuGunPose, fireFrame, lastBurn;
  UBYTE p2Present, p2Landed, p2Health, p2Safe, p2Respawn;
@@ -29,3 +30,6 @@ static void oilBeginApproach(GameState* g);
 static void oilUpdate(GameState* g,const InputState* in,const InputState* previous,
  const Player2InputState* in2,UBYTE** buffers);
 static UBYTE oilHullOverlap(WORD x,WORD y,UBYTE w,UBYTE h);
+
+static void oilCollectCrew(GameState* g);
+static void drawOilPlayerGun(UWORD* sprite,UWORD* attach);

@@ -572,3 +572,22 @@ Final live regression: PASS campaign-oil-battleship-ocean-transits-buffer-equiva
 1707/822/1410/885 update fields respectively. The deliberately forced minimum
 budget separately completed oil and return before its original 6500-frame
 fixture limit; that partial stress run was not reported as a full pass.
+
+
+### Oil-platform cooperative rescue (25 October 2026)
+
+Human P2 now waits for a red Wingman drop after losing the aircraft instead
+of returning on a timer. Red drops recur while a human aircraft is missing,
+including after the wave is cleared. Either flying pilot can collect them.
+A safely ejected P1 who reaches the helipad mans the existing auto-aim gun;
+P1 fire controls its shots while P2 continues flying. A red drop collected by
+P2 returns P1 above the rig without restarting the raid or charging another
+life. If P2 is also absent, safe P1 recovery restarts both at the carrier via
+the existing mission recovery path. Solo/CPU rescue keeps its existing rules.
+P2 health and fuel telemetry redraws only on displayed-value changes or HUD
+invalidation. The gun reuses P1's sprite memory and existing artwork.
+
+Validation: muted WinUAE oil contract passed, including no timed P2 respawn,
+red-drop revival, P1 gun occupancy/fire, raid-state preservation, both-pilot
+carrier recovery and unchanged-HUD-write checks. Full cooperative playthrough
+on real hardware remains to be tested.

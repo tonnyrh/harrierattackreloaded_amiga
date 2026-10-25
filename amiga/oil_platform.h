@@ -84,11 +84,10 @@ static void oilDamageP2(GameState* g,UBYTE amount) {
  if(oil.p2Health) return;
  oil.p2Present=oil.p2Landed=0; g->wingman.active=0; g->wingman.destroyed=1;
  g->wingman.rocket.active=g->wingman.bomb.active=0;
- /* lives includes P1's current aircraft: never spend that final aircraft. */
- if(g->lives>1 || debugInfiniteLives) {
-  if(!debugInfiniteLives) g->lives--;
-  oil.p2Respawn=75;
- }
+ /* Recovery now comes from a red drop, not an automatic timer. */
+ oil.p2Respawn=0;oil.crewDropTicks=300;
+ if(g->lives>1 && !debugInfiniteLives)g->lives--;
+
 }
 static void oilAdvanceBomb(GameState* g,WeaponState* b) {
  if(!b->active) return; b->timer++;
@@ -103,12 +102,6 @@ static void oilAdvanceBomb(GameState* g,WeaponState* b) {
  }
 }
 static void oilP2Update(GameState* g,const Player2InputState* in) {
- if(oil.p2Respawn && !--oil.p2Respawn) {
-  oil.p2Present=1; oil.p2Health=100; oil.p2Safe=100; oil.p2FuelQuanta=CPC_FUEL_TOTAL_QUANTA;oil.fuelTicks=0;
-  oil.vx=oil.vy=oil.ax=oil.ay=oil.subX=oil.subY=0;
-  g->wingman.destroyed=0; g->wingman.active=1;
-  g->wingman.interceptScreenX=24; g->wingman.screenY=8;
- }
  if(!oil.p2Present) {oil.previousFire=in->fire;oil.previousBomb=in->bomb;return;}
  if(oil.p2Safe) oil.p2Safe--;
  g->wingman.active=1; g->wingman.mode=WINGMAN_PLAYER2_FLIGHT;
@@ -184,11 +177,11 @@ static void oilCpuUpdate(GameState* g) {
   if(oil.crewX==104 && oil.crewY>=OIL_DECK_Y-HAR_CPC_PARACHUTE_HEIGHT)oil.cpuState=2;
   return;
  }
- if(oil.cpuState!=2) return;
+ if(oil.cpuState!=2 && !oil.p1Gunner) return;
  if(!(g->defence.clock&7) && !carrierChooseAim(g)) return;
  UBYTE target=smoothAaAimPose(g->defence.aimX-108,OIL_DECK_Y-4-g->defence.aimY);
  oil.cpuGunPose=smoothAaTurn(oil.cpuGunPose,target,g->defence.clock);
- if((g->defence.clock&7) || oil.cpuGunPose!=target) return;
+ if((g->defence.clock&7) || oil.cpuGunPose!=target || (oil.p1Gunner && !oil.p1GunFire)) return;
  for(UBYTE i=0;i<2;i++) {
   HelicopterBullet* b=&g->helicopterBullets[i]; if(b->active) continue;
   WORD dx=g->defence.aimX-108,dy=g->defence.aimY-(OIL_DECK_Y-4);
@@ -223,7 +216,9 @@ static void oilPlayerMove(GameState* g,const InputState* in) {
  if(!d->landed) updatePlayerFuel(g);
 }
 static void oilCrewSupply(GameState* g) {
- if(g->wingmanControl!=WINGMAN_CONTROL_CPU || oil.cpuState || g->defence.phase!=DEFENCE_WAVE)return;
+ UBYTE needed=g->wingmanControl==WINGMAN_CONTROL_CPU?!oil.cpuState:
+  g->wingmanControl==WINGMAN_CONTROL_PLAYER2?(!oil.p2Present || oil.p1Gunner):0;
+ if(!needed || (g->defence.phase!=DEFENCE_WAVE && g->defence.phase!=DEFENCE_SECURE))return;
  if(oil.crewDropTicks<450){oil.crewDropTicks++;return;}
  if(g->powerup.active || g->defence.repairDropPending)return;
  spawnPowerup(g,POWERUP_WINGMAN,1);
@@ -306,16 +301,31 @@ static void oilUpdate(GameState* g,const InputState* in,const InputState* previo
   /* Keep both pilots responsive during the loss animation. The mission
    * still ends after the same delay; a wreck must not freeze input. */
  }
- if(g->ejectState) {
+ oil.p1GunFire=in->fire;
+ if(oil.p1Gunner) {
+  if(!oil.p2Present) {
+   oil.p1Gunner=0;g->ejectState=0;oil.rescueRestart=1;
+   g->wingman.destroyed=0;g->wingmanReviveDelayColumns=0;return;
+  }
+ } else if(g->ejectState) {
   g->ejectX+=(in->right!=0)-(in->left!=0);
   if(g->ejectX<0)g->ejectX=0;if(g->ejectX>304)g->ejectX=304;
   updateAbandonedAircraft(g);if(g->crashTimer)updatePlayerCrash(g);
   if(updatePlayerEject(g)==EJECT_UPDATE_CARRIER_RESTART && !g->gameOver) {
    /* completePlayerEject already charged the lost aircraft. Defer the
     * display/session reset to the common rescue path in the main loop. */
-   oil.rescueRestart=1;
+   if(g->wingmanControl==WINGMAN_CONTROL_PLAYER2 && oil.p2Present) {
+    oil.p1Gunner=1;oil.cpuGunPose=3;oil.crewDropTicks=300;
+    g->ejectState=3;g->playerX=104;g->playerY=OIL_PLAYER_Y;
+    g->defence.landed=0;carrierResetVtol(d);
+   } else {
+    oil.rescueRestart=1;
+    if(g->wingmanControl==WINGMAN_CONTROL_PLAYER2) {
+     g->wingman.destroyed=0;g->wingmanReviveDelayColumns=0;
+    }
+   }
    g->takeoffState=TAKEOFF_STATE_AIRBORNE;
-   return;
+   if(oil.rescueRestart)return;
   }
  } else if(g->crashTimer) {
   carrierResetVtol(d);updatePlayerCrash(g);
@@ -371,4 +381,32 @@ static void oilUpdate(GameState* g,const InputState* in,const InputState* previo
    g->rocketShot.active=g->bombShot.active=g->wingman.rocket.active=g->wingman.bomb.active=0;
   }
  }
+}
+
+/* Reuse the existing gun artwork and P1 sprite channel; P2 keeps channel 6. */
+static void drawOilPlayerGun(UWORD* sprite,UWORD* attach) {
+ hideHardwareSprite(attach);invalidateAttachedSpriteResident(sprite);
+ setHardwareSpritePosition(sprite,8,104,OIL_PLAYER_Y);
+ const UBYTE* gun=smoothAaPoses[oil.cpuGunPose];
+ for(UBYTE row=0;row<8;row++) {
+  const UBYTE* src=gun+row*5;
+  sprite[2+row*2]=(UWORD)(src[4]&~src[0])<<8;
+  sprite[3+row*2]=(UWORD)(src[4]&src[1])<<8;
+ }
+ sprite[18]=sprite[19]=0;
+}
+static void oilCollectCrew(GameState* g) {
+ if(oil.p1Gunner) {
+  oil.p1Gunner=0;respawnPlayer(g);resetPlayerFuel(g);
+  g->scrollX=0;g->playerX=52;g->playerY=16;g->defence.landed=0;
+  carrierResetVtol(&g->defence);g->defence.fullVtol=1;
+ } else if(!oil.p2Present) {
+  oil.p2Present=1;oil.p2Landed=0;oil.p2Health=100;oil.p2Safe=100;
+  oil.p2FuelQuanta=CPC_FUEL_TOTAL_QUANTA;oil.fuelTicks=0;
+  oil.vx=oil.vy=oil.ax=oil.ay=oil.subX=oil.subY=0;
+  oil.facing=MAVERICK_DIRECTION_RIGHT;oil.pose=1;oil.turnTicks=0;
+  g->wingman.active=1;g->wingman.destroyed=0;g->wingman.mode=WINGMAN_PLAYER2_FLIGHT;
+  g->wingman.interceptScreenX=24;g->wingman.screenY=8;
+ }
+ oil.crewDropTicks=0;
 }

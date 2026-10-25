@@ -8707,7 +8707,7 @@ static void drawHudStatic(UBYTE* hud, UBYTE gameMode) {
  * paletted decorative copy from the main menu. */
 typedef struct HudRenderState {
     UBYTE carrierHull, carrierCargo, carrierStatus, carrierLoad;
-    UBYTE oilP2Displayed;
+    UBYTE oilP2Displayed, oilP2Health, oilP2Fuel;
 	UBYTE valid;
 	ULONG score;
 	ULONG highScore;
@@ -8786,7 +8786,7 @@ static void drawHudStatusPanel(UBYTE* hud, UBYTE outerColor) {
 /* Compact carrier panel below LV; original instruments keep their positions. */
 static __attribute__((noinline, optimize("Os"))) void drawCarrierInstruments(UBYTE* hud, const GameState* g, HudRenderState* state, UBYTE overlay) {
     if (g->gameMode != GAME_MODE_ENHANCED || battleship.active) return;
-    if (overlay) { state->carrierHull = state->carrierStatus = 255; return; }
+    if (overlay) { state->carrierHull = state->carrierStatus = 255; state->oilP2Displayed=0; return; }
     const CarrierDefenceState* d = &g->defence;
     UBYTE full = !state->valid || state->carrierHull == 255;
     /* The encounter borrows defence.hull; the cockpit always belongs to our carrier. */
@@ -8821,16 +8821,19 @@ static __attribute__((noinline, optimize("Os"))) void drawCarrierInstruments(UBY
             "PLATFORM SECURED":status==3?"RETURN TO CARRIER":status==4?"PLATFORM LOST":message;
         drawTextCentered(hud, 58, message, status == 4 ? HUD_COLOR_WARN : HUD_COLOR_LABEL);
     }
-    if(oil.active && g->wingmanControl==WINGMAN_CONTROL_PLAYER2) {
-        state->oilP2Displayed=1;
+    UBYTE p2Health=oil.p2Present?oil.p2Health:0;
+    UBYTE p2Fuel=oil.p2Present?(ULONG)oil.p2FuelQuanta*100/CPC_FUEL_TOTAL_QUANTA:0;
+    if(oil.active && g->wingmanControl==WINGMAN_CONTROL_PLAYER2 &&
+       (!state->valid || !state->oilP2Displayed || state->oilP2Health!=p2Health || state->oilP2Fuel!=p2Fuel)) {
+        state->oilP2Displayed=1;state->oilP2Health=p2Health;state->oilP2Fuel=p2Fuel;
         /* Keep P2 telemetry in the gap between the armour and speed rows. */
         fillRect(hud,8,34,112,6,HUD_COLOR_BACKGROUND);
         drawTelemetryText(hud,8,34,"P2 ARM",HUD_COLOR_LABEL);
-        drawTelemetryUnsignedPadded(hud,40,34,oil.p2Present?oil.p2Health:0,3,HUD_COLOR_LABEL);
+        drawTelemetryUnsignedPadded(hud,40,34,p2Health,3,HUD_COLOR_LABEL);
         drawTelemetryText(hud,62,34,"FUEL",HUD_COLOR_LABEL);
-        drawTelemetryUnsignedPadded(hud,86,34,(ULONG)oil.p2FuelQuanta*100/CPC_FUEL_TOTAL_QUANTA,3,HUD_COLOR_FUEL);
+        drawTelemetryUnsignedPadded(hud,86,34,p2Fuel,3,HUD_COLOR_FUEL);
     }
-    if(state->oilP2Displayed && !oil.active) {
+    if(state->oilP2Displayed && (!oil.active || g->wingmanControl!=WINGMAN_CONTROL_PLAYER2)) {
         fillRect(hud,8,34,112,6,HUD_COLOR_BACKGROUND);
         state->oilP2Displayed=0;
     }
@@ -10541,6 +10544,7 @@ static WORD playerGroundShakeOffset(const GameState* game) {
 
 static void updatePlayerSprite(UWORD* sprite, UWORD* attachSprite, const GameState* game) {
     WORD drawX = game->playerX + playerGroundShakeOffset(game);
+    if(oil.active && oil.p1Gunner && !game->gameOver) {drawOilPlayerGun(sprite,attachSprite);return;}
 	if (game->gameOver) {
 		hideHardwareSprite(sprite);
 		hideHardwareSprite(attachSprite);
@@ -20091,6 +20095,7 @@ static void activatePowerup(GameState* game, UBYTE type) {
 			refillWeaponPowerup(game, POWERUP_BOMBS);
 			break;
 		case POWERUP_WINGMAN:
+            if(oil.active && game->wingmanControl==WINGMAN_CONTROL_PLAYER2) {oilCollectCrew(game);break;}
             if(oil.active && game->wingmanControl==WINGMAN_CONTROL_CPU) {
                 oil.cpuState=1;oil.cpuGunPose=3;oil.crewDropTicks=0;
                 oil.crewX=(WORD)(game->powerup.worldX-game->scrollX);oil.crewY=game->powerup.logicalY;
@@ -20201,7 +20206,11 @@ static UBYTE powerupHitsSolidWorld(const GameState* game, const PowerupState* p)
 }
 
 static UBYTE powerupHitsPlayer(const GameState* game, const PowerupState* p) {
-    if (game->gameMode == GAME_MODE_ENHANCED && (game->gameOver || game->ejectState || game->crashTimer || game->aircraftFailureState)) return 0;
+    if(game->gameOver)return 0;
+    if(oil.active && game->wingmanControl==WINGMAN_CONTROL_PLAYER2 && oil.p2Present &&
+       rectsOverlap((WORD)(p->worldX-game->scrollX),p->y,POWERUP_SPRITE_WIDTH,POWERUP_SPRITE_HEIGHT,
+       game->wingman.interceptScreenX,game->wingman.screenY,16,8))return 1;
+    if (game->gameMode == GAME_MODE_ENHANCED && (game->ejectState || game->crashTimer || game->aircraftFailureState || oil.p1Gunner)) return 0;
 	WORD screenX = (WORD)(p->worldX - (LONG)game->scrollX);
 	/* Collection follows the visible, smoothly interpolated 16x8 Bob. Keep
 	 * POWERUP_COLLISION_WIDTH/logicalY for CPC-style world and projectile

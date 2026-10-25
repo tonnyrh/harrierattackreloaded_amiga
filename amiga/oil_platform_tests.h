@@ -47,9 +47,40 @@ static UBYTE oilContract(void) {
  oil.vx=256;WORD x=g.wingman.interceptScreenX;oilP2Update(&g,&p2);
  if(g.wingman.interceptScreenX!=x+1 || oil.vx!=256)return 3;
  oil.p2Safe=0;oilDamageP2(&g,50);if(oil.p2Health!=50 || g.lives!=3)return 4;
- oil.p2Safe=0;oilDamageP2(&g,50);if(oil.p2Present || g.lives!=2 || !oil.p2Respawn)return 5;
+ oil.p2Safe=0;oilDamageP2(&g,50);if(oil.p2Present || g.lives!=2 || oil.p2Respawn)return 5;
  for(UWORD t=0;t<75;t++)oilP2Update(&g,&p2);
+ if(oil.p2Present)return 6;
+ g.defence.phase=DEFENCE_WAVE;oil.crewDropTicks=450;g.powerup.active=0;g.defence.repairDropPending=0;
+ oilCrewSupply(&g);if(!g.powerup.active || g.powerup.type!=POWERUP_WINGMAN)return 80;
+ activatePowerup(&g,POWERUP_WINGMAN);
  if(!oil.p2Present || oil.p2Health!=100 || g.wingman.screenY!=8)return 6;
+ /* Safe P1 parachute touchdown retains the raid and mans the gun. */
+ g.lives=3;g.ejectState=2;g.ejectTimer=2;g.ejectX=80;
+ g.ejectY=OIL_DECK_Y-HAR_CPC_PARACHUTE_HEIGHT-1;
+ g.abandonedAircraftActive=g.crashTimer=0;g.defence.spawnDelay=200;g.defence.quota=8;
+ oilUpdate(&g,&in,&old,&p2,buffers);
+ if(!oil.p1Gunner || oil.rescueRestart || g.lives!=2 || !oil.p2Present)return 81;
+ PowerupState drop={0};drop.worldX=g.wingman.interceptScreenX;drop.y=g.wingman.screenY;
+ if(!powerupHitsPlayer(&g,&drop))return 82;
+ /* P1 uses its own sprite slot; P2 remains a visible grey Harrier. */
+ updatePlayerSprite(a,b,&g);if(!a[0] || b[0])return 87;
+ g.enemyPlane.active=1;g.enemyPlane.x=140;g.enemyPlane.y=40;
+ memset(g.helicopterBullets,0,sizeof(g.helicopterBullets));
+ oil.p1GunFire=0;
+ for(UBYTE tick=0;tick<32;tick++){g.defence.clock++;oilCpuUpdate(&g);}
+ if(g.helicopterBullets[0].active || g.helicopterBullets[1].active)return 88;
+ oil.p1GunFire=1;
+ for(UBYTE tick=0;tick<8;tick++){g.defence.clock++;oilCpuUpdate(&g);}
+ if(!g.helicopterBullets[0].active && !g.helicopterBullets[1].active)return 89;
+ g.enemyPlane.active=0;memset(g.helicopterBullets,0,sizeof(g.helicopterBullets));
+ UWORD raidClock=g.defence.clock;
+ activatePowerup(&g,POWERUP_WINGMAN);
+ if(oil.p1Gunner || g.ejectState || !oil.p2Present || g.armour!=100 || g.lives!=2 || g.defence.clock!=raidClock)return 83;
+ /* If the remaining pilot is lost, the safe gunner restarts both at carrier. */
+ oil.p1Gunner=1;g.ejectState=3;oil.p2Present=0;g.wingman.destroyed=1;
+ oilUpdate(&g,&in,&old,&p2,buffers);
+ if(!oil.rescueRestart || g.wingman.destroyed || g.lives!=2)return 84;
+ oil.rescueRestart=0;oil.p2Present=1;g.ejectState=0;g.respawnSafeTimer=0;
  g.lives=1;oil.p2Safe=0;oilDamageP2(&g,100);
  if(oil.p2Present || oil.p2Respawn || g.lives!=1)return 7;
  g.defence.landed=1;
@@ -105,7 +136,15 @@ static UBYTE oilContract(void) {
  HudRenderState hs={0};oil.carrierHull=83;oil.carrierCargo=40;g.defence.cargo=20;
  drawCarrierInstruments(bitmap,&g,&hs,0);
  if(hs.carrierHull!=83 || hs.carrierCargo!=60)return 30;
- hs.valid=1;g.defence.hull=10;
+ hs.valid=1;
+ /* Unchanged stats must not touch the P2 row (sentinel catches clear/redraw). */
+ ULONG hudOffset=34UL*SCREEN_PLANES*SCREEN_ROW_BYTES+1;
+ bitmap[hudOffset]^=0x55;UBYTE sentinel=bitmap[hudOffset];
+ drawCarrierInstruments(bitmap,&g,&hs,0);
+ if(bitmap[hudOffset]!=sentinel)return 85;
+ oil.p2Health--;drawCarrierInstruments(bitmap,&g,&hs,0);
+ if(hs.oilP2Health!=oil.p2Health)return 86;
+ g.defence.hull=10;
  drawCarrierInstruments(bitmap,&g,&hs,0);
  if(hs.carrierHull!=83 || hs.carrierCargo!=60)return 31;
  g.helicopterSmoke.active=0;g.defence.clock=32;
