@@ -55,7 +55,8 @@ static void battleshipBegin(GameState* g) {
     g->wingman.interceptScreenX=64;g->wingman.screenY=24;
     g->defence.phase=0; g->scrollX=0; g->takeoffState=TAKEOFF_STATE_AIRBORNE;
     g->playerX=100; g->playerY=32; g->speedLevel=2; g->respawnSafeTimer=100;
-    g->defence.fullVtol=0; battleship.supplyClock=160; battleship.heliClock=220;
+    g->defence.fullVtol=0; battleship.supplyClock=160;
+    battleship.jetDelay=75;g->enemyPlane.active=g->helicopter.active=0;g->radarDetection=0;g->radarAlarmTickCountdown=0;
     carrierSceneHull=255; carrierParkedWingmanVisible=0;
 }
 static void battleshipPlayerSurfaceCollision(GameState* g) {
@@ -76,6 +77,13 @@ static UBYTE battleshipHealth(void) {
 }
 /* More urgent salvos, unchanged ordnance pools and damage. */
 static UBYTE battleshipDesperate(void) {return battleshipHealth()*100<=BATTLESHIP_MAX_HEALTH*35;}
+/* Late salvos alternate pilots and high/low lanes, not extra projectiles. */
+static void battleshipSalvoAim(const GameState* g,WORD* x,WORD* y) {
+ UBYTE p2=battleshipDesperate() && g->wingmanControl==WINGMAN_CONTROL_PLAYER2 &&
+  g->wingman.active && ((battleship.clock/180)&1);
+ *x=p2?wingmanScreenX(g):g->playerX;
+ *y=p2?g->wingman.screenY:g->playerY;
+}
 static UBYTE battleshipCannonDue(UBYTE i) {
  UWORD period=60-battleship.stage*9;
  if(!battleshipDesperate())return !((battleship.clock+i*19)%period);
@@ -185,13 +193,18 @@ static void battleshipHitTarget(GameState* g,UBYTE i,UBYTE bomb) {
     }
     if(!battleshipHealth()) {
         battleship.phase=2; battleship.wait=224;
-        g->enemyMissile.active=g->helicopter.active=0;
+        g->enemyPlane.active=g->enemyMissile.active=g->helicopter.active=0;
+        encounterRadarWarning(g,0);
         memset(battleship.flak,0,sizeof(battleship.flak));
         memset(g->helicopterBullets,0,sizeof(g->helicopterBullets));
         awardGameScore(g,3000);
     }
 }
 static UBYTE battleshipWeaponHit(GameState* g,WeaponState* w,UBYTE bomb) {
+    if(g->enemyPlane.active && rectsOverlap(w->x,w->y,8,8,g->enemyPlane.x,g->enemyPlane.y,16,8)) {
+        w->active=g->enemyPlane.active=0;startImpact(g,w->x,w->y);
+        awardGameScore(g,ENEMY_SCORE_VALUE);g->hitsCount++;playSfxAt(SFX_HIT,w->x);return 1;
+    }
     if(g->helicopter.active && battleshipAbs(w->x-g->helicopter.x)<14 && battleshipAbs(w->y-g->helicopter.y)<9) {
         w->active=0; startImpact(g,w->x,w->y);
         if(bomb || ++g->helicopterHits>=2) {g->helicopter.active=0;awardGameScore(g,400);}
@@ -250,7 +263,8 @@ static UBYTE battleshipEmergencyFire(GameState* g) {
     if(source==255 || guns>2)return 0;
     for(UBYTE n=0;n<HELICOPTER_BULLET_MAX;n++)if(!g->helicopterBullets[n].active) {
         HelicopterBullet* b=&g->helicopterBullets[n];memset(b,0,sizeof(*b));
-        WORD aimY=g->playerY+(beat?18:-18),ahead=g->playerX+64;
+        WORD pilotX,pilotY;battleshipSalvoAim(g,&pilotX,&pilotY);
+        WORD aimY=pilotY+(beat?24:-24),ahead=pilotX+64;
         if(aimY<12)aimY=12;if(aimY>88)aimY=88;if(ahead>300)ahead=300;
         b->active=1;b->worldX=battleshipTargetX[source]+8;b->y=battleship.targetY[source];
         b->vx16=((LONG)g->scrollX+ahead+battleship.velocity16*12/16-b->worldX)*16/12;
@@ -320,64 +334,74 @@ static void battleshipMoveWingman(GameState* g,const Player2InputState* in2) {
         if(wing->screenY>108)wing->screenY=108;
         wing->row=wing->screenY/8;
 }
+/* One existing fighter sprite and the shared missile slot: no new DMA pools. */
+static void battleshipAirRaid(GameState* g) {
+    WeaponState* p=&g->enemyPlane;
+    if(battleship.phase>=2 || !battleshipDesperate()) {
+        encounterRadarWarning(g,0);return;
+    }
+    if(!p->active) {
+        if(battleship.jetDelay)battleship.jetDelay--;
+        encounterRadarWarning(g,battleship.jetDelay<50);
+        if(battleship.jetDelay)return;
+        memset(p,0,sizeof(*p));p->active=1;p->direction=battleship.jetSide;
+        battleship.jetSide^=1;p->x=p->direction?0:304;
+        p->y=g->playerY<64?g->playerY:64;if(p->y<12)p->y=12;
+        g->enemyPlaneDamageState=ENEMY_PLANE_DAMAGE_NORMAL;
+        battleship.jetDelay=g->levelDifficulty==1?450:350;
+    }
+    encounterRadarWarning(g,1);
+    p->x+=p->direction?2:-2;p->worldX=p->targetWorldX=(LONG)g->scrollX+p->x;
+    if(p->x<-16 || p->x>320) {p->active=0;return;}
+    ++p->timer;
+    if(p->timer>=40 && p->timer<=80 && !p->dy && !g->enemyMissile.active) {
+        WeaponState* m=&g->enemyMissile;WORD tx,ty;battleshipSalvoAim(g,&tx,&ty);
+        WORD dx=tx-p->x,dy=ty-p->y,extent=battleshipAbs(dx);
+        if(battleshipAbs(dy)>extent)extent=battleshipAbs(dy);if(!extent)extent=1;
+        memset(m,0,sizeof(*m));m->active=1;m->type=ENEMY_MISSILE_CARRIER_TYPE;
+        m->x=p->x;m->worldX=p->worldX;m->y=p->y+4;
+        m->dx=(LONG)dx*48/extent;m->dy=(LONG)dy*48/extent;
+        battleship.missileSubX=battleship.missileSubY=0;playSfxAt(SFX_FIRE,p->x);
+        p->dy=1; /* One shot per pass, retry briefly if a turret owns the slot. */
+    }
+    if(!g->respawnSafeTimer && rectsOverlap(p->x,p->y,16,8,g->playerX,g->playerY,16,8)) {
+        p->active=0;startImpact(g,p->x,p->y);applyPlayerAircraftCollision(g);
+    } else if(g->wingman.active && rectsOverlap(p->x,p->y,16,8,wingmanScreenX(g),g->wingman.screenY,16,8)) {
+        p->active=0;g->wingman.active=0;g->wingman.destroyed=1;startImpact(g,p->x,p->y);
+    }
+}
 static void battleshipSupport(GameState* g,WORD delta,const Player2InputState* in2) {
-    if(battleship.supplyClock) battleship.supplyClock--;
-    else if(battleship.phase==1 && battleship.supplyPass!=battleship.pass && !g->powerup.active) {
+    battleshipAirRaid(g);
+    UBYTE missingP2=battleship.savedWingman==WINGMAN_CONTROL_PLAYER2 && !g->wingman.active;
+    if(missingP2) {if(battleship.rescueWait<300)battleship.rescueWait++;}
+    else battleship.rescueWait=0;
+    if(battleship.supplyClock)battleship.supplyClock--;
+    if(battleship.phase<2 && battleshipHealth() && !g->powerup.active &&
+       (!battleship.supplyClock || battleship.rescueWait>=300)) {
         UBYTE type=(battleship.supplyId++&1) ? POWERUP_BOMBS : POWERUP_ROCKETS;
         if(g->rockets<g->bombs) type=POWERUP_ROCKETS;
         else if(g->bombs<g->rockets) type=POWERUP_BOMBS;
         /* Empty magazines take priority over replacing a lost escort.
-         * Both empty: alternate using supplyId, still one drop per pass. */
+         * Both empty: alternate using supplyId. P2 rescue has a bounded wait. */
         if(g->rockets && g->bombs && battleship.savedWingman!=WINGMAN_CONTROL_OFF && !g->wingman.active)
             type=POWERUP_WINGMAN;
         UBYTE needed=neededAmmoPowerup(g,(UBYTE)(battleship.supplyId<<2));
         if(needed!=POWERUP_NONE)type=needed;
+        if(missingP2 && battleship.rescueWait>=300)type=POWERUP_WINGMAN;
         battleship.supplyPass=battleship.pass;
         spawnPowerup(g,type,1);
-        g->powerup.worldX=g->scrollX+g->playerX+24;
-        battleship.supplyClock=300+(battleship.clock&127);
+        g->powerup.worldX=g->scrollX+(g->playerX>264?288:g->playerX+24);
+        if(type==POWERUP_WINGMAN)battleship.rescueWait=0;
+        battleship.supplyClock=battleship.phase==1 || battleshipDesperate()?300:450;
     }
     if(g->powerup.active) {
         PowerupState* p=&g->powerup;
         /* Drops descend in screen space while the ship overtakes below. */
         p->worldX+=delta; moveEnhancedPowerup(p);
         WORD x=p->worldX-g->scrollX;
-        if(battleshipAbs(x-g->playerX)<16 && battleshipAbs(p->y-g->playerY)<12) {
+        if(powerupHitsPlayer(g,p)) {
             activatePowerup(g,p->type); p->active=0;
         } else if(x<0 || x>312 || p->y>=116) p->active=0;
-    }
-    if(battleship.heliClock) battleship.heliClock--;
-    else if(battleship.hp[9] && !g->helicopter.active) {
-        WORD sx=battleshipTargetX[9]-g->scrollX;
-        if(sx>8 && sx<296) {
-            WeaponState* h=&g->helicopter;memset(h,0,sizeof(*h));
-            h->active=1;h->worldX=battleshipTargetX[9]+4;h->x=sx+4;h->y=battleship.targetY[9]+2;
-            g->helicopterAge=g->helicopterHits=0;battleship.heliClock=600;
-            updateHelicopterHeading(g);
-        }
-    }
-    if(g->helicopter.active) {
-        WeaponState* h=&g->helicopter;g->helicopterAge++;
-        WORD previous=h->x;
-        if(g->helicopterAge<80) {if(!(g->helicopterAge&1)) h->y--;h->x=h->worldX-g->scrollX;}
-        else {
-            WORD goal=g->playerX+72;if(goal>288)goal=288;
-            if(!(g->helicopterAge&1)) {if(h->x<goal)h->x++;if(h->x>goal)h->x--;}
-            WORD altitude=g->playerY-12;if(altitude<12)altitude=12;
-            if(!(g->helicopterAge&3)) {if(h->y<altitude)h->y++;else if(h->y>altitude)h->y--;}
-            h->worldX=g->scrollX+h->x;
-        }
-        if(h->x!=previous) h->direction=h->x>previous;
-        updateHelicopterHeading(g);
-        if(h->x<-16 || h->x>=320 || g->helicopterAge>650) h->active=0;
-        else if(g->helicopterAge>80 && !(g->helicopterAge%100) && battleshipFlakRoom(g)) {
-            for(UBYTE n=0;n<HELICOPTER_BULLET_MAX;n++) if(!g->helicopterBullets[n].active) {
-                HelicopterBullet* b=&g->helicopterBullets[n];memset(b,0,sizeof(*b));
-                b->active=1;b->worldX=h->worldX;b->y=h->y+6;
-                b->vx16=(g->playerX+48-h->x)*16/12;b->vy16=(g->playerY-h->y)*16/12;break;
-            }
-        }
-        if(!(g->helicopterAge&7)) playSfxAt(SFX_HELICOPTER,h->x);
     }
     WingmanState* wing=&g->wingman;
     if(wing->active) {
@@ -564,9 +588,10 @@ static void battleshipUpdate(GameState* g,const InputState* in,const InputState*
         }
         /* Burst ahead rather than directly on the aircraft; alternate heights. */
         static const BYTE heights[5]={-24,12,-12,24,0};
-        WORD aimY=g->playerY+heights[(i+battleship.clock/35)%5];
+        WORD pilotX,pilotY;battleshipSalvoAim(g,&pilotX,&pilotY);
+        WORD aimY=pilotY+(battleshipDesperate()?((battleship.clock/90)&1?24:-24):heights[(i+battleship.clock/35)%5]);
         if(aimY<12)aimY=12;if(aimY>88)aimY=88;
-        WORD ahead=g->playerX+64+(i%3)*8;
+        WORD ahead=pilotX+64+(i%3)*8;
         if(ahead>300)ahead=300;
         LONG aimX=(LONG)g->scrollX+ahead+(battleship.velocity16*12)/16;
         UBYTE target=smoothAaAimPose(aimX-(battleshipTargetX[i]+8),battleship.targetY[i]-aimY);
@@ -634,12 +659,37 @@ static UBYTE referenceBattleship(void) {
     if(!battleshipEmergencyFire(&g) || !g.helicopterBullets[0].active)return 88;
     battleship.clock=170;if(!battleshipEmergencyFire(&g))return 89;
     battleship.clock=171;if(battleshipEmergencyFire(&g))return 90;
+    WORD aimX,aimY;g.wingmanControl=WINGMAN_CONTROL_PLAYER2;g.wingman.active=1;
+    g.wingman.interceptScreenX=200;g.wingman.screenY=60;
+    battleship.clock=180;battleshipSalvoAim(&g,&aimX,&aimY);
+    if(aimX!=200 || aimY!=60)return 98;
+    battleship.clock=360;battleshipSalvoAim(&g,&aimX,&aimY);
+    if(aimX!=g.playerX || aimY!=g.playerY)return 99;
+    g.wingman.active=0;
     memset(g.helicopterBullets,0,sizeof(g.helicopterBullets));
     for(UBYTE i=0;i<4;i++)battleship.flak[i].active=1;
     battleship.clock=300;if(battleshipEmergencyFire(&g))return 91;
     memset(battleship.flak,0,sizeof(battleship.flak));
     battleship.hp[9]=0;if(battleshipEmergencyFire(&g))return 92;
     battleship.hp[8]=9;
+    /* Destroyed helipad cannot suppress desperate support. Both directions,
+     * advance warning, shared missile, kill and end-of-raid cleanup. */
+    g.respawnSafeTimer=100;g.playerX=100;g.playerY=32;
+    battleship.jetDelay=50;battleshipAirRaid(&g);
+    if(g.enemyPlane.active || radarHudLampVisualForGame(&g)!=RADAR_LAMP_RED)return 100;
+    for(UBYTE t=0;t<49;t++)battleshipAirRaid(&g);
+    if(!g.enemyPlane.active || g.enemyPlane.direction)return 101;
+    for(UBYTE t=0;t<39;t++)battleshipAirRaid(&g);
+    if(!g.enemyMissile.active || g.enemyMissile.dx>=0)return 102;
+    WeaponState hit={0};hit.active=1;hit.x=g.enemyPlane.x;hit.y=g.enemyPlane.y;
+    if(!battleshipWeaponHit(&g,&hit,0) || g.enemyPlane.active || hit.active)return 103;
+    g.enemyMissile.active=0;battleship.jetDelay=0;battleshipAirRaid(&g);
+    if(!g.enemyPlane.active || !g.enemyPlane.direction)return 104;
+    hit.active=1;hit.x=g.enemyPlane.x;hit.y=g.enemyPlane.y;
+    if(!battleshipWeaponHit(&g,&hit,1) || g.enemyPlane.active)return 105;
+    battleship.phase=2;battleship.jetDelay=0;battleshipAirRaid(&g);
+    if(g.enemyPlane.active || g.radarDetection)return 106;
+    battleship.phase=0;
     g.scrollX=1000;g.playerX=20;g.playerY=battleship.targetY[8];
     battleshipLaunchMissile(&g,8);if(!g.enemyMissile.active)return 82;
     LONG first=g.enemyMissile.worldX;battleshipLaunchMissile(&g,8);
@@ -716,12 +766,14 @@ static UBYTE referenceBattleship(void) {
     for(UBYTE t=0;t<8;t++)battleshipUpdate(&g,&in,&in,&in2,0);
     if(!g.bombShot.active || g.bombShot.y<=bombY+8 || g.bombs!=3)return 9;
     g.powerup.active=0;battleship.supplyClock=0;battleship.supplyPass=0;battleship.phase=0;
-    battleshipSupport(&g,0,&in2);if(g.powerup.active)return 25;
+    battleship.supplyClock=2;battleshipSupport(&g,0,&in2);if(g.powerup.active)return 25;
+    battleship.supplyClock=0;
     battleship.phase=1;g.rockets=0;g.bombs=10;battleship.savedWingman=WINGMAN_CONTROL_OFF;
     battleshipSupport(&g,0,&in2);if(!g.powerup.active || g.powerup.type!=POWERUP_ROCKETS)return 10;
     g.powerup.worldX=g.scrollX+g.playerX;g.powerup.y=g.powerup.logicalY=g.playerY;
     battleshipSupport(&g,0,&in2);if(g.powerup.active || !g.rockets)return 11;
-    battleship.supplyClock=0;battleshipSupport(&g,0,&in2);if(g.powerup.active)return 26;
+    battleshipSupport(&g,0,&in2);if(g.powerup.active)return 26;
+    battleship.supplyClock=0;
     battleship.pass++;g.bombs=0;g.rockets=10;
     battleshipSupport(&g,0,&in2);if(!g.powerup.active || g.powerup.type!=POWERUP_BOMBS)return 35;
     g.powerup.active=0;battleship.supplyClock=0;battleship.pass++;
@@ -740,6 +792,21 @@ static UBYTE referenceBattleship(void) {
     battleshipSupport(&g,0,&in2);if(!g.powerup.active || g.powerup.type!=POWERUP_WINGMAN)return 39;
     g.powerup.worldX=g.scrollX+g.playerX;g.powerup.y=g.powerup.logicalY=g.playerY;
     battleshipSupport(&g,0,&in2);if(!g.wingman.active)return 40;
+    /* Forward-pass supplies and P2 rescue cannot wait for another lap. */
+    g.powerup.active=0;battleship.phase=0;battleship.supplyClock=0;g.rockets=0;
+    battleshipSupport(&g,0,&in2);if(!g.powerup.active || g.powerup.type!=POWERUP_ROCKETS)return 93;
+    g.powerup.active=0;battleship.savedWingman=g.wingmanControl=WINGMAN_CONTROL_PLAYER2;
+    g.wingman.active=0;g.wingman.destroyed=1;battleship.rescueWait=299;battleship.supplyClock=400;
+    battleshipSupport(&g,0,&in2);if(!g.powerup.active || g.powerup.type!=POWERUP_WINGMAN)return 94;
+    g.powerup.worldX=g.scrollX+g.playerX;g.powerup.y=g.powerup.logicalY=g.playerY;
+    battleshipSupport(&g,0,&in2);if(!g.wingman.active)return 95;
+    g.powerup.active=1;g.powerup.type=POWERUP_BOMBS;g.bombs=0;
+    g.wingman.interceptScreenX=20;g.wingman.screenY=20;
+    g.powerup.worldX=g.scrollX+20;g.powerup.y=g.powerup.logicalY=20;
+    battleshipSupport(&g,0,&in2);if(g.powerup.active || !g.bombs)return 96;
+    battleship.phase=2;g.powerup.active=0;battleship.supplyClock=0;
+    battleshipSupport(&g,0,&in2);if(g.powerup.active)return 97;
+    battleship.phase=1;
     /* Camera reversals cannot change a released bomb's screen-space drift. */
     g.powerup.active=0;g.playerY=8;g.bombShot.active=0;g.bombs=4;g.bombLaunchCooldown=0;
     battleship.camera16=800*16;g.scrollX=800;battleship.velocity16=-40;
@@ -775,10 +842,10 @@ static UBYTE referenceBattleship(void) {
     g.enemyMissile.active=0;
     UWORD fuel=g.fuel;g.fuelGaugeLevel=8;g.fuelSubCounter=1;g.fuelClockAccumulator=0;g.fuel=cpcFuelHudValue(&g);fuel=g.fuel;
     battleshipHitTarget(&g,10,0);if(g.fuel<=fuel)return 12;
-    g.scrollX=812;g.helicopter.active=0;battleship.heliClock=0;
-    battleshipSupport(&g,0,&in2);if(!g.helicopter.active)return 13;
+    g.scrollX=812;g.helicopter.active=0;
+    battleshipSupport(&g,0,&in2);if(g.helicopter.active)return 13;
     battleshipHitTarget(&g,9,1);battleshipHitTarget(&g,9,1);
-    g.helicopter.active=0;battleship.heliClock=0;battleshipSupport(&g,0,&in2);if(g.helicopter.active)return 14;
+    g.helicopter.active=0;battleshipSupport(&g,0,&in2);if(g.helicopter.active)return 14;
     for(UBYTE i=0;i<BATTLESHIP_TARGETS;i++)while(battleship.hp[i])battleshipHitTarget(&g,i,1);
     if(battleship.phase!=2 || battleshipHealth())return 15;
     UBYTE fireballs=0,finalBlast=0;

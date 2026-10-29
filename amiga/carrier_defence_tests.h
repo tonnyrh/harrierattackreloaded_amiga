@@ -184,7 +184,37 @@ static UBYTE referenceCarrierDepartureMatches(void) {
     }
     modPlaying=oldMod; return result;
 }
+static UBYTE referenceCarrierRadarMatches(void) {
+    static GameState g;UBYTE* buffers[GAME_WORLD_BUFFER_COUNT]={0};
+    InputState in={0};Player2InputState p2={0};
+    UBYTE savedMod=modPlaying,result=0;modPlaying=1;
+    for(UBYTE phase=DEFENCE_ALARM;phase<=DEFENCE_LULL;phase+=DEFENCE_LULL-DEFENCE_ALARM) {
+        initGameState(&g,12040,12040,2);g.gameMode=GAME_MODE_ENHANCED;
+        g.takeoffState=TAKEOFF_STATE_AIRBORNE;g.playerX=80;g.playerY=60;
+        g.defence.phase=phase;g.defence.phaseTicks=150;g.defence.waves=2;
+        g.defence.subUsed=1;g.defence.gunHealth[0]=g.defence.gunHealth[1]=0;
+        g.radarDetection=RADAR_DETECTION_MAX;g.radarAlarmTickCountdown=20;
+        updateCarrierDefence(&g,&in,&in,&p2,buffers);
+        if(g.radarDetection || g.radarAlarmTickCountdown) {result=1;break;}
+        g.defence.phaseTicks=100;updateCarrierDefence(&g,&in,&in,&p2,buffers);
+        if(radarHudLampVisualForGame(&g)!=RADAR_LAMP_RED || g.radarAlarmTickCountdown!=49) {result=2;break;}
+        g.defence.phaseTicks=0;updateCarrierDefence(&g,&in,&in,&p2,buffers);
+        if(g.defence.phase!=DEFENCE_WAVE || !g.radarDetection) {result=3;break;}
+        g.defence.spawned=g.defence.quota;g.enemyPlane.active=1;
+        g.enemyPlane.x=240;g.enemyPlane.y=24;
+        updateCarrierDefence(&g,&in,&in,&p2,buffers);
+        if(!g.radarDetection) {result=4;break;}
+        g.enemyPlane.active=0;updateCarrierDefence(&g,&in,&in,&p2,buffers);
+        if(g.radarDetection || g.radarAlarmTickCountdown) {result=5;break;}
+    }
+    modPlaying=savedMod;return result;
+}
 static UBYTE referenceCarrierDefenceMatches(void) {
+    UBYTE radarResult=referenceCarrierRadarMatches();
+    if(radarResult)return 220+radarResult;
+#if HAR_HEADLESS_CARRIER_RADAR_TEST_ONLY
+    return 0;
+#endif
     UBYTE departure=referenceCarrierDepartureMatches();
     if(departure) return departure;
     UBYTE progression=referenceCarrierProgressionMatches();
@@ -346,8 +376,10 @@ static UBYTE referenceCarrierDefenceMatches(void) {
         if (!g.defence.landed || g.playerY != TAKEOFF_PLAYER_DECK_Y) return 34;
     }
     g.playerX = 104; g.playerY = 88; g.defence.landed = 0; g.respawnSafeTimer = 0;
-    for(UBYTE t=0;t<24 && !g.crashTimer;t++) carrierMoveVtol(&g,&in);
-    if (!g.crashTimer || !g.crashEndsGame || g.defence.landed) return 35;
+    g.armour=100;g.missileDamageThirds=g.flakDamageCount=0;carrierResetVtol(&g.defence);
+    /* Enhanced tower contact now damages and bounces, like terrain. */
+    for(UBYTE t=0;t<24 && g.armour==100;t++) carrierMoveVtol(&g,&in);
+    if(g.crashTimer || g.armour>=100 || !g.armour || g.defence.landed || !g.groundBounceTicks)return 35;
     /* The generated reverse pose is an exact pixel mirror, not a recolour. */
     for (UBYTE y = 0; y < 8; y++) for (UBYTE x = 0; x < 16; x++) {
         UBYTE rx = 15 - x;

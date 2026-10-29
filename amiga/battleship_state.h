@@ -17,12 +17,13 @@ static struct {
     UBYTE active,phase,passed,hp[BATTLESHIP_TARGETS],pose[BATTLESHIP_TARGETS];
     UBYTE dirty[BATTLESHIP_TARGETS],flakLife,hitSafe,finished;
     UWORD clock,water,wait,pass;
+    UWORD jetDelay;UBYTE jetSide;
     WORD camera16,velocity16,targetY[BATTLESHIP_TARGETS];
     WORD missileVx16,missileVy16,missileSubX,missileSubY;
     LONG flakX; WORD flakY;
     WeaponState flak[4];
     UBYTE hudHealth, savedWingman, stage, lift[BATTLESHIP_TARGETS], flash[BATTLESHIP_TARGETS];
-    WORD vx16,vy16,subX,subY; UWORD supplyClock,heliClock,supplyPass; UBYTE supplyId;
+    WORD vx16,vy16,subX,subY; UWORD supplyClock,supplyPass,rescueWait; UBYTE supplyId;
 
 } battleship;
 static const UWORD battleshipTargetX[BATTLESHIP_TARGETS]={592,704,816,944,1056,1184,1296,1392,1128,864,656,1336,752,992,1232,1440};

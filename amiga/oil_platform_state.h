@@ -19,6 +19,7 @@ typedef struct OilPlatformState {
  UBYTE facing, pose, turnTicks, turnTarget, previousFire, previousBomb;
  WORD crewX,crewY;
  UWORD crewDropTicks;
+ UWORD rescuePause;
  WORD vx,vy,ax,ay,subX,subY;
  UWORD fuelTicks,p2FuelQuanta;
  WORD approachVX16,approachSub16;

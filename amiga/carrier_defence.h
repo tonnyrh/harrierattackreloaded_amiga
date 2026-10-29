@@ -8,6 +8,18 @@
 
 #define DEFENCE_SMALL __attribute__((noinline, optimize("Os")))
 
+/* Encounter radar uses the existing tiny Paula waveform and cached HUD lamp. */
+static void encounterRadarWarning(GameState* g,UBYTE warning) {
+    g->radarDetection=warning ? RADAR_DETECTION_MAX : 0;
+    if(!warning) {g->radarAlarmTickCountdown=0;return;}
+    if(g->radarAlarmTickCountdown)g->radarAlarmTickCountdown--;
+    else {
+        playSfxAtTuned(SFX_RADAR_ALARM,SFX_POSITION_CENTER,
+            RADAR_ALARM_MAX_VOLUME,RADAR_ALARM_HIGH_PERIOD);
+        g->radarAlarmTickCountdown=49;
+    }
+}
+
 /* missionNumber is the upcoming terrain mission: 2 means after level 1. */
 static void carrierBeginDefence(GameState* g) {
     if(g->gameMode!=GAME_MODE_ENHANCED || g->missionNumber<2) return;
@@ -587,6 +599,7 @@ static DEFENCE_SMALL void updateCarrierDefence(GameState* g, const InputState* i
     carrierUpdateHeading(d, in);
     carrierServiceRepair(g,in->up);
     if (d->phase == DEFENCE_SINKING) {
+        encounterRadarWarning(g,0);
         carrierUpdateSubmarine(g,buffers);
         carrierSyncGuns(g, buffers);
         updateEncounterSmoke(g);
@@ -733,7 +746,7 @@ static DEFENCE_SMALL void updateCarrierDefence(GameState* g, const InputState* i
         }
         if (contact) { startWorldImpact(g, g->playerX, g->playerY); applyPlayerAircraftCollision(g); }
     }
-    if (d->phase == DEFENCE_SINKING || g->gameOver) return;
+    if (d->phase == DEFENCE_SINKING || g->gameOver) {encounterRadarWarning(g,0);return;}
     if (d->phase == DEFENCE_ALARM || d->phase == DEFENCE_LULL) {
         carrierTryAlarm(d);
         if (d->phaseTicks) d->phaseTicks--;
@@ -760,6 +773,9 @@ static DEFENCE_SMALL void updateCarrierDefence(GameState* g, const InputState* i
             g->takeoffState = TAKEOFF_STATE_LIFTING; g->lowSpeedLanding = 0; g->speedLevel = GAME_SPEED_LEVEL_DEFAULT;
         }
     }
+    UBYTE incoming=(d->phase==DEFENCE_ALARM || d->phase==DEFENCE_LULL) && d->phaseTicks<100;
+    if(d->phase==DEFENCE_WAVE && !d->spawned)incoming=1;
+    encounterRadarWarning(g,g->enemyPlane.active || incoming);
 }
 
 static DEFENCE_SMALL void carrierSyncSceneStatus(const GameState* g, UBYTE** buffers) {

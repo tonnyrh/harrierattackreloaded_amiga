@@ -591,3 +591,62 @@ Validation: muted WinUAE oil contract passed, including no timed P2 respawn,
 red-drop revival, P1 gun occupancy/fire, raid-state preservation, both-pilot
 carrier recovery and unchanged-HUD-write checks. Full cooperative playthrough
 on real hardware remains to be tested.
+
+### Cooperative encounter balance (28 October 2026)
+
+Oil-platform red-drop recovery now parks the recovered Harrier on the helipad
+at deck height, ready for an upward takeoff. The spawn selects the opposite
+side when the other aircraft is parked. The raid is split into two waves
+with a 600-tick service lull after all
+first-wave enemies and ordnance clear. Total quotas remain 7 solo, 9 CPU and
+11 human P2 on Easiest (19 P2 at skill 5). Both aircraft can land and service
+during the lull; R kits still repair the rig. Radar is green and silent for
+the first ten seconds of the service break, then red with periodic beeps
+for the last two seconds. The warning continues through the next wave
+spawn delay and while enemy aircraft attack. The initial wave also gets
+two seconds of advance warning. Carrier defence now uses the same radar
+beeps and red lamp: quiet between waves, warning for the final two seconds
+before a wave, retained through its spawn delay and while aircraft attack. Safe parachute recovery with no aircraft remaining waits
+125 ticks before the existing carrier restart, without charging another life.
+
+Battleship supply drops are no longer restricted to one per return pass.
+They recur every 450 gameplay ticks during ordinary forward passes, or 300
+on return passes and in the final 35% health phase. Empty/low ammunition still
+normally takes priority. A missing human P2 gets red-drop priority after 300
+ticks, once the existing pickup slot is free; missed red drops can repeat.
+Either aircraft can collect supplies. No armour drops or additional pickup
+slots were added, and sinking disables new supplies.
+
+Late salvos alternate focus between living human pilots in 180-tick phases,
+using alternating high/low aim lanes ahead of the aircraft. Emergency fire
+uses the same target selection. In desperation, support fighters replace new
+helipad helicopter launches, even if the helipad is destroyed. A one-second
+red radar warning precedes alternating front/rear passes. Only one fighter
+and the existing shared missile slot are used. The helipad no longer
+launches helicopters. No new samples or sprite memory.
+
+Validation: muted WinUAE oil, full Battleship and focused late-phase contracts
+passed. Checks cover helipad recovery, forward-pass supplies, bounded P2
+rescue priority, P2 collection, no sinking supplies, alternating pilot aim,
+ordnance limits and world restoration. Additional checks cover the full
+service lull, both pilots repairing, unchanged total quota, radar warning,
+front/rear passes after helipad destruction and delayed carrier rescue with
+exactly one life charged. Balance still needs human playtesting.
+
+Carrier radar validation: focused carrier-rules test covers quiet ALARM/LULL,
+advance warning, spawn-delay continuity, active aircraft and cleared waves.
+The broader carrier regression currently stops at check 131: an older fixture
+expects a fast descent to land instead of invoking the current hard-landing
+bounce. No landing gameplay was changed for radar warnings.
+
+### Easy shield and controller handover (29 October 2026)
+
+Enhanced Skill 1/2 incoming damage scales to 59/77 percent (previously
+65/85), giving approximately ten percent more effective shield. The same
+percentages extend the flak hit budget. Higher skills and Classic are unchanged.
+F1 exchanges gameplay controls between the two human players, including
+keyboard fallbacks and weapon buttons. It is ignored for solo/CPU play;
+press again to restore, and returning to the menu resets the exchange.
+Pause/menu/debug keys stay with their existing bindings. F1 is reserved from
+control rebinding. Held F1 swaps once; queued tempo input and weapon edges
+are cleared on handover so old commands do not fire under a new owner.

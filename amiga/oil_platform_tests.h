@@ -14,6 +14,8 @@ static UBYTE oilContract(void) {
   g.ejectX=px-HAR_CPC_PARACHUTE_WIDTH/2;
   g.ejectY=OIL_DECK_Y-HAR_CPC_PARACHUTE_HEIGHT-1;
   oilUpdate(&g,&in,&old,&p2,buffers);
+  if(oil.rescueRestart || oil.rescuePause!=125)return 91;
+  for(UWORD t=0;t<125;t++)oilUpdate(&g,&in,&old,&p2,buffers);
   if(!oil.rescueRestart || g.ejectState || g.gameOver || g.lives!=2)return 70;
   if(oil.carrierHull!=63 || g.defence.cargo!=40 || g.missionNumber!=2)return 71;
   if(oil.completed || g.takeoffState!=TAKEOFF_STATE_AIRBORNE)return 72;
@@ -53,7 +55,7 @@ static UBYTE oilContract(void) {
  g.defence.phase=DEFENCE_WAVE;oil.crewDropTicks=450;g.powerup.active=0;g.defence.repairDropPending=0;
  oilCrewSupply(&g);if(!g.powerup.active || g.powerup.type!=POWERUP_WINGMAN)return 80;
  activatePowerup(&g,POWERUP_WINGMAN);
- if(!oil.p2Present || oil.p2Health!=100 || g.wingman.screenY!=8)return 6;
+ if(!oil.p2Present || oil.p2Health!=100 || g.wingman.screenY!=OIL_PLAYER_Y || !oil.p2Landed || !oilPad(g.wingman.interceptScreenX))return 6;
  /* Safe P1 parachute touchdown retains the raid and mans the gun. */
  g.lives=3;g.ejectState=2;g.ejectTimer=2;g.ejectX=80;
  g.ejectY=OIL_DECK_Y-HAR_CPC_PARACHUTE_HEIGHT-1;
@@ -75,9 +77,14 @@ static UBYTE oilContract(void) {
  g.enemyPlane.active=0;memset(g.helicopterBullets,0,sizeof(g.helicopterBullets));
  UWORD raidClock=g.defence.clock;
  activatePowerup(&g,POWERUP_WINGMAN);
+ if(!g.defence.landed || g.playerY!=OIL_PLAYER_Y || !oilPad(g.playerX))return 90;
  if(oil.p1Gunner || g.ejectState || !oil.p2Present || g.armour!=100 || g.lives!=2 || g.defence.clock!=raidClock)return 83;
  /* If the remaining pilot is lost, the safe gunner restarts both at carrier. */
  oil.p1Gunner=1;g.ejectState=3;oil.p2Present=0;g.wingman.destroyed=1;
+ oilUpdate(&g,&in,&old,&p2,buffers);
+ if(oil.rescueRestart || oil.rescuePause!=125)return 91;
+ for(UWORD t=0;t<124;t++)oilUpdate(&g,&in,&old,&p2,buffers);
+ if(oil.rescueRestart || g.lives!=2)return 92;
  oilUpdate(&g,&in,&old,&p2,buffers);
  if(!oil.rescueRestart || g.wingman.destroyed || g.lives!=2)return 84;
  oil.rescueRestart=0;oil.p2Present=1;g.ejectState=0;g.respawnSafeTimer=0;
@@ -90,14 +97,16 @@ static UBYTE oilContract(void) {
  oil.vy=256;oil.vx=0;oil.subY=oil.ay=0;oilP2Update(&g,&p2);
  if(!oil.p2Landed || g.wingman.interceptScreenX!=80)return 10;
  /* Shared kits repair only the platform, after a complete landing interval. */
- g.defence.hull=40;g.defence.cargo=20;g.defence.phase=DEFENCE_WAVE;
+ g.defence.hull=40;g.defence.cargo=20;g.defence.phase=DEFENCE_LULL;g.defence.phaseTicks=600;
  g.defence.spawnDelay=200;g.defence.quota=8;g.defence.clock=7;
  g.playerX=66;g.playerY=OIL_PLAYER_Y;g.defence.landed=1;
  oilUpdate(&g,&in,&old,&p2,buffers);
  if(g.defence.hull!=40 || g.defence.cargo!=20)return 11;
+ g.armour=50;oil.p2Health=50;
  UBYTE savedCarrierHull=oil.carrierHull;
  for(UWORD t=1;t<CARRIER_REPAIR_TICKS;t++)oilUpdate(&g,&in,&old,&p2,buffers);
  if(g.defence.hull!=50 || g.defence.cargo || oil.carrierHull!=savedCarrierHull)return 58;
+ if(g.armour<=50 || oil.p2Health<=50 || g.defence.phase!=DEFENCE_LULL)return 95;
  g.defence.hull=95;g.defence.cargo=40;g.defence.landed=0;
  for(UWORD t=0;t<CARRIER_REPAIR_TICKS;t++)carrierServiceRepair(&g,0);
  if(g.defence.hull!=100 || g.defence.cargo!=20)return 59; /* P2 on pad. */
@@ -116,8 +125,8 @@ static UBYTE oilContract(void) {
  g.defence.landed=0;g.playerY=OIL_PLAYER_Y-1;g.armour=100;
  g.flakDamageCount=g.missileDamageThirds=0;g.defence.vtolVY=384;
  oilPlayerMove(&g,&in);
- /* Easiest scales 90 thirds to 59; the HUD rounds remaining armour up. */
- if(g.defence.landed || g.armour!=81 || g.missileDamageThirds!=59 || g.defence.vtolVY>=0)return 44;
+ /* Easiest scales 90 thirds to 54 with the additional shield allowance. */
+ if(g.defence.landed || g.armour!=82 || g.missileDamageThirds!=54 || g.defence.vtolVY>=0)return 44;
  g.playerX=80;g.playerY=OIL_PLAYER_Y;g.defence.landed=1;g.defence.hull=40;
  /* Enemy bombs hit a solid rig tile above the former carrier deck. */
  WeaponState* bomb=&g.defence.bombs[0];memset(bomb,0,sizeof(*bomb));
@@ -221,15 +230,25 @@ static UBYTE oilContract(void) {
  for(UBYTE control=0;control<3;control++) {
   initGameState(&g,12040,12040,1);g.gameMode=GAME_MODE_ENHANCED;
   g.wingmanControl=control;g.wingman.destroyed=0;g.skillLevel=g.levelDifficulty=1;g.lives=3;
-  oilBegin(&g);UWORD ticks=0;
+  oilBegin(&g);UWORD ticks=0,lullTicks=0,warningTicks=0;
   for(;ticks<10000 && g.defence.phase!=DEFENCE_SECURE;ticks++) {
    g.respawnSafeTimer=100;g.playerX=32;g.playerY=16;
    if(g.enemyPlane.active)carrierDefenceKillJet(&g);
    if(g.helicopter.active)carrierDefenceKillHeli(&g);
    memset(g.defence.bombs,0,sizeof(g.defence.bombs));g.enemyMissile.active=0;
    oilUpdate(&g,&in,&old,&p2,buffers);
+   if(g.defence.phase==DEFENCE_LULL) {
+    lullTicks++;
+    if(g.enemyPlane.active || g.helicopter.active)return 93;
+    UBYTE warning=g.defence.phaseTicks<100;
+    if((g.radarDetection!=0)!=warning ||
+       radarHudLampVisualForGame(&g)!=(warning?RADAR_LAMP_RED:RADAR_LAMP_GREEN))return 96;
+    if(warning)warningTicks++;
+    else if(g.radarAlarmTickCountdown)return 97;
+   }
   }
   if(ticks==10000 || g.defence.spawned!=oilQuota(1,control))return 18+control;
+  if(lullTicks!=601 || warningTicks!=100 || g.defence.wave!=2)return 94;
   /* Neither pilot lands or presses Up: victory must depart automatically. */
   if(g.defence.landed || (control==2 && oil.p2Landed))return 21+control;
   for(UWORD t=0;t<512 && oil.active;t++)oilUpdate(&g,&in,&old,&p2,buffers);

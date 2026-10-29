@@ -1058,6 +1058,7 @@ static UBYTE* menuTickerBitmap = 0;
 #define RAWKEY_BACKSPACE 0x41
 #define RAWKEY_RETURN 0x44
 #define RAWKEY_ESCAPE 0x45
+#define RAWKEY_F1 0x50
 #define RAWKEY_UP 0x4c
 #define RAWKEY_DOWN 0x4d
 #define RAWKEY_RIGHT 0x4e
@@ -5940,6 +5941,23 @@ static void ReadPlayer2Input(Player2InputState* input, UBYTE gameMode) {
 	input->eject = controlProfileKeyDown(profile, CONTROL_EJECT);
 }
 
+/* Route gameplay controls only. Menu, pause and debug keys retain ownership. */
+static UBYTE routeHumanControllers(InputState* p1,Player2InputState* p2,
+    UBYTE eligible,UBYTE f1,UBYTE* swapped,UBYTE* previousF1) {
+    UBYTE changed=eligible && f1 && !*previousF1;
+    *previousF1=f1;
+    if(!eligible) {*swapped=0;return 0;}
+    if(changed)*swapped^=1;
+    if(*swapped) {
+        Player2InputState original={p1->up,p1->down,p1->left,p1->right,p1->fire,p1->bomb,p1->eject};
+        p1->up=p2->up;p1->down=p2->down;p1->left=p2->left;p1->right=p2->right;
+        p1->fire=p2->fire;p1->bomb=p2->bomb;p1->eject=p2->eject;
+        p1->bombKey=p2->bomb;p1->bombMouse=p1->bombJoystick=0;
+        *p2=original;
+    }
+    return changed;
+}
+
 static UBYTE Pressed(UBYTE now, UBYTE previous) {
 	return now && !previous;
 }
@@ -8811,11 +8829,14 @@ static __attribute__((noinline, optimize("Os"))) void drawCarrierInstruments(UBY
     UBYTE status = d->phase && d->perfectTicks ? (d->raidBonus == 2 ? 9 : 8) : d->phase == DEFENCE_ALARM || d->phase == DEFENCE_LULL ? 1 :
         d->phase == DEFENCE_SECURE ? 2 : d->phase == DEFENCE_DEPART ? 3 : d->phase == DEFENCE_SINKING ? 4 :
         d->fullVtol ? (d->repairLoad == 150 ? 5 : d->repairPad >= 0 ? 6 : 7) : 0;
+    if(oil.active && oil.rescuePause)status=11;
+    else if(oil.active && d->phase==DEFENCE_LULL)status=10;
     UBYTE load = d->repairLoad / 15;
     if (full || status != state->carrierStatus || (status == 6 && load != state->carrierLoad)) {
         fillRect(hud, 0, 58, 320, 8, HUD_COLOR_BACKGROUND);
         static const char* messages[] = { "", "AIR RAID SCRAMBLE", "LAND NOW", "UP: DEPART", "CARRIER LOST",
-            "REPAIR KIT ABOARD", "LOADING - WATCH THE SKY", "VTOL - LAND ON R / RIGHT: CRUISE", "PERFECT BONUS!", "SUPER BONUS!" };
+            "REPAIR KIT ABOARD", "LOADING - WATCH THE SKY", "VTOL - LAND ON R / RIGHT: CRUISE", "PERFECT BONUS!", "SUPER BONUS!",
+            "SERVICE BREAK - LAND TO REPAIR", "PILOTS SAFE - RETURN TO CARRIER" };
         const char* message=messages[status];
         if(oil.active) message=status==1?"DEFEND THE OIL PLATFORM":status==2?
             "PLATFORM SECURED":status==3?"RETURN TO CARRIER":status==4?"PLATFORM LOST":message;
@@ -19915,7 +19936,8 @@ static UBYTE enhancedEasyMode(const GameState* g) {
 }
 static UBYTE easyIncomingDamagePercent(const GameState* g) {
     if(!enhancedEasyMode(g))return 100;
-    return g->skillLevel==1?65:85;
+    /* Previous 65/85 percent divided by 1.10: about ten percent more shield. */
+    return g->skillLevel==1?59:77;
 }
 static UWORD easyIncomingDamage(const GameState* g,UWORD damage) {
     return ((ULONG)damage*easyIncomingDamagePercent(g)+99)/100;
@@ -23544,7 +23566,7 @@ static int runClassicGameplayContractTest(void) {
 
 #if HAR_HEADLESS_EASY_SUPPLY_TEST_ONLY
     GameState g; memset(&g,0,sizeof(g));g.gameMode=GAME_MODE_ENHANCED;g.skillLevel=1;g.levelDifficulty=5;
-    UBYTE ok=easyIncomingDamage(&g,100)==65 && easyIncomingDamage(&g,1)==1;
+    UBYTE ok=easyIncomingDamage(&g,100)==59 && easyIncomingDamage(&g,1)==1;
     UBYTE easiestFlak=flakDamageThresholdForGame(&g);
     UBYTE b,r;ammoForGame(&g,&b,&r);g.bombs=b;g.rockets=0;
     for(UBYTE roll=0;roll<8;roll++)ok &= neededAmmoPowerup(&g,roll)==POWERUP_ROCKETS;
@@ -23552,12 +23574,21 @@ static int runClassicGameplayContractTest(void) {
     g.bombs=0;g.rockets=0;ok &= neededAmmoPowerup(&g,0)==POWERUP_ROCKETS && neededAmmoPowerup(&g,4)==POWERUP_BOMBS;
     g.bombs=b;g.rockets=r;ok &= neededAmmoPowerup(&g,0)==POWERUP_NONE;
     g.bombs=b/4;g.rockets=r;ok &= neededAmmoPowerup(&g,0)==POWERUP_BOMBS && neededAmmoPowerup(&g,3)==POWERUP_NONE;
-    g.skillLevel=2;ok &= easyIncomingDamage(&g,100)==85;
+    g.skillLevel=2;ok &= easyIncomingDamage(&g,100)==77;
     UBYTE easyFlak=flakDamageThresholdForGame(&g);
     ok &= easiestFlak>easyFlak;
     g.skillLevel=3;ok &= easyIncomingDamage(&g,100)==100 && easyFlak>flakDamageThresholdForGame(&g);
     g.gameMode=GAME_MODE_CLASSIC;g.skillLevel=1;g.bombs=0;g.rockets=0;
     ok &= easyIncomingDamage(&g,100)==100 && neededAmmoPowerup(&g,0)==POWERUP_NONE;
+    InputState a={0};Player2InputState b2={0};UBYTE swapped=0,oldF1=0;
+    a.left=a.fire=a.bombMouse=a.bomb=a.space=1;b2.right=b2.eject=1;
+    ok &= routeHumanControllers(&a,&b2,1,1,&swapped,&oldF1) && swapped;
+    ok &= a.right && a.eject && !a.left && !a.fire && !a.bombMouse && a.space && b2.left && b2.fire && b2.bomb;
+    ok &= !routeHumanControllers(&a,&b2,1,1,&swapped,&oldF1) && swapped;
+    routeHumanControllers(&a,&b2,1,0,&swapped,&oldF1);
+    ok &= routeHumanControllers(&a,&b2,1,1,&swapped,&oldF1) && !swapped;
+    oldF1=0;a.left=1;b2.left=0;
+    ok &= !routeHumanControllers(&a,&b2,0,1,&swapped,&oldF1) && !swapped && a.left && !b2.left;
     writeClassicContractResult(ok?"PASS enhanced-easy-and-needed-ammo":"FAIL enhanced-easy-and-needed-ammo");return ok?0:1;
 #endif
 
@@ -26202,8 +26233,8 @@ static void updateEnemySprite(UWORD* enemySprite, UWORD* enemyAttachSprite,
 	}
 	if (game->enemyPlane.active && game->enemyPlane.x >= 0 &&
 		game->enemyPlane.x <= SCREEN_WIDTH - ENEMY_SPRITE_WIDTH) {
-        if (game->gameMode == GAME_MODE_ENHANCED && game->defence.phase) {
-            if (game->defence.jetType == 2) {
+        if (game->gameMode == GAME_MODE_ENHANCED && (game->defence.phase || battleship.active)) {
+            if (!battleship.active && game->defence.jetType == 2) {
                 hideHardwareSprite(enemySprite); hideHardwareSprite(enemyAttachSprite); return;
             }
             const UBYTE* art = game->enemyPlane.direction ? carrierFighterRight : carrierFighterLeft;
@@ -26962,6 +26993,7 @@ int main(void) {
 	InputState previousInput;
 	Player2InputState input2;
 	Player2InputState previousInput2;
+	UBYTE controllersSwapped=0,previousSwapKey=0;
 	UBYTE lastInputMask = 0xff;
 
 	memset(&input2, 0, sizeof(input2));
@@ -27052,6 +27084,16 @@ int main(void) {
 			ReadPlayer2Input(&input2, game.gameMode);
 		else
 			memset(&input2, 0, sizeof(input2));
+
+        if(routeHumanControllers(&input,&input2,
+            inGameScene && !attractDemo.active && game.wingmanControl==WINGMAN_CONTROL_PLAYER2,
+            KeyDown(RAWKEY_F1),&controllersSwapped,&previousSwapKey)) {
+            previousInput=input;previousInput2=input2;
+            oil.previousFire=input2.fire;oil.previousBomb=input2.bomb;
+            tempoHasPendingInput=0;
+            memset(&tempoPendingInput,0,sizeof(tempoPendingInput));
+            memset(&tempoPendingInput2,0,sizeof(tempoPendingInput2));
+        }
 
 #if HAR_DEBUG_PERF_LOG && HAR_DEBUG_PERF_STAGES
 		perfStageMark(0);
@@ -27750,7 +27792,7 @@ int main(void) {
 						UBYTE rawKey = lastKeyboardMakeKey;
 						controlsCaptureSerial = keyboardMakeSerial;
 						controlsCapture = 0;
-						if (rawKey == RAWKEY_ESCAPE) {
+						if (rawKey == RAWKEY_ESCAPE || rawKey == RAWKEY_F1) {
 							controlsMessage = CONTROL_MESSAGE_NONE;
 						} else if (controlKeyIsDuplicate(controlsPlayer,
 							action, rawKey)) {
@@ -28174,6 +28216,7 @@ int main(void) {
                 if (fireButtonEjectRequested(&game, &input, &previousInput)) input.eject = 1;
                 if(battleship.active) {
                     battleshipUpdate(&game,&input,&previousInput,&input2,worldBuffers);
+                    pendingEnemySpriteUpdate=1;
                     pendingWingmanSpriteUpdate=pendingPlayerSpriteUpdate=pendingEnemyMissileSpriteUpdate=pendingGameScrollCopperUpdate=1;
                     if(!(battleship.clock&7)) {drawHudValues(hudBuffer,&game,highScore,0);battleshipDrawHud(hudBuffer);}
                     if(battleship.finished==1) {campaign.specialDone=1;campaign.request=CAMPAIGN_RETURN;}
