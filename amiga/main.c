@@ -14,7 +14,7 @@
 #include <stddef.h>
 #include <string.h>
 #include "assets/harrier_menu_text.h"
-#define HAR_BUILD_LABEL "RELEASE CANDIDATE 1"
+#define HAR_BUILD_LABEL "PUBLIC BETA 7"
 #ifndef HAR_CARRIER_BLITTER
 #define HAR_CARRIER_BLITTER 1
 #endif
@@ -21364,6 +21364,17 @@ static void updateWingmanRocket(GameState* game, UBYTE scrollPixels,
 	}
 }
 
+static void updatePlayer2WhileCarrierReady(GameState* game, UBYTE** worldBuffers,
+    const Player2InputState* input, const Player2InputState* previous,
+    UBYTE* hudDirty, UBYTE* enemySpriteDirty) {
+    updateWingmanPlayer2Control(game, worldBuffers, input, previous, hudDirty);
+    /* P1 being parked must not freeze ordnance already launched by P2.
+     * The carrier is stationary here, so use the normal weapon rules with
+     * zero scrolling, including range, impact and water retirement. */
+    updateWingmanPlayer2Bomb(game, 0, worldBuffers, hudDirty);
+    updateWingmanRocket(game, 0, hudDirty, enemySpriteDirty);
+}
+
 /* Real CPC rolls this when a plane spawns, but forces interception when that
  * plane selected the Wingman as its missile target. */
 static void maybeStartWingmanIntercept(GameState* game) {
@@ -23562,6 +23573,41 @@ static int runClassicGameplayContractTest(void) {
     }
     ok &= pose==6 && smoothAaAimPose(-20,40)!=smoothAaAimPose(60,40);
     writeClassicContractResult(ok?"PASS seven-aa-poses-and-turn-cadence":"FAIL seven-aa-poses-and-turn-cadence");return ok?0:1;
+#endif
+
+#if HAR_HEADLESS_P2_DECK_WEAPONS_TEST_ONLY
+    static GameState g;
+    UBYTE ok=1, hudDirty=0, enemyDirty=0;
+    Player2InputState input={0}, previous={0};
+    for (UBYTE mode=0; mode<2; ++mode) {
+        memset(&g,0,sizeof(g));
+        g.gameMode=mode; g.skillLevel=g.levelDifficulty=1;
+        g.takeoffState=TAKEOFF_STATE_READY;
+        g.wingmanControl=WINGMAN_CONTROL_PLAYER2;
+        g.wingman.mode=WINGMAN_ON_DECK;
+        g.wingman.interceptScreenX=WINGMAN_TAKEOFF_DECK_X;
+        g.wingman.screenY=30; g.rockets=g.bombs=10;
+        g.rocketRangeTiles=10;
+        memset(&input,0,sizeof(input)); memset(&previous,0,sizeof(previous));
+        input.up=1;
+        updatePlayer2WhileCarrierReady(&g,0,&input,&previous,&hudDirty,&enemyDirty);
+        ok &= g.wingman.active && g.takeoffState==TAKEOFF_STATE_READY;
+        g.wingman.interceptScreenX=260;
+        previous=input; input.up=0; input.fire=input.bomb=1;
+        updatePlayer2WhileCarrierReady(&g,0,&input,&previous,&hudDirty,&enemyDirty);
+        ok &= g.wingman.rocket.active && g.wingman.rocket.x>260 && g.wingman.bomb.active;
+        WORD bombY=g.wingman.bomb.y;
+        previous=input; memset(&input,0,sizeof(input));
+        updatePlayer2WhileCarrierReady(&g,0,&input,&previous,&hudDirty,&enemyDirty);
+        ok &= g.wingman.bomb.y>bombY;
+        for(UWORD tick=0;tick<200;++tick)
+            updatePlayer2WhileCarrierReady(&g,0,&input,&input,&hudDirty,&enemyDirty);
+        ok &= !g.wingman.rocket.active && !g.wingman.bomb.active &&
+            g.takeoffState==TAKEOFF_STATE_READY;
+        ok &= g.rockets==(mode==GAME_MODE_ENHANCED?9:10) &&
+            g.bombs==(mode==GAME_MODE_ENHANCED?9:10);
+    }
+    writeClassicContractResult(ok?"PASS p2-deck-weapons":"FAIL p2-deck-weapons"); return ok?0:1;
 #endif
 
 #if HAR_HEADLESS_EASY_SUPPLY_TEST_ONLY
@@ -28257,8 +28303,9 @@ int main(void) {
 					 * lift. This also swaps the parked carrier composite for the
 					 * live Wingman sprite at the moment P2 presses Up. */
 					if (game.wingmanControl == WINGMAN_CONTROL_PLAYER2) {
-						updateWingmanPlayer2Control(&game, worldBuffers,
-							&input2, &previousInput2, &hudDirty);
+						updatePlayer2WhileCarrierReady(&game, worldBuffers,
+							&input2, &previousInput2, &hudDirty,
+                            &pendingEnemySpriteUpdate);
 						if (game.wingman.active)
 							pendingWingmanSpriteUpdate = 1;
 					}

@@ -1,3 +1,15 @@
+# Harrier Attack Reloaded Amiga - Public Beta 7
+
+Boot the main ADF to play v0.9.0-beta.7. This beta still needs polish, and feedback on two-player balance and real Amiga hardware is welcome.
+
+## Changes since Release Candidate 1
+
+- Player 2 can take off first and fire rockets or drop bombs while Player 1 is still parked. Both weapons now move and expire normally.
+- Press F1 during a two-human-player game to swap controllers. Press again to swap back.
+- On Enhanced skill levels 1 and 2, the Harrier gets about 10% more effective shielding against ordinary incoming damage.
+- Oil-platform waves include a service break. Radar warns before attacks resume and during carrier defence.
+- A damaged Battleship calls in fighters from ahead and behind. Extra supply drops help crews replenish ammunition and recover a lost second player.
+
 # Harrier Attack Reloaded Amiga - Public Beta 6
 
 **v0.9.0-beta.6 is a public prerelease.** This is still a radical beta :-)

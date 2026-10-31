@@ -1,7 +1,7 @@
-HARRIER ATTACK RELOADED - AMIGA PUBLIC BETA 6
+HARRIER ATTACK RELOADED - AMIGA PUBLIC BETA 7
 ===========================================
 
-Version: v0.9.0-beta.6 (prerelease)
+Version: v0.9.0-beta.7 (prerelease)
 
 Thank you for trying this unofficial, non-commercial Amiga port.
 
