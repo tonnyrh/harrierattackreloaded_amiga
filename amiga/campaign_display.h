@@ -64,8 +64,13 @@ static void freezeCampaignDisplay(UBYTE* storage,UWORD* liveCopper,const UBYTE* 
   memcpy(next,sources[i],words[i]*2);next+=words[i]*2;
  }
  UWORD* stillCopper=(UWORD*)next;
- campaignFrozenDisplay=1;
- buildGameHudCopper(stillCopper,storage,stillHud,(const UWORD*)gamePalette,0,0,
+ /* Drop the live scene's fighter/projectile images and Wingman attach
+  * plane before the ocean Copper list first becomes visible. */
+ if(oceanTransit) {
+  for(UBYTE i=2;i<6;i++)hideHardwareSprite(sprites[i]);
+  hideHardwareSprite(sprites[7]);
+ }
+ buildGameHudCopper(stillCopper,oceanTransit?GAME_DISPLAY_OCEAN_TRANSIT:GAME_DISPLAY_STILL,storage,stillHud,(const UWORD*)gamePalette,0,0,
   sprites[0],sprites[1],sprites[2],sprites[3],sprites[4],sprites[5],sprites[6],sprites[7]);
 #if HAR_HEADLESS_CAMPAIGN_TRANSITION_TEST
  memset(campaignTransitHardwareSprites,0,sizeof(campaignTransitHardwareSprites));
@@ -79,10 +84,9 @@ static void freezeCampaignDisplay(UBYTE* storage,UWORD* liveCopper,const UBYTE* 
   }
  }
 #endif
- campaignFrozenDisplay=0;
  WaitVbl();custom->cop1lc=(ULONG)stillCopper;custom->copjmp1=0x7fff;
  /* Subsequent palette/session resets must patch the hidden live list only. */
- buildGameHudCopper(liveCopper,world,hud,(const UWORD*)gamePalette,
+ buildGameHudCopper(liveCopper,GAME_DISPLAY_LIVE,world,hud,(const UWORD*)gamePalette,
   scrollDelayForBplcon1(displayScrollXForGameState(g)),displayByteOffsetForGameState(g),
   player,attach,crash,enemyAttach,enemy,missile,wing,wingAttach);
 }

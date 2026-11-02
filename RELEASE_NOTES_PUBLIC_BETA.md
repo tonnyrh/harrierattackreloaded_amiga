@@ -5,6 +5,9 @@ through the terrain and instrument panel on an Amiga 500. The fix applies
 to CPU and human Wingmen. Boot the new ADF to use it. Restoring a WinUAE
 savestate from Beta 7 also restores that version of the game code.
 
+Over open water, the rear fighter and the Wingman each have their own
+display channel so the pursuing fighter is visible when it fires.
+
 Tested in cycle-exact A500 WinUAE with Enhanced at 100% tempo. A first-mission
 flight with the CPU Wingman covered all 16 fine-scroll positions at the left
 edge of the playfield. Feedback from real Amigas is welcome.

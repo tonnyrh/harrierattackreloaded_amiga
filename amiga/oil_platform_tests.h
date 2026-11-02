@@ -138,7 +138,7 @@ static UBYTE oilContract(void) {
  if(!bitmap)return 13;
  if(oilPlatformTiles[4])return 27; /* top-left stays transparent */
  static UWORD copper[2048];
- buildGameHudCopper(copper,bitmap,bitmap,(const UWORD*)gamePalette,0,displayByteOffsetForGameState(&g),a,b,a,b,a,b,a,b);
+ buildGameHudCopper(copper,GAME_DISPLAY_LIVE,bitmap,bitmap,(const UWORD*)gamePalette,0,displayByteOffsetForGameState(&g),a,b,a,b,a,b,a,b);
  if(copper[2]!=offsetof(struct Custom,ddfstrt) || copper[3]!=0x38)return 28;
  if(displayByteOffsetForGameState(&g)!=scrollLocalByteOffset(0)+2)return 29;
  /* Platform damage must never replace carrier health in the cockpit. */

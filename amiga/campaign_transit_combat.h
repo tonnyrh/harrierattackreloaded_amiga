@@ -304,7 +304,10 @@ static UBYTE campaignTransitContract(const GameState* source) {
  if(campaignTransitHardwareSprites[2]!=(ULONG)campaignTransitSprites[4] ||
     campaignTransitHardwareSprites[3]!=(ULONG)campaignTransitSprites[3] ||
     campaignTransitHardwareSprites[4]!=(ULONG)campaignTransitSprites[5] ||
-    campaignTransitHardwareSprites[5]!=(ULONG)campaignTransitSprites[2])return 13;
+    campaignTransitHardwareSprites[5]!=(ULONG)campaignTransitSprites[2] ||
+    campaignTransitHardwareSprites[6]!=(ULONG)campaignTransitSprites[6] ||
+    campaignTransitHardwareSprites[7]!=(ULONG)campaignTransitSprites[7] ||
+    campaignTransitSprites[7][0] || campaignTransitSprites[7][1])return 13;
  g.playerX=48;g.playerY=40;g.aircraftFailureState=g.ejectState=g.gameOver=0;
  g.defence.phase=0;g.landingState=LANDING_STATE_NONE;
  in.fire=1;campaignTransitWeapons(&c,&g,&in,&in2);

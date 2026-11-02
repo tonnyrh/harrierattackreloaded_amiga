@@ -6334,15 +6334,23 @@ static void buildMenuCopper(USHORT* copper, const UBYTE* screen,
 	*copPtr++ = 0xfffe;
 }
 
-static UBYTE campaignFrozenDisplay;
+typedef enum {
+    GAME_DISPLAY_LIVE,
+    GAME_DISPLAY_STILL,
+    GAME_DISPLAY_OCEAN_TRANSIT
+} GameDisplayMode;
 /* A scrolling OCS playfield can steal the second DMA slot of sprite 6.
  * Reserve 4/5 as an attached pair for cooperative sessions. Shots use
  * their existing playfield renderer when this pair belongs to Wingman. */
 static UBYTE wingmanUsesAttachedPair;
 
-static void buildGameHudCopper(USHORT* copper, const UBYTE* world, const UBYTE* hud, const UWORD* palette, UWORD scrollDelay, USHORT byteOffset, const UWORD* playerSprite, const UWORD* playerAttachSprite, const UWORD* crashPart1Sprite, const UWORD* enemyAttachSprite, const UWORD* enemySprite, const UWORD* enemyMissileSprite, const UWORD* wingmanSprite, const UWORD* unusedSprite7) {
+static void buildGameHudCopper(USHORT* copper, GameDisplayMode displayMode, const UBYTE* world, const UBYTE* hud, const UWORD* palette, UWORD scrollDelay, USHORT byteOffset, const UWORD* playerSprite, const UWORD* playerAttachSprite, const UWORD* crashPart1Sprite, const UWORD* enemyAttachSprite, const UWORD* enemySprite, const UWORD* enemyMissileSprite, const UWORD* wingmanSprite, const UWORD* unusedSprite7) {
 	USHORT* copPtr = copper;
 	const UBYTE* planes[SCREEN_PLANES];
+    UBYTE campaignFrozenDisplay = displayMode != GAME_DISPLAY_LIVE;
+    /* The compact ocean view has no left prefetch. Its second fighter gets
+     * channels 4/5, and its independent Wingman sprite uses channel 6. */
+    UBYTE useWingmanPair = wingmanUsesAttachedPair && displayMode != GAME_DISPLAY_OCEAN_TRANSIT;
     UBYTE narrow = campaignFrozenDisplay || (oil.active && !oil.approach);
     UWORD worldRowBytes = campaignFrozenDisplay ? SCREEN_ROW_BYTES : GAME_WORLD_ROW_BYTES;
 
@@ -6389,10 +6397,10 @@ static void buildGameHudCopper(USHORT* copper, const UBYTE* world, const UBYTE* 
 	 * is still borrowed for player crash part 2 while the enemy is hidden. */
 	copPtr = copSetSprites(copPtr, playerSprite, playerAttachSprite,
 		enemySprite, enemyAttachSprite,
-        wingmanUsesAttachedPair ? wingmanSprite : enemyMissileSprite,
-        wingmanUsesAttachedPair ? unusedSprite7 : crashPart1Sprite,
-        wingmanUsesAttachedPair ? unusedSprite7 + PLAYER_SPRITE_WORDS - 2 : wingmanSprite,
-        wingmanUsesAttachedPair ? unusedSprite7 + PLAYER_SPRITE_WORDS - 2 : unusedSprite7);
+        useWingmanPair ? wingmanSprite : enemyMissileSprite,
+        useWingmanPair ? unusedSprite7 : crashPart1Sprite,
+        useWingmanPair ? unusedSprite7 + PLAYER_SPRITE_WORDS - 2 : wingmanSprite,
+        useWingmanPair ? unusedSprite7 + PLAYER_SPRITE_WORDS - 2 : unusedSprite7);
 
 	for (int color = 0; color < 32; color++) {
         /* Enhanced tracers need pure white, not the warm HUD white ($FFA).
@@ -26846,7 +26854,7 @@ static void startGameSession(GameState* game,
 	if(!wingmanUsesAttachedPair && !oil.active) hideHardwareSprite(unusedSprite7);
 	if(campaign.transition) return; /* Present only after the new scene is ready. */
 	UWORD displayScrollX = displayScrollXForGameState(game);
-	buildGameHudCopper(copper, worldBuffers[*activeWorldBuffer], hudBuffer, (const UWORD*)gamePalette,
+	buildGameHudCopper(copper, GAME_DISPLAY_LIVE, worldBuffers[*activeWorldBuffer], hudBuffer, (const UWORD*)gamePalette,
 		scrollDelayForBplcon1(displayScrollX), displayByteOffsetForGameState(game),
 		playerSprite, playerAttachSprite, crashPart1Sprite, enemyAttachSprite, enemySprite, enemyMissileSprite, wingmanSprite, unusedSprite7);
 	custom->copjmp1 = 0x7fff;
@@ -27152,7 +27160,7 @@ int main(void) {
             commitWingmanSprite();
             if(oil.completed==1) {
                 oil.completed=2;
-                buildGameHudCopper(copper,worldBuffers[activeWorldBuffer],hudBuffer,(const UWORD*)gamePalette,
+                buildGameHudCopper(copper, GAME_DISPLAY_LIVE,worldBuffers[activeWorldBuffer],hudBuffer,(const UWORD*)gamePalette,
                     scrollDelayForBplcon1(game.scrollX),displayByteOffsetForGameState(&game),
                     playerSprite,playerAttachSprite,crashPart1Sprite,enemyAttachSprite,enemySprite,
                     enemyMissileSprite,wingmanSprite,unusedSprite7);
@@ -27673,7 +27681,7 @@ int main(void) {
             if(battleship.active)battleshipDrawHud(hudBuffer);
             updatePlayerSprite(playerSprite,playerAttachSprite,&game);
             prepareWingmanDisplay(wingmanSprite,unusedSprite7,&game);
-            buildGameHudCopper(copper,worldBuffers[activeWorldBuffer],hudBuffer,(const UWORD*)gamePalette,
+            buildGameHudCopper(copper, GAME_DISPLAY_LIVE,worldBuffers[activeWorldBuffer],hudBuffer,(const UWORD*)gamePalette,
                 scrollDelayForBplcon1(game.scrollX),displayByteOffsetForGameState(&game),playerSprite,playerAttachSprite,
                 crashPart1Sprite,enemyAttachSprite,enemySprite,enemyMissileSprite,wingmanSprite,unusedSprite7);
 #if HAR_HEADLESS_CAMPAIGN_TRANSITION_TEST
@@ -27834,7 +27842,7 @@ int main(void) {
 			} else if (Pressed(input.space, previousInput.space)) {
 				telemetryStatsPaused = 0;
 				UWORD displayScrollX = displayScrollXForGameState(&game);
-				buildGameHudCopper(copper, worldBuffers[activeWorldBuffer], hudBuffer, (const UWORD*)gamePalette,
+				buildGameHudCopper(copper, GAME_DISPLAY_LIVE, worldBuffers[activeWorldBuffer], hudBuffer, (const UWORD*)gamePalette,
 					scrollDelayForBplcon1(displayScrollX), displayByteOffsetForGameState(&game),
 					playerSprite, playerAttachSprite, crashPart1Sprite, enemyAttachSprite, enemySprite, enemyMissileSprite, wingmanSprite, unusedSprite7);
 				custom->copjmp1 = 0x7fff;
@@ -28362,7 +28370,7 @@ int main(void) {
                     if(!!wasOilApproach != !!oil.approach) {
                         /* Scrolling transit uses prefetch; stationary VTOL
                          * releases that DMA slot for P2's attached sprite. */
-                        buildGameHudCopper(copper,worldBuffers[activeWorldBuffer],hudBuffer,(const UWORD*)gamePalette,
+                        buildGameHudCopper(copper, GAME_DISPLAY_LIVE,worldBuffers[activeWorldBuffer],hudBuffer,(const UWORD*)gamePalette,
                             scrollDelayForBplcon1(game.scrollX),displayByteOffsetForGameState(&game),playerSprite,playerAttachSprite,
                             crashPart1Sprite,enemyAttachSprite,enemySprite,enemyMissileSprite,wingmanSprite,unusedSprite7);
                     }
