@@ -12,7 +12,7 @@ kept here.
 
 ## Project status
 
-**Public Beta 7 (v0.9.0-beta.7) is available for testing.** The main ADF integrates
+**Public Beta 8 (v0.9.0-beta.8) is available for testing.** The main ADF integrates
 terrain/city missions, carrier defence, oil-platform defence and Battleship.
 Enhanced follows a repeating three-sortie campaign, with open-sea transitions
 and increasing difficulty. Classic retains its regular mission loop.

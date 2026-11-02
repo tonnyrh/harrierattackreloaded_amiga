@@ -14,7 +14,7 @@
 #include <stddef.h>
 #include <string.h>
 #include "assets/harrier_menu_text.h"
-#define HAR_BUILD_LABEL "PUBLIC BETA 7"
+#define HAR_BUILD_LABEL "PUBLIC BETA 8"
 #ifndef HAR_CARRIER_BLITTER
 #define HAR_CARRIER_BLITTER 1
 #endif
@@ -6335,6 +6335,10 @@ static void buildMenuCopper(USHORT* copper, const UBYTE* screen,
 }
 
 static UBYTE campaignFrozenDisplay;
+/* A scrolling OCS playfield can steal the second DMA slot of sprite 6.
+ * Reserve 4/5 as an attached pair for cooperative sessions. Shots use
+ * their existing playfield renderer when this pair belongs to Wingman. */
+static UBYTE wingmanUsesAttachedPair;
 
 static void buildGameHudCopper(USHORT* copper, const UBYTE* world, const UBYTE* hud, const UWORD* palette, UWORD scrollDelay, USHORT byteOffset, const UWORD* playerSprite, const UWORD* playerAttachSprite, const UWORD* crashPart1Sprite, const UWORD* enemyAttachSprite, const UWORD* enemySprite, const UWORD* enemyMissileSprite, const UWORD* wingmanSprite, const UWORD* unusedSprite7) {
 	USHORT* copPtr = copper;
@@ -6384,8 +6388,11 @@ static void buildGameHudCopper(USHORT* copper, const UBYTE* world, const UBYTE* 
 	/* Channels 2+3 form an attached pair for the CPC+ enemy plane. Channel 3
 	 * is still borrowed for player crash part 2 while the enemy is hidden. */
 	copPtr = copSetSprites(copPtr, playerSprite, playerAttachSprite,
-		enemySprite, enemyAttachSprite, enemyMissileSprite, crashPart1Sprite,
-		wingmanSprite, unusedSprite7);
+		enemySprite, enemyAttachSprite,
+        wingmanUsesAttachedPair ? wingmanSprite : enemyMissileSprite,
+        wingmanUsesAttachedPair ? unusedSprite7 : crashPart1Sprite,
+        wingmanUsesAttachedPair ? unusedSprite7 + PLAYER_SPRITE_WORDS - 2 : wingmanSprite,
+        wingmanUsesAttachedPair ? unusedSprite7 + PLAYER_SPRITE_WORDS - 2 : unusedSprite7);
 
 	for (int color = 0; color < 32; color++) {
         /* Enhanced tracers need pure white, not the warm HUD white ($FFA).
@@ -17811,7 +17818,7 @@ static void buildP2VtolSprite(UWORD* sprite, UWORD* attach, WORD x, WORD y, UBYT
 }
 /* Wingman uses channel 6. Channel 7 is independent and is used by the
  * player's ejector-seat/parachute sequence. */
-static void updateWingmanSprite(UWORD* sprite, UWORD* unusedSprite7, const GameState* game) {
+static UBYTE updateWingmanSprite(UWORD* sprite, UWORD* unusedSprite7, const GameState* game) {
     if(!((oil.active && !oil.approach && oil.p2Present && !oil.cpuState && !game->gameOver) ||
         (!oil.active && !game->defence.phase && game->gameMode==GAME_MODE_ENHANCED &&
         game->wingmanControl==WINGMAN_CONTROL_PLAYER2 && game->landingState==LANDING_STATE_HOVER && game->wingman.active)))
@@ -17820,7 +17827,7 @@ static void updateWingmanSprite(UWORD* sprite, UWORD* unusedSprite7, const GameS
     if(oil.active && !oil.approach) {
         wingmanCrosshairPayload=1;
         if(game->gameOver || (!oil.p2Present && !oil.cpuState)) {
-            hideHardwareSprite(sprite);if(unusedSprite7)hideHardwareSprite(unusedSprite7);return;
+            hideHardwareSprite(sprite);if(unusedSprite7)hideHardwareSprite(unusedSprite7);return 1;
         }
         if(oil.cpuState==1) {
             if(unusedSprite7)hideHardwareSprite(unusedSprite7);
@@ -17835,7 +17842,7 @@ static void updateWingmanSprite(UWORD* sprite, UWORD* unusedSprite7, const GameS
                 sprite[2+y*2]=a;sprite[3+y*2]=b;
             }
             sprite[2+HAR_CPC_PARACHUTE_HEIGHT*2]=sprite[3+HAR_CPC_PARACHUTE_HEIGHT*2]=0;
-            return;
+            return 1;
         }
         if(oil.cpuState) {
             if(unusedSprite7)hideHardwareSprite(unusedSprite7);
@@ -17850,16 +17857,16 @@ static void updateWingmanSprite(UWORD* sprite, UWORD* unusedSprite7, const GameS
                 sprite[3+row*2]=(UWORD)(src[4]&src[1])<<8;
             }
             sprite[18]=sprite[19]=0;
-            return;
+            return 1;
         }
         buildP2VtolSprite(sprite,unusedSprite7,game->wingman.interceptScreenX,
             game->wingman.screenY,oil.pose);
-        return;
+        return 1;
     }
     if (game->gameMode == GAME_MODE_ENHANCED && game->defence.phase && !oil.approach) {
         wingmanCrosshairPayload = 1;
         if (game->wingmanControl != WINGMAN_CONTROL_PLAYER2 || game->defence.phase == DEFENCE_SINKING) {
-            hideHardwareSprite(sprite); return;
+            hideHardwareSprite(sprite); return 1;
         }
         memset(sprite, 0, PLAYER_SPRITE_WORDS * sizeof(UWORD));
         setHardwareSpritePosition(sprite, PLAYER_SPRITE_HEIGHT, game->defence.aimX - 3, game->defence.aimY - 3);
@@ -17867,7 +17874,7 @@ static void updateWingmanSprite(UWORD* sprite, UWORD* unusedSprite7, const GameS
             UWORD bits = row == 3 ? 0xee00 : (row == 2 || row == 4 ? 0 : 0x1000);
             sprite[2 + row * 2] = bits; sprite[3 + row * 2] = bits;
         }
-        return;
+        return 1;
     }
 
     if(game->gameMode==GAME_MODE_ENHANCED && game->wingmanControl==WINGMAN_CONTROL_PLAYER2 &&
@@ -17875,7 +17882,7 @@ static void updateWingmanSprite(UWORD* sprite, UWORD* unusedSprite7, const GameS
         wingmanCrosshairPayload=1;
         buildP2VtolSprite(sprite,unusedSprite7,game->wingman.interceptScreenX,
             game->wingman.screenY,game->wingman.landingVtol?game->wingman.landingPose:1);
-        return;
+        return 1;
     }
 	/* The CPC pixels and pen mapping are immutable.  Converting all 16x16
 	 * pixels through a function pointer on every movement frame used to cost
@@ -17896,7 +17903,9 @@ static void updateWingmanSprite(UWORD* sprite, UWORD* unusedSprite7, const GameS
     if (game->gameMode == GAME_MODE_ENHANCED && game->defence.phase)
         landingArtwork = !oil.approach || game->lowSpeedLanding;
 	(void)unusedSprite7;
-	if (wingmanCrosshairPayload || payloadSprite != sprite || payloadLanding != landingArtwork || payloadPose != pose) {
+	UBYTE artworkChanged = wingmanCrosshairPayload || payloadSprite != sprite ||
+        payloadLanding != landingArtwork || payloadPose != pose;
+    if (artworkChanged) {
         if (!pose)
             buildSpriteFromCpcPlusHalves(sprite, PLAYER_SPRITE_HEIGHT, 0, 0,
                 harrierFront, harrierFront + 8, cpcPlusPenToWingmanHardwareColor);
@@ -17931,31 +17940,62 @@ static void updateWingmanSprite(UWORD* sprite, UWORD* unusedSprite7, const GameS
 		 wingman->mode != WINGMAN_LANDING_DECK &&
 		 wingman->mode != WINGMAN_PLAYER2_FLIGHT)) {
 		hideHardwareSprite(sprite);
-		return;
+		return artworkChanged;
 	}
 
 	WORD screenX = wingmanScreenX(game);
 	WORD screenY = wingman->screenY;
 	setHardwareSpritePosition(sprite, PLAYER_SPRITE_HEIGHT, screenX, screenY);
+    return artworkChanged;
+}
+
+/* Pens 1..3 in single channel 6 use colours 29..31. In an attached
+ * pair those same colours are pens 13..15. Keep the two low planes and
+ * set both high planes wherever either low plane is opaque. */
+static UBYTE prepareWingmanDisplay(UWORD* sprite, UWORD* attach, const GameState* game) {
+    UBYTE artworkChanged = updateWingmanSprite(sprite, attach, game);
+    if (!wingmanUsesAttachedPair) return artworkChanged;
+
+    attach[0] = sprite[0];
+    attach[1] = (sprite[0] || sprite[1]) ? sprite[1] | HW_SPRITE_ATTACH_BIT : 0;
+    if (artworkChanged) {
+        for (UBYTE i = 2; i < PLAYER_SPRITE_WORDS - 2; i += 2) {
+            UWORD opaque = sprite[i] | sprite[i + 1];
+            attach[i] = attach[i + 1] = opaque;
+        }
+        attach[PLAYER_SPRITE_WORDS - 2] = attach[PLAYER_SPRITE_WORDS - 1] = 0;
+    }
+    return artworkChanged;
 }
 
 /* Prepare in CPU memory; only publish during vertical blank. */
 static UWORD wingmanStagedSprite[PLAYER_SPRITE_WORDS];
 static UWORD oilStagedAttach[PLAYER_SPRITE_WORDS];
 static UWORD* wingmanStagedTarget;
-static UBYTE wingmanSpritePending;
+static UBYTE wingmanSpritePending, wingmanPixelsPending;
 static void stageWingmanSprite(UWORD* target, const GameState* game) {
-    updateWingmanSprite(wingmanStagedSprite, oilStagedAttach, game);
-    wingmanStagedTarget = target; wingmanSpritePending = 1;
+    wingmanPixelsPending |= prepareWingmanDisplay(wingmanStagedSprite, oilStagedAttach, game);
+    if (wingmanStagedTarget != target) wingmanPixelsPending = 1;
+    wingmanStagedTarget = target;
+    wingmanSpritePending = 1;
 }
 static void commitWingmanSprite(void) {
     if (!wingmanSpritePending) return;
-    memcpy(wingmanStagedTarget, wingmanStagedSprite, sizeof(wingmanStagedSprite));
-    if(oilAttachTarget) {
-        if(oil.active) memcpy(oilAttachTarget,oilStagedAttach,sizeof(oilStagedAttach));
-        else hideHardwareSprite(oilAttachTarget);
+    if (wingmanPixelsPending) {
+        memcpy(wingmanStagedTarget, wingmanStagedSprite, sizeof(wingmanStagedSprite));
+        if (oilAttachTarget && (wingmanUsesAttachedPair || oil.active))
+            memcpy(oilAttachTarget, oilStagedAttach, sizeof(oilStagedAttach));
+    } else {
+        wingmanStagedTarget[0] = wingmanStagedSprite[0];
+        wingmanStagedTarget[1] = wingmanStagedSprite[1];
+        if (oilAttachTarget && (wingmanUsesAttachedPair || oil.active)) {
+            oilAttachTarget[0] = oilStagedAttach[0];
+            oilAttachTarget[1] = oilStagedAttach[1];
+        }
     }
-    wingmanSpritePending = 0;
+    if (oilAttachTarget && !wingmanUsesAttachedPair && !oil.active)
+        hideHardwareSprite(oilAttachTarget);
+    wingmanSpritePending = wingmanPixelsPending = 0;
 }
 
 /* Menu review: addCpcHitSmokeAtColumnRow() marks smoke at the exact hit
@@ -26407,6 +26447,14 @@ static void updateHardwareProjectileChain(UWORD* sprite, const GameState* game) 
 
 static void updateHardwarePlayerRocket(UWORD* sprite, const GameState* game) {
     static UBYTE payloadMode = 255;
+    if (wingmanUsesAttachedPair) {
+        hardwareProjectileVisible = 0;
+        hardwareProjectileWeapon = 0;
+#if HAR_HARDWARE_PROJECTILE_CHAIN
+        hardwareProjectileChainCount = 0;
+#endif
+        return;
+    }
     if (payloadMode != game->gameMode) {
         hardwareProjectilePayloadOwner = 0;
         payloadMode = game->gameMode;
@@ -26506,6 +26554,42 @@ static UBYTE referenceHardwareProjectileChainMatches(void) {
 	return matched;
 }
 #endif
+static UBYTE referenceWingmanDisplayMatches(void) {
+    static GameState game;
+    UWORD body[PLAYER_SPRITE_WORDS] = {0}, attach[PLAYER_SPRITE_WORDS] = {0};
+    UWORD expected[PLAYER_SPRITE_WORDS];
+    UBYTE ok = 1;
+    wingmanUsesAttachedPair = 1;
+    oilAttachTarget = attach;
+    game.wingman.active = 1;
+    game.wingman.mode = WINGMAN_PLAYER2_FLIGHT;
+    game.wingman.screenY = 24;
+    game.wingman.interceptScreenX = 114;
+    for (UBYTE step = 0; step < 4; ++step) {
+        game.wingman.active = step != 2;
+        game.wingman.interceptScreenX++;
+        stageWingmanSprite(body, &game);
+        commitWingmanSprite();
+        if (!game.wingman.active) {
+            ok &= !(body[0] | body[1] | attach[0] | attach[1]);
+            continue;
+        }
+        buildSpriteFromCpcPlusHalves(expected, PLAYER_SPRITE_HEIGHT,
+            game.wingman.interceptScreenX, game.wingman.screenY,
+            harCpcWingmanFlyingLeftPixels, harCpcWingmanFlyingRightPixels,
+            cpcPlusPenToWingmanHardwareColor);
+        for (UBYTE i = 0; i < PLAYER_SPRITE_WORDS; ++i) ok &= body[i] == expected[i];
+        ok &= attach[0] == body[0] &&
+            attach[1] == (body[1] | HW_SPRITE_ATTACH_BIT);
+        for (UBYTE i = 2; i < PLAYER_SPRITE_WORDS; i += 2) {
+            UWORD opaque = expected[i] | expected[i + 1];
+            ok &= attach[i] == opaque && attach[i + 1] == opaque;
+        }
+    }
+    wingmanUsesAttachedPair = 0;
+    oilAttachTarget = wingmanStagedTarget = 0;
+    return ok;
+}
 static UBYTE referenceHardwareProjectileEligibilityMatches(void) {
 	static GameState fixture;
 	memset(&fixture, 0, sizeof(fixture));
@@ -26541,7 +26625,7 @@ static UBYTE referenceHardwareProjectileEligibilityMatches(void) {
 #if HAR_HARDWARE_PROJECTILE_CHAIN
 	if (!referenceHardwareProjectileChainMatches()) return 0;
 #endif
-	return 1;
+	return referenceWingmanDisplayMatches();
 }
 #endif
 #endif
@@ -26694,6 +26778,7 @@ static void startGameSession(GameState* game,
 	ammoForGame(game, &game->bombs, &game->rockets);
 	game->wingmanControl = wingmanControl <= WINGMAN_CONTROL_PLAYER2 ?
 		wingmanControl : WINGMAN_CONTROL_OFF;
+    wingmanUsesAttachedPair = HAR_CRASH_DEBRIS_BOBS && game->wingmanControl != WINGMAN_CONTROL_OFF;
 	/* CPC movesecondharrierlandingfrigate scrolls the grey second Harrier
 	 * with both the start and end carrier specifically when Wingman control
 	 * is OFF. CPU/Player 2 modes also begin with it parked, then remove the
@@ -26755,9 +26840,10 @@ static void startGameSession(GameState* game,
 	updateEnemySprite(enemySprite, enemyAttachSprite, game);
 	updateEnemyMissileSprite(enemyMissileSprite, game);
 	wingmanSpritePending = 0;
+    wingmanPixelsPending = 1;
 	oilAttachTarget=unusedSprite7;
-	updateWingmanSprite(wingmanSprite, unusedSprite7, game);
-	if(!oil.active) hideHardwareSprite(unusedSprite7);
+	prepareWingmanDisplay(wingmanSprite, unusedSprite7, game);
+	if(!wingmanUsesAttachedPair && !oil.active) hideHardwareSprite(unusedSprite7);
 	if(campaign.transition) return; /* Present only after the new scene is ready. */
 	UWORD displayScrollX = displayScrollXForGameState(game);
 	buildGameHudCopper(copper, worldBuffers[*activeWorldBuffer], hudBuffer, (const UWORD*)gamePalette,
@@ -27586,7 +27672,7 @@ int main(void) {
             drawHudBuffer(hudBuffer,&game,highScore,0);
             if(battleship.active)battleshipDrawHud(hudBuffer);
             updatePlayerSprite(playerSprite,playerAttachSprite,&game);
-            updateWingmanSprite(wingmanSprite,unusedSprite7,&game);
+            prepareWingmanDisplay(wingmanSprite,unusedSprite7,&game);
             buildGameHudCopper(copper,worldBuffers[activeWorldBuffer],hudBuffer,(const UWORD*)gamePalette,
                 scrollDelayForBplcon1(game.scrollX),displayByteOffsetForGameState(&game),playerSprite,playerAttachSprite,
                 crashPart1Sprite,enemyAttachSprite,enemySprite,enemyMissileSprite,wingmanSprite,unusedSprite7);
