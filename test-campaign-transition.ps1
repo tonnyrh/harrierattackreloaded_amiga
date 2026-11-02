@@ -3,7 +3,8 @@
 param(
     [ValidateRange(15, 1200)]
     [int]$TimeoutSeconds = 900,
-    [string]$ExtraCcFlags = "-DHAR_HEADLESS_AUTOPLAY=1 -DHAR_HEADLESS_GAME_MODE=1 -DHAR_HEADLESS_CAMPAIGN_TRANSITION_TEST=1"
+    # The four playable ocean crossings exceed the normal 6500-frame autoplay limit.
+    [string]$ExtraCcFlags = "-DHAR_HEADLESS_AUTOPLAY=1 -DHAR_HEADLESS_GAME_MODE=1 -DHAR_HEADLESS_CAMPAIGN_TRANSITION_TEST=1 -DHAR_HEADLESS_MAX_FRAMES=12000"
 )
 
 $ErrorActionPreference = "Stop"
