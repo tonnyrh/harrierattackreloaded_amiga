@@ -111,7 +111,7 @@ the running mode. The columns are name, **SK** (starting skill), **TMP**
 (tempo percent), **LV** (effective difficulty reached), hits and score.
 Unknown settings in old records are shown as dashes.
 
-Each hit/bonus uses `base points × skill factor × tempo factor`:
+Each hit/bonus uses `base points Ã— skill factor Ã— tempo factor`:
 
 | Setting | Factor |
 | --- | ---: |
@@ -242,8 +242,8 @@ build repeats this validation. See
 dimensions, external-editor use and the protected reset workflow.
 
 
-Enhanced also includes a rare **Missile Tank**: first after 4–6 tanks in
-each mission, then approximately every 8–12 tank encounters, with at least
+Enhanced also includes a rare **Missile Tank**: first after 4â€“6 tanks in
+each mission, then approximately every 8â€“12 tank encounters, with at least
 42 columns between them so two cannot share the
 screen. Its separate 16x8 master starts as a copy of Tank. A surviving truck
 fires once when its full footprint exits the left edge, provided no enemy
