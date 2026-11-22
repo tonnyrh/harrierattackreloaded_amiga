@@ -14,7 +14,7 @@
 #include <stddef.h>
 #include <string.h>
 #include "assets/harrier_menu_text.h"
-#define HAR_BUILD_LABEL "PUBLIC BETA 8"
+#define HAR_BUILD_LABEL "RELEASE CANDIDATE 2"
 #ifndef HAR_CARRIER_BLITTER
 #define HAR_CARRIER_BLITTER 1
 #endif
@@ -1891,6 +1891,7 @@ typedef struct EnemyShipGroupDef {
 } EnemyShipGroupDef;
 
 static UBYTE keyboardDown[128];
+static UBYTE controllerSwapPending;
 static UBYTE lastKeyboardRawKey = 0xff;
 static UBYTE lastKeyboardMakeKey = RAWKEY_NONE;
 static UWORD keyboardMakeSerial = 0;
@@ -3293,7 +3294,7 @@ enum {
 	SFX_HELICOPTER,
     SFX_CARRIER_KLAXON,
     SFX_GROUND_BOUNCE, SFX_BOMBER_DRONE, SFX_DEPOT_BOOM, SFX_BATTLESHIP_HORN,
-	SFX_COUNT
+	SFX_CONTROLLER_SWAP, SFX_COUNT
 };
 
 /* Keep retrigger state tied to the enum. A separate fixed-size constant
@@ -3303,6 +3304,7 @@ static UBYTE sfxRetriggerGuard[SFX_COUNT];
 static UBYTE depotBoomReload[4], depotBoomSecond[4], depotBoomVariant;
 
 static const SfxSample sfxSamples[SFX_COUNT] = {
+    [SFX_CONTROLLER_SWAP]={sfxRadarAlarmWave,sizeof(sfxRadarAlarmWave),145,22,SFX_PRIORITY_PLAYER,SFX_PAN_ANY,3},
     [SFX_BATTLESHIP_HORN]={sfxCarrierKlaxon,sizeof(sfxCarrierKlaxon),1480,48,SFX_PRIORITY_PLAYER,SFX_PAN_ANY,160},
     [SFX_BOMBER_DRONE]={sfxBomberDrone,sizeof(sfxBomberDrone),700,20,SFX_PRIORITY_AMBIENT,SFX_PAN_ANY,12},
     [SFX_DEPOT_BOOM]={sfxGroundTargetHit1Sample,sizeof(sfxGroundTargetHit1Sample),SFX_PAULA_PERIOD,64,SFX_PRIORITY_IMPACT,SFX_PAN_ANY,
@@ -3567,6 +3569,8 @@ static void stopAllSfx(void) {
 
 static UBYTE sfxRetriggerGuardFrames(UBYTE sfxId) {
 	switch (sfxId) {
+        case SFX_CONTROLLER_SWAP:
+            return 0;
 		case SFX_FIRE:
 			return 8;
 		case SFX_BOMB:
@@ -4113,6 +4117,7 @@ static void startPendingSfxChannel(UBYTE channel) {
      * loops deliberately for its longer, fixed-duration alarm. */
 	sfxChannelSilenceQueueDelay[channel] =
 		(sfxChannelCurrentId[channel] == SFX_RADAR_ALARM ||
+         sfxChannelCurrentId[channel] == SFX_CONTROLLER_SWAP ||
          sfxChannelCurrentId[channel] == SFX_CARRIER_KLAXON ||
          sfxChannelCurrentId[channel] == SFX_BATTLESHIP_HORN ||
          sfxChannelCurrentId[channel] == SFX_BOMBER_DRONE) ? 0 : 1;
@@ -5724,6 +5729,7 @@ static UBYTE DecodeKeyboardRaw(UBYTE serialData) {
 
 static void InitInput(void) {
 	memclr(keyboardDown, sizeof(keyboardDown));
+    controllerSwapPending=0;
 	lastKeyboardRawKey = 0xff;
 	lastKeyboardMakeKey = RAWKEY_NONE;
 	keyboardMakeSerial = 0;
@@ -5743,21 +5749,25 @@ static void InitInput(void) {
 	joyFire1StableFrames = 0;
 }
 
+static void recordKeyboardRaw(UBYTE raw) {
+    UBYTE code=raw & 0x7f;
+    /* PollKeyboard can drain both make and break before gameplay reads input. */
+    if(raw==RAWKEY_F1 && !keyboardDown[code])controllerSwapPending^=1;
+    keyboardDown[code]=(raw & 0x80) ? 0 : 1;
+    lastKeyboardRawKey=raw;
+    if(!(raw & 0x80)) {
+        lastKeyboardMakeKey=code;
+        keyboardMakeSerial++;
+    }
+}
+
 static void PollKeyboard(void) {
 	for (short i = 0; i < 4; i++) {
 		UBYTE icr = ciaa->ciaicr;
 		if (!(icr & CIAICRF_SP))
 			return;
 
-		UBYTE raw = DecodeKeyboardRaw(ciaa->ciasdr);
-		UBYTE code = raw & 0x7f;
-		if (code < sizeof(keyboardDown))
-			keyboardDown[code] = (raw & 0x80) ? 0 : 1;
-		lastKeyboardRawKey = raw;
-		if (!(raw & 0x80)) {
-			lastKeyboardMakeKey = code;
-			keyboardMakeSerial++;
-		}
+        recordKeyboardRaw(DecodeKeyboardRaw(ciaa->ciasdr));
 		KeyboardAck();
 	}
 }
@@ -5943,11 +5953,14 @@ static void ReadPlayer2Input(Player2InputState* input, UBYTE gameMode) {
 
 /* Route gameplay controls only. Menu, pause and debug keys retain ownership. */
 static UBYTE routeHumanControllers(InputState* p1,Player2InputState* p2,
-    UBYTE eligible,UBYTE f1,UBYTE* swapped,UBYTE* previousF1) {
-    UBYTE changed=eligible && f1 && !*previousF1;
-    *previousF1=f1;
+    UBYTE eligible,UBYTE* swapped) {
+    UBYTE changed=controllerSwapPending;
+    controllerSwapPending=0;
     if(!eligible) {*swapped=0;return 0;}
-    if(changed)*swapped^=1;
+    if(changed) {
+        *swapped^=1;
+        playSfx(SFX_CONTROLLER_SWAP);
+    }
     if(*swapped) {
         Player2InputState original={p1->up,p1->down,p1->left,p1->right,p1->fire,p1->bomb,p1->eject};
         p1->up=p2->up;p1->down=p2->down;p1->left=p2->left;p1->right=p2->right;
@@ -5962,15 +5975,14 @@ static UBYTE Pressed(UBYTE now, UBYTE previous) {
 	return now && !previous;
 }
 
-static UBYTE BombPressed(const InputState* now,
-	const InputState* previous) {
-	/* The combined fallback keeps synthetic/headless input working. Normal
-	 * controls use their independent edges so one continuously asserted
-	 * hardware source cannot mask the keyboard or another controller. */
-	return Pressed(now->bombKey, previous->bombKey) ||
-		Pressed(now->bombMouse, previous->bombMouse) ||
-		Pressed(now->bombJoystick, previous->bombJoystick) ||
-		Pressed(now->bomb, previous->bomb);
+/* Aircraft weapons and the carrier launcher require a new press. The
+ * carrier's AA cannon continues firing while its trigger is held. */
+static Player2InputState player2WeaponInput(const Player2InputState* now,
+    const Player2InputState* previous, UBYTE carrierGunner) {
+    Player2InputState actions = *now;
+    actions.bomb = Pressed(now->bomb, previous->bomb);
+    if (!carrierGunner) actions.fire = Pressed(now->fire, previous->fire);
+    return actions;
 }
 
 static UBYTE InputMask(const InputState* input) {
@@ -10580,7 +10592,7 @@ static WORD playerGroundShakeOffset(const GameState* game) {
 
 static void updatePlayerSprite(UWORD* sprite, UWORD* attachSprite, const GameState* game) {
     WORD drawX = game->playerX + playerGroundShakeOffset(game);
-    if(oil.active && oil.p1Gunner && !game->gameOver) {drawOilPlayerGun(sprite,attachSprite);return;}
+    if(oil.active && oil.p1Gunner && !game->gameOver) {drawOilPlayerGun(sprite,attachSprite,&game->defence);return;}
 	if (game->gameOver) {
 		hideHardwareSprite(sprite);
 		hideHardwareSprite(attachSprite);
@@ -10967,7 +10979,7 @@ static const char* const debugSfxNames[] = {
 	"CARRIER IDLE 2",
 	"HELICOPTER ROTOR",
     "CARRIER KLAXON",
-    "GROUND IMPACT", "BOMBER DRONE", "DEPOT DOUBLE HIT", "BATTLESHIP HORN"
+    "GROUND IMPACT", "BOMBER DRONE", "DEPOT DOUBLE HIT", "BATTLESHIP HORN", "CONTROL SWAP"
 };
 typedef char DebugSfxNamesMustMatchCount[(sizeof(debugSfxNames) / sizeof(debugSfxNames[0]) == SFX_COUNT) ? 1 : -1];
 
@@ -16919,6 +16931,10 @@ static void drawEnemyMissilePixelBob(UBYTE* bitmap, UBYTE bufferIndex,
 /* CPU masked plot of one 4x3 placement. Converting the compact row shape
  * to a 16-bit mask handles
  * both aligned and byte-straddling X positions without per-pixel divisions. */
+static const UBYTE* enhancedBombArt(UBYTE descending) {
+    return enhancedWeaponRows + 520 + (descending ? 15 : 0);
+}
+
 static void drawBombShotPixelBobPlacement(UBYTE* bitmap,
 	BombShotFootprint* footprint, UBYTE placement, UWORD bufferPixelX,
 	WORD screenY, UBYTE phase) {
@@ -16926,7 +16942,7 @@ static void drawBombShotPixelBobPlacement(UBYTE* bitmap,
         footprint->byteX[placement] = bufferPixelX >> 3;
         footprint->byteCount[placement] = drawEnhancedWeaponRows(bitmap,
             &footprint->background[placement][0][0][0], bufferPixelX, screenY,
-            enhancedWeaponRows + 520 + (phase & 1) * 15, 4, 3);
+            enhancedBombArt(phase & 1), 4, 3);
         return;
     }
 	/* Exact trimmed silhouettes from CPC tiles 40/41:
@@ -17826,6 +17842,15 @@ static void buildP2VtolSprite(UWORD* sprite, UWORD* attach, WORD x, WORD y, UBYT
 }
 /* Wingman uses channel 6. Channel 7 is independent and is used by the
  * player's ejector-seat/parachute sequence. */
+static void drawDeckGunsight(UWORD* sprite,const CarrierDefenceState* d) {
+    setHardwareSpritePosition(sprite,7,d->aimX-3,d->aimY-3);
+    for (UBYTE row=0;row<7;row++) {
+        UWORD bits=row==3 ? 0xee00 : (row==2 || row==4 ? 0 : 0x1000);
+        sprite[2+row*2]=sprite[3+row*2]=bits;
+    }
+    sprite[16]=sprite[17]=0;
+}
+
 static UBYTE updateWingmanSprite(UWORD* sprite, UWORD* unusedSprite7, const GameState* game) {
     if(!((oil.active && !oil.approach && oil.p2Present && !oil.cpuState && !game->gameOver) ||
         (!oil.active && !game->defence.phase && game->gameMode==GAME_MODE_ENHANCED &&
@@ -17876,12 +17901,7 @@ static UBYTE updateWingmanSprite(UWORD* sprite, UWORD* unusedSprite7, const Game
         if (game->wingmanControl != WINGMAN_CONTROL_PLAYER2 || game->defence.phase == DEFENCE_SINKING) {
             hideHardwareSprite(sprite); return 1;
         }
-        memset(sprite, 0, PLAYER_SPRITE_WORDS * sizeof(UWORD));
-        setHardwareSpritePosition(sprite, PLAYER_SPRITE_HEIGHT, game->defence.aimX - 3, game->defence.aimY - 3);
-        for (UBYTE row = 0; row < 7; row++) {
-            UWORD bits = row == 3 ? 0xee00 : (row == 2 || row == 4 ? 0 : 0x1000);
-            sprite[2 + row * 2] = bits; sprite[3 + row * 2] = bits;
-        }
+        drawDeckGunsight(sprite,&game->defence);
         return 1;
     }
 
@@ -23674,15 +23694,24 @@ static int runClassicGameplayContractTest(void) {
     g.skillLevel=3;ok &= easyIncomingDamage(&g,100)==100 && easyFlak>flakDamageThresholdForGame(&g);
     g.gameMode=GAME_MODE_CLASSIC;g.skillLevel=1;g.bombs=0;g.rockets=0;
     ok &= easyIncomingDamage(&g,100)==100 && neededAmmoPowerup(&g,0)==POWERUP_NONE;
-    InputState a={0};Player2InputState b2={0};UBYTE swapped=0,oldF1=0;
+    InputState a={0};Player2InputState b2={0};UBYTE swapped=0;
     a.left=a.fire=a.bombMouse=a.bomb=a.space=1;b2.right=b2.eject=1;
-    ok &= routeHumanControllers(&a,&b2,1,1,&swapped,&oldF1) && swapped;
+    /* The CIA bytes for F1 make/break can both arrive in one input poll. */
+    recordKeyboardRaw(DecodeKeyboardRaw(0x5f));
+    recordKeyboardRaw(DecodeKeyboardRaw(0x5e));
+    ok &= !KeyDown(RAWKEY_F1) && routeHumanControllers(&a,&b2,1,&swapped) && swapped;
     ok &= a.right && a.eject && !a.left && !a.fire && !a.bombMouse && a.space && b2.left && b2.fire && b2.bomb;
-    ok &= !routeHumanControllers(&a,&b2,1,1,&swapped,&oldF1) && swapped;
-    routeHumanControllers(&a,&b2,1,0,&swapped,&oldF1);
-    ok &= routeHumanControllers(&a,&b2,1,1,&swapped,&oldF1) && !swapped;
-    oldF1=0;a.left=1;b2.left=0;
-    ok &= !routeHumanControllers(&a,&b2,0,1,&swapped,&oldF1) && !swapped && a.left && !b2.left;
+    UBYTE beep=0;
+    for(UBYTE ch=0;ch<SFX_CHANNEL_COUNT;ch++)beep|=sfxPendingSample[ch]==&sfxSamples[SFX_CONTROLLER_SWAP];
+    ok &= beep && !routeHumanControllers(&a,&b2,1,&swapped) && swapped;
+    recordKeyboardRaw(RAWKEY_F1);
+    ok &= routeHumanControllers(&a,&b2,1,&swapped) && !swapped;
+    recordKeyboardRaw(RAWKEY_F1);
+    ok &= !routeHumanControllers(&a,&b2,1,&swapped) && !swapped;
+    recordKeyboardRaw(RAWKEY_F1|0x80);recordKeyboardRaw(RAWKEY_F1);
+    a.left=1;b2.left=0;
+    ok &= !routeHumanControllers(&a,&b2,0,&swapped) && !swapped && a.left && !b2.left;
+    ok &= !routeHumanControllers(&a,&b2,1,&swapped) && !swapped;
     writeClassicContractResult(ok?"PASS enhanced-easy-and-needed-ammo":"FAIL enhanced-easy-and-needed-ammo");return ok?0:1;
 #endif
 
@@ -27133,7 +27162,7 @@ int main(void) {
 	InputState previousInput;
 	Player2InputState input2;
 	Player2InputState previousInput2;
-	UBYTE controllersSwapped=0,previousSwapKey=0;
+	UBYTE controllersSwapped=0;
 	UBYTE lastInputMask = 0xff;
 
 	memset(&input2, 0, sizeof(input2));
@@ -27227,7 +27256,7 @@ int main(void) {
 
         if(routeHumanControllers(&input,&input2,
             inGameScene && !attractDemo.active && game.wingmanControl==WINGMAN_CONTROL_PLAYER2,
-            KeyDown(RAWKEY_F1),&controllersSwapped,&previousSwapKey)) {
+            &controllersSwapped)) {
             previousInput=input;previousInput2=input2;
             oil.previousFire=input2.fire;oil.previousBomb=input2.bomb;
             tempoHasPendingInput=0;
@@ -27662,7 +27691,8 @@ int main(void) {
             ULONG entryReady=campaignHardwareField();
             KPrintF("TRANSIT entry freeze=%ld reset=%ld total=%ld\n",(entryFrozen-entryStart)&65535,(entryReady-entryFrozen)&65535,(entryReady-entryStart)&65535);
 #endif
-            if(oceanTransit) prepareCampaignOceanWorld(screenBuffer,worldBuffers[activeWorldBuffer],&game);
+            if(oceanTransit) prepareCampaignOceanWorld(screenBuffer, worldBuffers[activeWorldBuffer],
+                &game, &input, &input2, &controllersSwapped);
             else initRingWorldBuffer(worldBuffers[activeWorldBuffer],scrollLeftWorldColumnForScroll(game.scrollX));
             #if HAR_HEADLESS_CAMPAIGN_TRANSITION_TEST
             if(oceanTransit) {
@@ -28355,7 +28385,8 @@ int main(void) {
 			} else if (!game.gameOver) {
                 if (fireButtonEjectRequested(&game, &input, &previousInput)) input.eject = 1;
                 if(battleship.active) {
-                    battleshipUpdate(&game,&input,&previousInput,&input2,worldBuffers);
+                    Player2InputState wingControls = player2WeaponInput(&input2, &previousInput2, 0);
+                    battleshipUpdate(&game,&input,&previousInput,&wingControls,worldBuffers);
                     pendingEnemySpriteUpdate=1;
                     pendingWingmanSpriteUpdate=pendingPlayerSpriteUpdate=pendingEnemyMissileSpriteUpdate=pendingGameScrollCopperUpdate=1;
                     if(!(battleship.clock&7)) {drawHudValues(hudBuffer,&game,highScore,0);battleshipDrawHud(hudBuffer);}
@@ -28364,7 +28395,10 @@ int main(void) {
                     game.takeoffState != TAKEOFF_STATE_ROLLING_IN) {
                     UBYTE wasOilApproach=oil.approach;
                     if(oil.active) oilUpdate(&game,&input,&previousInput,&input2,worldBuffers);
-                    else updateCarrierDefence(&game, &input, &previousInput, &input2, worldBuffers);
+                    else {
+                        Player2InputState gunControls = player2WeaponInput(&input2, &previousInput2, 1);
+                        updateCarrierDefence(&game, &input, &previousInput, &gunControls, worldBuffers);
+                    }
                     if(!oil.approach) carrierSyncSceneStatus(&game,worldBuffers);
                     if(wasOilApproach || oil.approach) pendingGameScrollCopperUpdate=1;
                     if(!!wasOilApproach != !!oil.approach) {
@@ -28937,7 +28971,7 @@ int main(void) {
 					}
 				}
 				if (game.landingState != LANDING_STATE_HOVER &&
-					BombPressed(&input, &previousInput)) {
+					Pressed(input.bomb, previousInput.bomb)) {
 					if (launchBomb(&game)) {
 						hudDirty = 1;
 						pendingCrashSpriteUpdate = 1;

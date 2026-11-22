@@ -10,7 +10,7 @@ static void oilBegin(GameState* g) {
  memset(&g->defence,0,sizeof(g->defence));
  g->defence.cargo=oil.carrierCargo;oil.carrierCargo=0;
  g->defence.hull=100; g->defence.phase=DEFENCE_ALARM;
- g->defence.phaseTicks=150; g->defence.waves=2;
+ g->defence.phaseTicks=OIL_OPENING_SERVICE_TICKS; g->defence.waves=2;
  g->defence.facing=MAVERICK_DIRECTION_RIGHT; g->defence.vtolPose=1;
  g->scrollX=0; g->playerX=52; g->playerY=48;
  g->takeoffState=TAKEOFF_STATE_AIRBORNE; g->speedLevel=0; g->lowSpeedLanding=1;
@@ -65,7 +65,7 @@ static void oilApproachUpdate(GameState* g) {
  updatePlayerFuel(g);updateEngineSound(engineSpeedForSpeedLevel(g->speedLevel),g->lowSpeedLanding);
  if(g->scrollX>=GAME_WORLD_SCROLL_PAGE_BYTES*8) {
   oil.approach=0;g->scrollX=0;g->speedLevel=0;g->lowSpeedLanding=1;
-  carrierResetVtol(d);d->fullVtol=1;d->phaseTicks=150;
+  carrierResetVtol(d);d->fullVtol=1;
   g->wingman.active=oil.p2Present;
   if(oil.cpuState){g->wingman.destroyed=1;oil.crewX=g->wingman.interceptScreenX;oil.crewY=g->wingman.screenY;}
   if(oil.p2Present)g->wingman.mode=WINGMAN_PLAYER2_FLIGHT;
@@ -116,6 +116,7 @@ static void oilP2Update(GameState* g,const Player2InputState* in) {
  if(oil.p2Landed) {
   oil.vx=oil.vy=oil.ax=oil.ay=oil.subX=oil.subY=0;
   if(!(g->defence.clock&7)) {
+   if(!g->defence.landed)serviceAircraftAmmo(g); /* Both pilots share the magazine. */
    if(oil.p2Health<100){oil.p2Health+=2;if(oil.p2Health>100)oil.p2Health=100;}
    if(oil.p2FuelQuanta<CPC_FUEL_TOTAL_QUANTA){oil.p2FuelQuanta+=4;if(oil.p2FuelQuanta>CPC_FUEL_TOTAL_QUANTA)oil.p2FuelQuanta=CPC_FUEL_TOTAL_QUANTA;}
   }
@@ -169,7 +170,7 @@ static void oilP2Update(GameState* g,const Player2InputState* in) {
   }
  }
 }
-static void oilCpuUpdate(GameState* g) {
+static void oilUpdateGun(GameState* g,const InputState* in) {
  for(UBYTE i=0;i<2;i++) carrierAdvanceBullet(g,&g->helicopterBullets[i]);
  if(oil.cpuState==1) {
   if(oil.crewX<104)oil.crewX++;else if(oil.crewX>104)oil.crewX--;
@@ -178,10 +179,17 @@ static void oilCpuUpdate(GameState* g) {
   return;
  }
  if(oil.cpuState!=2 && !oil.p1Gunner) return;
- if(!(g->defence.clock&7) && !carrierChooseAim(g)) return;
+ if(oil.p1Gunner)moveDeckGunsight(&g->defence,in->right-in->left,in->down-in->up);
+ else if(!(g->defence.clock&7) && !carrierChooseAim(g)) return;
  UBYTE target=smoothAaAimPose(g->defence.aimX-108,OIL_DECK_Y-4-g->defence.aimY);
- oil.cpuGunPose=smoothAaTurn(oil.cpuGunPose,target,g->defence.clock);
- if((g->defence.clock&7) || oil.cpuGunPose!=target || (oil.p1Gunner && !oil.p1GunFire)) return;
+ if(oil.p1Gunner) {
+  oil.cpuGunPose=target;
+  if(g->defence.gunCooldown)g->defence.gunCooldown--;
+  if(!in->fire || g->defence.gunCooldown)return;
+ } else {
+  oil.cpuGunPose=smoothAaTurn(oil.cpuGunPose,target,g->defence.clock);
+  if((g->defence.clock&7) || oil.cpuGunPose!=target)return;
+ }
  for(UBYTE i=0;i<2;i++) {
   HelicopterBullet* b=&g->helicopterBullets[i]; if(b->active) continue;
   WORD dx=g->defence.aimX-108,dy=g->defence.aimY-(OIL_DECK_Y-4);
@@ -189,6 +197,7 @@ static void oilCpuUpdate(GameState* g) {
   if(!distance) return;
   memset(b,0,sizeof(*b));b->active=1;b->worldX=108;b->y=OIL_DECK_Y-4;
   b->vx16=(LONG)dx*64/distance;b->vy16=(LONG)dy*64/distance;
+  if(oil.p1Gunner)g->defence.gunCooldown=8;
   playSfxAtTuned(SFX_FLAK_GUN_1,108,18,SFX_PAULA_PERIOD);break;
  }
 }
@@ -309,7 +318,6 @@ static void oilUpdate(GameState* g,const InputState* in,const InputState* previo
   /* Keep both pilots responsive during the loss animation. The mission
    * still ends after the same delay; a wreck must not freeze input. */
  }
- oil.p1GunFire=in->fire;
  if(oil.p1Gunner) {
   if(!oil.p2Present) {
    oil.rescuePause=125;return;
@@ -323,6 +331,7 @@ static void oilUpdate(GameState* g,const InputState* in,const InputState* previo
     * display/session reset to the common rescue path in the main loop. */
    if(g->wingmanControl==WINGMAN_CONTROL_PLAYER2 && oil.p2Present) {
     oil.p1Gunner=1;oil.cpuGunPose=3;oil.crewDropTicks=300;
+    d->aimX=108;d->aimY=48;
     g->ejectState=3;g->playerX=104;g->playerY=OIL_PLAYER_Y;
     g->defence.landed=0;carrierResetVtol(d);
    } else {
@@ -349,7 +358,7 @@ static void oilUpdate(GameState* g,const InputState* in,const InputState* previo
    if(Pressed(in->fire,previous->fire) && !d->turnTicks && !g->rocketShot.active && g->rockets) {
     carrierDefenceLaunch(g,&g->rocketShot,g->playerX+4,g->playerY,d->facing);g->rockets--;
    }
-   if(BombPressed(in,previous) && !g->bombShot.active && g->bombs) launchBomb(g);
+   if(Pressed(in->bomb,previous->bomb) && !g->bombShot.active && g->bombs) launchBomb(g);
    updateEngineSound(1,1);
   } else if(engineActive)stopSfxChannel(ENGINE_CHANNEL);
  }
@@ -357,7 +366,7 @@ static void oilUpdate(GameState* g,const InputState* in,const InputState* previo
  if(g->gameOver)return;
  oilP2Update(g,in2);
  if(platformLost)return;
- oilCpuUpdate(g);
+ oilUpdateGun(g,in);
  oilAdvanceBomb(g,&g->bombShot);
  carrierDefenceAircraft(g);serviceBomberDrone(g);carrierDefenceBombs(g);
  carrierDefenceShot(g,&g->rocketShot);
@@ -372,7 +381,7 @@ static void oilUpdate(GameState* g,const InputState* in,const InputState* previo
  carrierServiceRepair(g,d->landed?in->up:in2->up);
  serviceCarrierRepairDrop(g);oilCrewSupply(g);updatePowerup(g);
  if(d->phase==DEFENCE_ALARM) {
-  carrierTryAlarm(d);
+  if(d->phaseTicks<=100)carrierTryAlarm(d);
   if(d->phaseTicks)d->phaseTicks--;
   else {d->phase=DEFENCE_WAVE;d->wave=1;d->quota=(oilQuota(g->levelDifficulty,g->wingmanControl)+1)/2;d->spawnDelay=30;}
  } else if(d->phase==DEFENCE_WAVE && d->spawned>=d->quota && !g->enemyPlane.active && !g->helicopter.active && !g->enemyMissile.active && !carrierBombsActive(g)) {
@@ -401,8 +410,8 @@ static void oilUpdate(GameState* g,const InputState* in,const InputState* previo
 }
 
 /* Reuse the existing gun artwork and P1 sprite channel; P2 keeps channel 6. */
-static void drawOilPlayerGun(UWORD* sprite,UWORD* attach) {
- hideHardwareSprite(attach);invalidateAttachedSpriteResident(sprite);
+static void drawOilPlayerGun(UWORD* sprite,UWORD* attach,const CarrierDefenceState* d) {
+ drawDeckGunsight(attach,d);invalidateAttachedSpriteResident(sprite);
  setHardwareSpritePosition(sprite,8,104,OIL_PLAYER_Y);
  const UBYTE* gun=smoothAaPoses[oil.cpuGunPose];
  for(UBYTE row=0;row<8;row++) {

@@ -239,6 +239,12 @@ static void updateEncounterSmoke(GameState* game) {
         smoke->active = 0;
 }
 
+static void retireLandHelicopter(GameState* game) {
+    game->helicopter.active = 0;
+    game->helicopterCooldown = 750;
+    stopHelicopterAudio();
+}
+
 static __attribute__((noinline, optimize("Os"))) void updateHelicopter(GameState* game, UBYTE scrollPixels, UBYTE* bitmap) {
     serviceCarrierRepairDrop(game);
     WeaponState* heli = &game->helicopter;
@@ -264,7 +270,7 @@ static __attribute__((noinline, optimize("Os"))) void updateHelicopter(GameState
         heli->y += heli->dy;
         if (heli->y + 8 >= terrainSurfacePixelYForWorldColumn(heli->worldX >> 3)) {
             startWorldImpact(game, (WORD)(heli->worldX - game->scrollX), heli->y);
-            heli->active = 0; game->helicopterCooldown = 750;
+            retireLandHelicopter(game);
         }
     } else {
         const LevelSegmentDef* ahead = levelSegmentForWorldColumn((heli->worldX + 40) >> 3);
@@ -301,7 +307,7 @@ static __attribute__((noinline, optimize("Os"))) void updateHelicopter(GameState
     heli->x = (WORD)(heli->worldX - game->scrollX);
     updateHelicopterTravelHeading(game, previousWorldX);
     if (heli->x < -16) {
-        heli->active = 0; game->helicopterCooldown = 750; stopHelicopterAudio();
+        retireLandHelicopter(game);
     }
 }
 
@@ -351,7 +357,7 @@ static __attribute__((noinline, optimize("Os"))) void collideEnhancedEncounters(
         WeaponState* shot = rockets[i];
         if (!shot->active) continue;
         if (i < 2 && heli->active && game->helicopterHits >= 2 && rectsOverlap(shot->x, shot->y, 8, 8, heli->x, heli->y, 16, 8)) {
-            shot->active = heli->active = 0; startWorldImpact(game, heli->x, heli->y);
+            shot->active = 0; retireLandHelicopter(game); startWorldImpact(game, heli->x, heli->y);
             playSfxAt(SFX_HIT, heli->x); *weaponDirty = 1; continue;
         }
         if (i < 2 && missile->active && rectsOverlap(shot->x, shot->y, 8, 8, missile->x, missile->y, 8, 8)) {

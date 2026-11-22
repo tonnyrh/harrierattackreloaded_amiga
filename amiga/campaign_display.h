@@ -126,7 +126,8 @@ static ULONG campaignHardwareField(void) {
  ULONG value=(ULONG)ciaa->ciatodhi<<16;
  value|=(ULONG)ciaa->ciatodmid<<8;value|=ciaa->ciatodlow;return value;
 }
-static void prepareCampaignOceanWorld(UBYTE* display,UBYTE* world,GameState* g) {
+static void prepareCampaignOceanWorld(UBYTE* display,UBYTE* world,GameState* g,
+ InputState* flightInput,Player2InputState* wingInput,UBYTE* swapped) {
  /* Keep the palette and horizon. Natural entrances occur beyond the coast;
   * debug jumps deliberately replace their old scenery with this same sea. */
  /* Empty sea was prepared before display handoff, not cleared live here. */
@@ -141,8 +142,11 @@ static void prepareCampaignOceanWorld(UBYTE* display,UBYTE* world,GameState* g) 
  UWORD done=0,row=0;RenderColumn column;
  campaignTransitFrames=campaignTransitMaxFields=0;
  TransitCombat combat={0};
+ InputState in=*flightInput;
+ Player2InputState in2=*wingInput;
+ rememberTransitTriggers(&combat,&in,&in2);
 #if HAR_HEADLESS_CAMPAIGN_TRANSITION_TEST
- UBYTE combatContract=campaignTransitContract(g);
+ UBYTE combatContract=campaignTransitContract(g,display);
  UBYTE waterMoved=0,waterWrapped=0,waterFailed=0,shotVisualFailed=0,shotCommitLate=0;
  UWORD shotCommitRasterMax=0;
  KPrintF("TRANSIT combat contract=%ld\n",(ULONG)combatContract);
@@ -152,8 +156,11 @@ static void prepareCampaignOceanWorld(UBYTE* display,UBYTE* world,GameState* g) 
  UBYTE* transitHud=display+CAMPAIGN_STILL_WORLD_BYTES;
  while(combat.quiet<35) {
   serviceModMusicToCurrentVbl();
-  InputState in={0};Player2InputState in2={0};ReadInput(&in,g->wingmanControl==WINGMAN_CONTROL_PLAYER2);
-  if(g->wingmanControl==WINGMAN_CONTROL_PLAYER2)ReadPlayer2Input(&in2,g->gameMode);
+  UBYTE humanWing=g->wingmanControl==WINGMAN_CONTROL_PLAYER2;
+  ReadInput(&in,humanWing && controlProfiles[1].joystickPort==CONTROL_JOY_PORT_1);
+  if(humanWing)ReadPlayer2Input(&in2,g->gameMode);
+  if(routeHumanControllers(&in,&in2,humanWing,swapped))
+   rememberTransitTriggers(&combat,&in,&in2);
 #if HAR_HEADLESS_CAMPAIGN_TRANSITION_TEST
   /* Exercise real weapon movement, score and ammo in the live compact display. */
   in.fire=(combat.ticks%24)==0;
@@ -164,7 +171,7 @@ static void prepareCampaignOceanWorld(UBYTE* display,UBYTE* world,GameState* g) 
   UBYTE pause=in.p || in.cancel;
   if(pause && !combat.previousPause)combat.paused=!combat.paused;
   combat.previousPause=pause;
-  if(combat.paused){updateSfx();WaitVbl();continue;}
+  if(combat.paused){rememberTransitTriggers(&combat,&in,&in2);updateSfx();WaitVbl();continue;}
   UBYTE ready=bossVisualReady && cleared>=GAME_WORLD_BITMAP_BYTES && done>=count;
   /* Keep the displayed projectiles intact throughout simulation. Commit
    * old/new ink together in vertical blank, before DMA reaches the sky. */
@@ -282,6 +289,10 @@ static void prepareCampaignOceanWorld(UBYTE* display,UBYTE* world,GameState* g) 
  KPrintF("TRANSIT projectile commit max-raster=%ld late=%ld\n",(ULONG)shotCommitRasterMax,(ULONG)shotCommitLate);
  if(combatContract || !waterMoved || !waterWrapped || waterFailed || shotVisualFailed || shotCommitLate)campaignTransitClear=0;
 #endif
+ /* Carry the last sampled buttons back to the outer loop. Holding either
+  * trigger across a scene change must not count as another press. */
+ *flightInput=in; *wingInput=in2;
+ if(oil.active){oil.previousFire=in2.fire;oil.previousBomb=in2.bomb;}
  g->defence.phase=savedPhase;g->landingState=savedLanding;g->lowSpeedLanding=savedLowSpeed;
  g->impact.active=0;
  for(UBYTE i=2;i<6;i++)hideHardwareSprite(campaignTransitSprites[i]);

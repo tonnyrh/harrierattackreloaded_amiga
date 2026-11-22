@@ -12,13 +12,13 @@ kept here.
 
 ## Project status
 
-**Public Beta 8 (v0.9.0-beta.8) is available for testing.** The main ADF integrates
+**Release Candidate 2 (v0.9.0-rc.2) is available for testing.** The main ADF integrates
 terrain/city missions, carrier defence, oil-platform defence and Battleship.
 Enhanced follows a repeating three-sortie campaign, with open-sea transitions
 and increasing difficulty. Classic retains its regular mission loop.
 
-This beta still needs final polish, balancing and real-hardware
-feedback. See [release notes](RELEASE_NOTES_PUBLIC_BETA.md) and
+This release candidate still needs final polish, balancing and real-hardware
+feedback. See [release notes](RELEASE_NOTES_RC.md) and
 [campaign flow](amiga/CAMPAIGN.md) for changes and validation limits.
 
 The port includes the CPC-derived weapon, collision, scoring, difficulty and
@@ -35,13 +35,13 @@ regularly exercised in WinUAE and on faster compatible Amigas. Automated
 Classic-contract and headless full-route tests cover core gameplay and
 performance regressions.
 
-The remaining work is beta QA rather than major feature development:
+The remaining work is release QA rather than major feature development:
 extended real-hardware playtesting, edge-case and two-player regression,
 writable-media high-score verification, final packaging, and documentation
 and licence review. The CPC repository remains a read-only external gameplay
 reference and is not modified by this project.
 
-Public-beta downloads are published under
+Test releases are published under
 [GitHub Releases](https://github.com/tonnyrh/harrierattackreloaded_amiga/releases).
 Use the ADF on real hardware, MiniMig or an emulator, or use the HD ZIP for a
 Workbench/hard-disk installation. Kickstart ROMs are never included.

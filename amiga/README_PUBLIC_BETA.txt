@@ -1,7 +1,7 @@
-HARRIER ATTACK RELOADED - AMIGA PUBLIC BETA 8
-===========================================
+HARRIER ATTACK RELOADED - AMIGA RELEASE CANDIDATE 2
+================================================
 
-Version: v0.9.0-beta.8 (prerelease)
+Version: v0.9.0-rc.2 (prerelease)
 
 Thank you for trying this unofficial, non-commercial Amiga port.
 
@@ -35,13 +35,17 @@ Menu:       Up/Down select, Left/Right change, Fire selects
 Player 1:   Up/Down fly, Left/Right throttle, Ctrl rocket, Space bomb
 Enhanced:   E ejects, P pauses, Esc returns to the menu
 Player 2:   Joystick port 1 or numeric keypad; configure in Controls
+F1:         Swap P1/P2 controllers during two-human-player games (short beep)
+
+Release the rocket or bomb button before firing again. The carrier and
+oil-platform AA cannon can still fire continuously while held.
 
 Classic mode preserves the CPC gameplay contract. Enhanced mode keeps that
 foundation while adding Amiga presentation and gameplay extensions such as
 smooth scrolling, terrain radar and aircraft rescue.
 
-BETA 6 - THE INTEGRATED CAMPAIGN
--------------------------------
+THE INTEGRATED CAMPAIGN
+-----------------------
 
 One main ADF now contains all Enhanced encounters:
   Sortie 1: terrain/city, landing and carrier defence.
@@ -66,7 +70,7 @@ release a held button first. The E key is also available.
 Attack alarms use a tiny generated Paula waveform. Music and short idle
 bird cues share Chip memory. Original audio masters remain in the repository.
 
-This is still a radical beta :-) Balance, transitions, two-player edge cases
+This is a release candidate. Balance, transitions, two-player edge cases
 and real-hardware behaviour need more testing. Busy scenes can slow down;
 this is not a promise of locked 50 FPS. See release notes for test scope.
 
@@ -76,8 +80,27 @@ Classic and Enhanced have separate high scores, including Skill/Tempo data.
 Old scores are shown under Scores: Legacy. Preserve all harrier_scores*.dat,
 harrier_classic2_*.dat and harrier_enhanced2_*.dat files when upgrading.
 
-PUBLIC BETA FEEDBACK
---------------------
+RELEASE CANDIDATE 2 CHANGES
+--------------------------
+
+F1 now retains short keypresses and confirms controller swaps with a beep.
+Finishing an already falling helicopter applies the normal respawn delay,
+including when both players hit it together.
+
+At the oil platform, allow 12 seconds at full tempo to land and rearm before
+the first wave; radar warns during the last two seconds. Either pilot can
+rearm the shared magazine. A rescued P1 can aim and fire the platform gun
+manually with a visible crosshair while P2 remains airborne.
+
+Battleship launches occasional helicopters from its intact helideck. Jets
+arrive only after the deck is destroyed and ship health falls to 35 percent.
+Aircraft use a safe height above the ship; new jet raids wait while either
+pilot is over the bridge. Bomb colours now match during ocean transitions.
+
+Boot the new ADF afresh. Old USS snapshots retain the old executable.
+
+FEEDBACK
+--------
 
 Useful reports include machine/model, Kickstart version, memory expansion,
 display standard, game mode, skill level, tempo and reproduction steps.
@@ -101,7 +124,7 @@ of the Reloaded version.
 Amiga port: Tonny Roger Holm
 
 Thanks also to everyone testing on WinUAE, real Amigas and FPGA systems.
-Public-beta feedback is greatly appreciated.
+Test feedback is greatly appreciated.
 
 This is an unofficial fan project. No Kickstart ROM or Amiga system software
 is included. All names and original works remain the property of their

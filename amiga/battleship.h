@@ -56,6 +56,7 @@ static void battleshipBegin(GameState* g) {
     g->defence.phase=0; g->scrollX=0; g->takeoffState=TAKEOFF_STATE_AIRBORNE;
     g->playerX=100; g->playerY=32; g->speedLevel=2; g->respawnSafeTimer=100;
     g->defence.fullVtol=0; battleship.supplyClock=160;
+    g->helicopterCooldown=0;
     battleship.jetDelay=75;g->enemyPlane.active=g->helicopter.active=0;g->radarDetection=0;g->radarAlarmTickCountdown=0;
     carrierSceneHull=255; carrierParkedWingmanVisible=0;
 }
@@ -334,19 +335,49 @@ static void battleshipMoveWingman(GameState* g,const Player2InputState* in2) {
         if(wing->screenY>108)wing->screenY=108;
         wing->row=wing->screenY/8;
 }
+/* Pick a level flight path once per sortie. Include the fixed silhouette
+ * and every fully raised module so scrolling or a rising gun cannot put
+ * an obstacle in the fighter's path halfway through the pass. */
+static WORD battleshipAirLaneY(WORD preferredY) {
+    WORD top = BATTLESHIP_SEA_Y;
+    for (UWORD col = 0; col < sizeof(battleshipSurface); ++col)
+        if (battleshipSurface[col] < top) top = battleshipSurface[col];
+    for (UBYTE i = 0; i < BATTLESHIP_TARGETS; ++i)
+        if (battleship.targetY[i] < top) top = battleship.targetY[i];
+    WORD lowestY = top - ENEMY_SPRITE_HEIGHT - 4;
+    if (preferredY < 12) return 12;
+    return preferredY < lowestY ? preferredY : lowestY;
+}
+
+static UBYTE battleshipOverBridge(const GameState* g, WORD x) {
+    LONG left = (LONG)g->scrollX + x;
+    WORD bridge = battleshipTargetX[BATTLESHIP_BRIDGE];
+    return left + PLAYER_SPRITE_WIDTH > bridge - 24 &&
+           left < bridge + battleshipWidth(BATTLESHIP_BRIDGE) + 24;
+}
+
 /* One existing fighter sprite and the shared missile slot: no new DMA pools. */
 static void battleshipAirRaid(GameState* g) {
     WeaponState* p=&g->enemyPlane;
-    if(battleship.phase>=2 || !battleshipDesperate()) {
+    if(battleship.phase>=2 || battleship.hp[BATTLESHIP_HELIPAD] ||
+       g->helicopter.active || !battleshipDesperate()) {
         encounterRadarWarning(g,0);return;
     }
+    UBYTE nearBridge = battleshipOverBridge(g,g->playerX) ||
+        (g->wingmanControl==WINGMAN_CONTROL_PLAYER2 && g->wingman.active &&
+         battleshipOverBridge(g,wingmanScreenX(g)));
     if(!p->active) {
+        /* Give a pilot over the bridge time to complete the bombing run,
+         * then play the full radar warning before sending the next fighter. */
+        if(nearBridge && battleship.jetDelay<=50) {
+            battleship.jetDelay=50; encounterRadarWarning(g,0); return;
+        }
         if(battleship.jetDelay)battleship.jetDelay--;
         encounterRadarWarning(g,battleship.jetDelay<50);
         if(battleship.jetDelay)return;
         memset(p,0,sizeof(*p));p->active=1;p->direction=battleship.jetSide;
         battleship.jetSide^=1;p->x=p->direction?0:304;
-        p->y=g->playerY<64?g->playerY:64;if(p->y<12)p->y=12;
+        p->y=battleshipAirLaneY(g->playerY);
         g->enemyPlaneDamageState=ENEMY_PLANE_DAMAGE_NORMAL;
         battleship.jetDelay=g->levelDifficulty==1?450:350;
     }
@@ -354,7 +385,7 @@ static void battleshipAirRaid(GameState* g) {
     p->x+=p->direction?2:-2;p->worldX=p->targetWorldX=(LONG)g->scrollX+p->x;
     if(p->x<-16 || p->x>320) {p->active=0;return;}
     ++p->timer;
-    if(p->timer>=40 && p->timer<=80 && !p->dy && !g->enemyMissile.active) {
+    if(!nearBridge && p->timer>=40 && p->timer<=80 && !p->dy && !g->enemyMissile.active) {
         WeaponState* m=&g->enemyMissile;WORD tx,ty;battleshipSalvoAim(g,&tx,&ty);
         WORD dx=tx-p->x,dy=ty-p->y,extent=battleshipAbs(dx);
         if(battleshipAbs(dy)>extent)extent=battleshipAbs(dy);if(!extent)extent=1;
@@ -370,7 +401,58 @@ static void battleshipAirRaid(GameState* g) {
         p->active=0;g->wingman.active=0;g->wingman.destroyed=1;startImpact(g,p->x,p->y);
     }
 }
+/* Lift straight off the moving pad, then make one pass above the ship. */
+static void battleshipDeckHelicopter(GameState* g) {
+    WeaponState* h = &g->helicopter;
+    if (battleship.phase >= 2) return;
+    if (g->helicopterCooldown) g->helicopterCooldown--;
+    if (!h->active) {
+        if (!battleship.hp[BATTLESHIP_HELIPAD] || g->helicopterCooldown) return;
+        WORD padX = battleshipTargetX[BATTLESHIP_HELIPAD] - g->scrollX;
+        if (padX < 24 || padX > SCREEN_WIDTH - 48) return;
+        memset(h,0,sizeof(*h));
+        h->active = 1;
+        h->worldX = battleshipTargetX[BATTLESHIP_HELIPAD] + 4;
+        h->x = padX + 4;
+        /* The pad's first painted row is ten pixels below its tile origin. */
+        h->y = battleship.targetY[BATTLESHIP_HELIPAD] + 10 - 8;
+        h->targetY = battleshipAirLaneY(g->playerY);
+        h->dx = h->x < SCREEN_WIDTH/2 ? 1 : -1;
+        h->direction = h->dx > 0;
+        g->helicopterHits = g->helicopterAge = g->helicopterStopped = 0;
+        g->helicopterCooldown = 750;
+    }
+    WORD previousX = h->x;
+    g->helicopterAge++;
+    if (h->y > h->targetY) {
+        h->x = h->worldX - g->scrollX;
+        if (!(g->helicopterAge & 1)) h->y--;
+    } else {
+        h->x += h->dx;
+        h->worldX = (LONG)g->scrollX + h->x;
+    }
+    if (h->x <= -16 || h->x >= SCREEN_WIDTH) {
+        h->active = 0;
+        return;
+    }
+    if (h->x != previousX) h->direction = h->x > previousX;
+    updateHelicopterHeading(g);
+    if (!(g->helicopterAge & 7)) playSfxAt(SFX_HELICOPTER,h->x);
+    if (h->y != h->targetY || !battleship.hp[BATTLESHIP_HELIPAD] ||
+        g->helicopterAge % 100 || !battleshipFlakRoom(g)) return;
+    for (UBYTE n=0; n<HELICOPTER_BULLET_MAX; n++) {
+        HelicopterBullet* b=&g->helicopterBullets[n];
+        if (b->active) continue;
+        memset(b,0,sizeof(*b)); b->active=1;
+        b->worldX=h->worldX+8; b->y=h->y+6;
+        b->vx16=(g->playerX+48-h->x)*16/12;
+        b->vy16=(g->playerY-h->y)*16/12;
+        break;
+    }
+}
+
 static void battleshipSupport(GameState* g,WORD delta,const Player2InputState* in2) {
+    battleshipDeckHelicopter(g);
     battleshipAirRaid(g);
     UBYTE missingP2=battleship.savedWingman==WINGMAN_CONTROL_PLAYER2 && !g->wingman.active;
     if(missingP2) {if(battleship.rescueWait<300)battleship.rescueWait++;}
@@ -456,7 +538,7 @@ static void battleshipMoveFlak(GameState* g,WORD delta) {
     }
 }
 static void battleshipUpdate(GameState* g,const InputState* in,const InputState* old,const Player2InputState* in2,UBYTE** buffers) {
-    (void)buffers; (void)old;
+    (void)buffers;
     for(UBYTE i=0;i<BATTLESHIP_TARGETS;i++) {
         if(battleship.flash[i] && !--battleship.flash[i]) battleship.dirty[i]=1;
         if(i>=12 && battleship.stage>=(i-12)/2+1 && battleship.lift[i]<16 && !(battleship.clock&3)) {
@@ -549,10 +631,10 @@ static void battleshipUpdate(GameState* g,const InputState* in,const InputState*
     battleship.vx16=(g->playerX-oldX)*16;
     battleship.vy16=(g->playerY-oldY)*16;
     if(g->bombLaunchCooldown) g->bombLaunchCooldown--;
-    if(in->fire && !g->rocketShot.active) {
-        launchRocket(g,0);g->rocketShot.dx=5;
+    if(Pressed(in->fire,old->fire) && launchRocket(g,0)) {
+        g->rocketShot.dx=5;
     }
-    if(in->bomb && !g->bombShot.active && launchBomb(g)) {
+    if(Pressed(in->bomb,old->bomb) && launchBomb(g)) {
         g->bombShot.dx=12;
         g->bombShot.dy=16;
         g->bombShot.targetWorldX=g->bombShot.targetY=0;
@@ -643,7 +725,7 @@ static void battleshipUpdate(GameState* g,const InputState* in,const InputState*
 #if HAR_HEADLESS_CLASSIC_CONTRACT_TEST
 static UBYTE referenceBattleship(void) {
     static GameState g;
-    InputState in={0};Player2InputState in2={0};
+    InputState in={0}, released={0};Player2InputState in2={0};
     memset(&g,0,sizeof(g));g.gameMode=GAME_MODE_ENHANCED;g.missionNumber=1;g.levelDifficulty=1;
 #if HAR_HEADLESS_BATTLESHIP_MOOD_TEST_ONLY
     UBYTE music=modPlaying;modPlaying=1;battleship.finished=0;battleshipBegin(&g);
@@ -671,15 +753,36 @@ static UBYTE referenceBattleship(void) {
     battleship.clock=300;if(battleshipEmergencyFire(&g))return 91;
     memset(battleship.flak,0,sizeof(battleship.flak));
     battleship.hp[9]=0;if(battleshipEmergencyFire(&g))return 92;
+    /* Neither low health alone nor a destroyed pad at full strength calls jets. */
+    battleship.hp[BATTLESHIP_HELIPAD]=1;battleship.jetDelay=0;battleshipAirRaid(&g);
+    if(g.enemyPlane.active || g.radarDetection)return 114;
+    battleship.hp[BATTLESHIP_HELIPAD]=0;
+    for(UBYTE i=0;i<8;i++)battleship.hp[i]=2;
+    battleshipAirRaid(&g);if(g.enemyPlane.active || g.radarDetection)return 115;
+    memset(battleship.hp,0,sizeof(battleship.hp));
     battleship.hp[8]=9;
+    g.helicopter.active=1;battleshipAirRaid(&g);
+    if(g.enemyPlane.active || g.radarDetection)return 116;
+    g.helicopter.active=0;
     /* Destroyed helipad cannot suppress desperate support. Both directions,
      * advance warning, shared missile, kill and end-of-raid cleanup. */
     g.respawnSafeTimer=100;g.playerX=100;g.playerY=32;
+    g.playerY=100;
+    g.scrollX=battleshipTargetX[BATTLESHIP_BRIDGE]-g.playerX;
+    battleship.jetDelay=1;battleshipAirRaid(&g);
+    if(g.enemyPlane.active || g.radarDetection || battleship.jetDelay!=50)return 110;
+    g.scrollX=0;
     battleship.jetDelay=50;battleshipAirRaid(&g);
     if(g.enemyPlane.active || radarHudLampVisualForGame(&g)!=RADAR_LAMP_RED)return 100;
     for(UBYTE t=0;t<49;t++)battleshipAirRaid(&g);
     if(!g.enemyPlane.active || g.enemyPlane.direction)return 101;
+    WORD bottom=g.enemyPlane.y+ENEMY_SPRITE_HEIGHT;
+    for(UBYTE col=0;col<120;col++)if(bottom>battleshipSurface[col]-4)return 111;
+    for(UBYTE i=0;i<BATTLESHIP_TARGETS;i++)if(bottom>battleship.targetY[i]-4)return 112;
+    g.scrollX=battleshipTargetX[BATTLESHIP_BRIDGE]-g.playerX;
     for(UBYTE t=0;t<39;t++)battleshipAirRaid(&g);
+    if(g.enemyMissile.active)return 113;
+    g.scrollX=0;battleshipAirRaid(&g);
     if(!g.enemyMissile.active || g.enemyMissile.dx>=0)return 102;
     WeaponState hit={0};hit.active=1;hit.x=g.enemyPlane.x;hit.y=g.enemyPlane.y;
     if(!battleshipWeaponHit(&g,&hit,0) || g.enemyPlane.active || hit.active)return 103;
@@ -738,6 +841,27 @@ static UBYTE referenceBattleship(void) {
         for(UBYTE i=0;i<5;i++)if(battleship.fireFrame[i]>=3 || battleship.fireRow[i]>=15)return 46;
     }
     battleshipBegin(&g);
+    /* With vacant projectile slots, holding both triggers must cost no
+     * ammo. A fresh press from each pilot must launch exactly one of each. */
+    {
+        InputState down={0};
+        Player2InputState wingDown={0}, wingReleased={0};
+        down.fire=down.bomb=wingDown.fire=wingDown.bomb=1;
+        g.wingmanControl=WINGMAN_CONTROL_PLAYER2;
+        UBYTE bombs=g.bombs, missiles=g.rockets;
+        Player2InputState controls=player2WeaponInput(&wingDown,&wingDown,0);
+        battleshipUpdate(&g,&down,&down,&controls,0);
+        if(g.bombs!=bombs || g.rockets!=missiles)return 107;
+        controls=player2WeaponInput(&wingDown,&wingReleased,0);
+        battleshipUpdate(&g,&down,&released,&controls,0);
+        if(g.bombs!=bombs-2 || g.rockets!=missiles-2)return 108;
+        controls=player2WeaponInput(&wingDown,&wingDown,1);
+        if(!controls.fire || controls.bomb)return 109;
+        g.bombShot.active=g.rocketShot.active=0;
+        g.wingman.bomb.active=g.wingman.rocket.active=0;
+        g.bombLaunchCooldown=0;
+        g.bombs=bombs;g.rockets=missiles;
+    }
     UBYTE rockets=g.rockets;WORD wingX=g.wingman.interceptScreenX;
     g.wingmanControl=WINGMAN_CONTROL_PLAYER2;in2.right=in2.fire=1;
     battleshipSupport(&g,0,&in2);
@@ -761,7 +885,7 @@ static UBYTE referenceBattleship(void) {
     if(battleship.stage!=2 || battleship.lift[14]!=16 || battleship.lift[15]!=16)return 8;
     /* Newly dropped bomb visibly descends and no longer runs flat forward. */
     g.bombs=4;g.bombLaunchCooldown=0;g.bombShot.active=0;g.playerY=8;g.playerX=100;
-    in.bomb=1;battleshipUpdate(&g,&in,&in,&in2,0);in.bomb=0;
+    in.bomb=1;battleshipUpdate(&g,&in,&released,&in2,0);in.bomb=0;
     WORD bombY=g.bombShot.y;
     for(UBYTE t=0;t<8;t++)battleshipUpdate(&g,&in,&in,&in2,0);
     if(!g.bombShot.active || g.bombShot.y<=bombY+8 || g.bombs!=3)return 9;
@@ -810,7 +934,7 @@ static UBYTE referenceBattleship(void) {
     /* Camera reversals cannot change a released bomb's screen-space drift. */
     g.powerup.active=0;g.playerY=8;g.bombShot.active=0;g.bombs=4;g.bombLaunchCooldown=0;
     battleship.camera16=800*16;g.scrollX=800;battleship.velocity16=-40;
-    in.bomb=1;battleshipUpdate(&g,&in,&in,&in2,0);in.bomb=0;
+    in.bomb=1;battleshipUpdate(&g,&in,&released,&in2,0);in.bomb=0;
     WORD lastBombX=g.bombShot.x;
     if(!g.lowSpeedLanding || playerLandingLampVisual(&g)!=COCKPIT_INDICATOR_YELLOW)return 36;
     for(UBYTE t=0;t<8;t++) {
@@ -843,9 +967,16 @@ static UBYTE referenceBattleship(void) {
     UWORD fuel=g.fuel;g.fuelGaugeLevel=8;g.fuelSubCounter=1;g.fuelClockAccumulator=0;g.fuel=cpcFuelHudValue(&g);fuel=g.fuel;
     battleshipHitTarget(&g,10,0);if(g.fuel<=fuel)return 12;
     g.scrollX=812;g.helicopter.active=0;
-    battleshipSupport(&g,0,&in2);if(g.helicopter.active)return 13;
+    g.helicopterCooldown=0;
+    battleshipSupport(&g,0,&in2);
+    if(!g.helicopter.active || g.helicopter.worldX!=battleshipTargetX[BATTLESHIP_HELIPAD]+4)return 13;
+    WORD launchY=g.helicopter.y;
+    for(UBYTE t=0;t<8;t++)battleshipDeckHelicopter(&g);
+    if(g.helicopter.y>=launchY || g.helicopter.worldX!=battleshipTargetX[BATTLESHIP_HELIPAD]+4)return 117;
+    g.helicopter.active=0;battleshipDeckHelicopter(&g);
+    if(g.helicopter.active)return 118;
     battleshipHitTarget(&g,9,1);battleshipHitTarget(&g,9,1);
-    g.helicopter.active=0;battleshipSupport(&g,0,&in2);if(g.helicopter.active)return 14;
+    g.helicopter.active=0;g.helicopterCooldown=0;battleshipSupport(&g,0,&in2);if(g.helicopter.active)return 14;
     for(UBYTE i=0;i<BATTLESHIP_TARGETS;i++)while(battleship.hp[i])battleshipHitTarget(&g,i,1);
     if(battleship.phase!=2 || battleshipHealth())return 15;
     UBYTE fireballs=0,finalBlast=0;

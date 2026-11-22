@@ -90,13 +90,19 @@ static DEFENCE_SMALL void carrierAdvanceMissile(GameState* g) {
     m->dx = m->dy = 0; carrierDefenceShot(g, m); m->timer--; m->dx = dx; m->dy = dy;
 }
 
+static void moveDeckGunsight(CarrierDefenceState* d, WORD dx, WORD dy) {
+    d->aimX += dx*2; d->aimY += dy*2;
+    if (d->aimX < 8) d->aimX = 8; if (d->aimX > 308) d->aimX = 308;
+    if (d->aimY < 8) d->aimY = 8; if (d->aimY > 88) d->aimY = 88;
+}
+
 static DEFENCE_SMALL void carrierGunnery(GameState* g, const Player2InputState* in) {
     CarrierDefenceState* d = &g->defence;
     UBYTE shoot = 0, missile = 0;
+    WORD stickX=0,stickY=0;
     if (!d->aimX) { d->aimX = 160; d->aimY = 48; }
     if (g->wingmanControl == WINGMAN_CONTROL_PLAYER2) {
-        d->aimX += (in->right ? 2 : 0) - (in->left ? 2 : 0);
-        d->aimY += (in->down ? 2 : 0) - (in->up ? 2 : 0);
+        stickX=in->right-in->left; stickY=in->down-in->up;
         shoot = in->fire; missile = in->bomb;
     } else if (d->phase == DEFENCE_WAVE && carrierChooseAim(g)) {
         shoot = 1;
@@ -106,8 +112,7 @@ static DEFENCE_SMALL void carrierGunnery(GameState* g, const Player2InputState* 
         if (cross < 0) cross = -cross;
         missile = cross > (LONG)(carrierAbs(dx) + carrierAbs(dy)) * 14 || g->playerY > 96;
     }
-    if (d->aimX < 8) d->aimX = 8; if (d->aimX > 308) d->aimX = 308;
-    if (d->aimY < 8) d->aimY = 8; if (d->aimY > 88) d->aimY = 88;
+    moveDeckGunsight(d,stickX,stickY);
     if (d->gunCooldown) d->gunCooldown--;
     if (d->missileCooldown) d->missileCooldown--;
     for (UBYTE i = 0; i < 2; i++) {

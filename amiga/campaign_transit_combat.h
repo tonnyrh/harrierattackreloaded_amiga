@@ -72,30 +72,28 @@ static UBYTE campaignTransitBusy(const TransitCombat* c) {
 static void campaignTransitMark(UBYTE* display,WORD x,WORD y,UBYTE pen) {
  if(x>=0 && x<SCREEN_WIDTH && y>=0 && y<120)campaignOceanPixel(display,x,y,pen);
 }
-/* Use the same indexed rocket artwork as the world renderer. The compact
+/* Use the same indexed weapon artwork as the world renderer. The compact
  * buffer has a different stride, so only its final pixel writes are local. */
 static const UBYTE* campaignTransitShotArt(const TransitShot* s) {
+ if(s->bomb) return enhancedBombArt(s->vy>1);
  BYTE index=enhancedProjectileIndex(s->vx<0?55:56,!s->owner);
  return enhancedWeaponRows+(UWORD)index*40;
 }
 static void campaignTransitInk(UBYTE* display,const TransitCombat* c,UBYTE erase) {
  for(UBYTE i=0;i<TRANSIT_SHOTS;i++) {
   const TransitShot* s=&c->shot[i];if(!s->active)continue;
-  if(s->bomb) {
-   for(UBYTE n=0;n<5;n++)campaignTransitMark(display,s->x+n/3,s->y+n%3,erase?0:GAME_COLOR_WHITE);
-  } else {
-   const UBYTE* art=campaignTransitShotArt(s);
-   WORD byteX=s->x>>3;UBYTE shift=s->x&7;
-   for(UBYTE y=0;y<8;y++,art+=5)if(art[4] && s->y+y>=0 && s->y+y<120) {
-    UWORD mask=((UWORD)art[4]<<8)>>shift;
-    UBYTE* row=display+((ULONG)(s->y+y)*4)*SCREEN_ROW_BYTES;
-    for(UBYTE p=0;p<4;p++,row+=SCREEN_ROW_BYTES) {
-     UWORD bits=erase?0:((UWORD)art[p]<<8)>>shift;
-     if(byteX>=0 && byteX<SCREEN_ROW_BYTES)
-      row[byteX]=(row[byteX]&~(mask>>8))|((bits&mask)>>8);
-     if(byteX+1>=0 && byteX+1<SCREEN_ROW_BYTES)
-      row[byteX+1]=(row[byteX+1]&~(UBYTE)mask)|(UBYTE)(bits&mask);
-    }
+  const UBYTE* art=campaignTransitShotArt(s);
+  WORD byteX=s->x>>3;UBYTE shift=s->x&7;
+  UBYTE height=s->bomb ? BOMB_SHOT_PIXEL_BOB_HEIGHT : 8;
+  for(UBYTE y=0;y<height;y++,art+=5)if(art[4] && s->y+y>=0 && s->y+y<120) {
+   UWORD mask=((UWORD)art[4]<<8)>>shift;
+   UBYTE* row=display+((ULONG)(s->y+y)*4)*SCREEN_ROW_BYTES;
+   for(UBYTE p=0;p<4;p++,row+=SCREEN_ROW_BYTES) {
+    UWORD bits=erase?0:((UWORD)art[p]<<8)>>shift;
+    if(byteX>=0 && byteX<SCREEN_ROW_BYTES)
+     row[byteX]=(row[byteX]&~(mask>>8))|((bits&mask)>>8);
+    if(byteX+1>=0 && byteX+1<SCREEN_ROW_BYTES)
+     row[byteX+1]=(row[byteX+1]&~(UBYTE)mask)|(UBYTE)(bits&mask);
    }
   }
  }
@@ -129,6 +127,10 @@ static void campaignTransitLoseWing(GameState* g) {
  g->wingmanReviveDelayColumns=POWERUP_WINGMAN_REVIVE_DELAY_COLUMNS;
  carrierParkedWingmanVisible=0;playSfxAt(SFX_IMPACT,g->wingman.interceptScreenX);
 }
+static void rememberTransitTriggers(TransitCombat* c,const InputState* in,const Player2InputState* in2) {
+ c->previousFire=in->fire; c->previousBomb=in->bomb;
+ c->previousWingFire=in2->fire; c->previousWingBomb=in2->bomb;
+}
 static void campaignTransitWeapons(TransitCombat* c,GameState* g,const InputState* in,const Player2InputState* in2) {
  UBYTE wingFire=in2->fire;
  if(g->wingmanControl==WINGMAN_CONTROL_CPU && g->wingman.active) {
@@ -150,8 +152,7 @@ static void campaignTransitWeapons(TransitCombat* c,GameState* g,const InputStat
   if(bomb && !previousBomb && !c->bombCooldown[p] && g->bombs &&
      campaignTransitShoot(c,x+8,y+8,1,1,p+1,1)) {g->bombs--;c->bombCooldown[p]=20;}
  }
- c->previousFire=in->fire;c->previousWingFire=in2->fire;
- c->previousBomb=in->bomb;c->previousWingBomb=in2->bomb;
+ rememberTransitTriggers(c,in,in2);
 }
 /* The sea corridor has no deck or terrain. Reuse damage/eject rules, but do
  * not probe the destination's still-hidden terrain for an impact/rescue. */
@@ -298,7 +299,7 @@ static UBYTE campaignTransitShotsVisible(const UBYTE* display,const TransitComba
  }
  return 1;
 }
-static UBYTE campaignTransitContract(const GameState* source) {
+static UBYTE campaignTransitContract(const GameState* source,UBYTE* display) {
  static GameState g;TransitCombat c={0};InputState in={0};Player2InputState in2={0};
  memcpy(&g,source,sizeof(g));g.wingman.active=0;g.rockets=2;g.bombs=1;
  if(campaignTransitHardwareSprites[2]!=(ULONG)campaignTransitSprites[4] ||
@@ -359,6 +360,26 @@ static UBYTE campaignTransitContract(const GameState* source) {
   const UWORD* a=(const UWORD*)campaignTransitHardwareSprites[2+i*2];
   const UWORD* b=(const UWORD*)campaignTransitHardwareSprites[3+i*2];
   for(UBYTE n=0;n<ENEMY_SPRITE_WORDS;n++)if(a[n]!=expectedA[n] || b[n]!=expectedB[n])return 15;
+ }
+ /* Draw both bomb poses across a byte boundary and read back their
+  * actual pens from the compact playfield, then verify complete erasure. */
+ memset(&c,0,sizeof(c));
+ TransitShot* bomb=&c.shot[0];
+ bomb->active=bomb->bomb=1;bomb->x=7;bomb->y=8;
+ for(UBYTE phase=0;phase<2;phase++) {
+  bomb->vy=phase+1;
+  const UBYTE* rows=enhancedBombArt(phase);
+  for(UBYTE erase=0;erase<=1;erase++) {
+   campaignTransitInk(display,&c,erase);
+   for(UBYTE y=0;y<BOMB_SHOT_PIXEL_BOB_HEIGHT;y++)for(UBYTE x=0;x<BOMB_SHOT_PIXEL_BOB_WIDTH;x++) {
+    WORD sx=bomb->x+x;
+    const UBYTE* line=display+(bomb->y+y)*4*SCREEN_ROW_BYTES;
+    for(UBYTE p=0;p<4;p++) {
+     UBYTE expected=!erase && (rows[y*5+p]&(128>>x));
+     if(!!(line[p*SCREEN_ROW_BYTES+(sx>>3)]&(128>>(sx&7)))!=expected)return 16;
+    }
+   }
+  }
  }
  return 0;
 }

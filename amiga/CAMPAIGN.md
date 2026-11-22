@@ -603,8 +603,12 @@ first-wave enemies and ordnance clear. Total quotas remain 7 solo, 9 CPU and
 during the lull; R kits still repair the rig. Radar is green and silent for
 the first ten seconds of the service break, then red with periodic beeps
 for the last two seconds. The warning continues through the next wave
-spawn delay and while enemy aircraft attack. The initial wave also gets
-two seconds of advance warning. Carrier defence now uses the same radar
+spawn delay and while enemy aircraft attack. After the approach, both pilots
+have twelve seconds at full tempo to land and rearm before the first wave.
+Either parked aircraft refills the shared magazines. The platform alarm and
+radar announce the attack in the last two seconds. A rescued P1 can move
+the deck gunsight with their stick and fire while P2 flies.
+Carrier defence now uses the same radar
 beeps and red lamp: quiet between waves, warning for the final two seconds
 before a wave, retained through its spawn delay and while aircraft attack. Safe parachute recovery with no aircraft remaining waits
 125 ticks before the existing carrier restart, without charging another life.
@@ -619,11 +623,14 @@ slots were added, and sinking disables new supplies.
 
 Late salvos alternate focus between living human pilots in 180-tick phases,
 using alternating high/low aim lanes ahead of the aircraft. Emergency fire
-uses the same target selection. In desperation, support fighters replace new
-helipad helicopter launches, even if the helipad is destroyed. A one-second
-red radar warning precedes alternating front/rear passes. Only one fighter
-and the existing shared missile slot are used. The helipad no longer
-launches helicopters. No new samples or sprite memory.
+uses the same target selection. An intact helipad can launch one helicopter
+at a time, at least 750 game ticks apart. It lifts straight up from the pad
+before flying across the ship. Once the helipad is destroyed, any airborne
+helicopter finishes its pass. At 35% ship health or less, fighters can then
+approach from alternating sides after a one-second radar warning. They fly
+above the tallest structure. While either human pilot is over or within
+24 pixels of the bridge, new fighter passes wait and airborne fighters
+hold their missiles.
 
 Validation: muted WinUAE oil, full Battleship and focused late-phase contracts
 passed. Checks cover helipad recovery, forward-pass supplies, bounded P2
@@ -648,5 +655,6 @@ F1 exchanges gameplay controls between the two human players, including
 keyboard fallbacks and weapon buttons. It is ignored for solo/CPU play;
 press again to restore, and returning to the menu resets the exchange.
 Pause/menu/debug keys stay with their existing bindings. F1 is reserved from
-control rebinding. Held F1 swaps once; queued tempo input and weapon edges
+control rebinding. A tap swaps once and plays a short beep, even when press
+and release arrive in the same input poll. Queued tempo input and weapon edges
 are cleared on handover so old commands do not fire under a new owner.

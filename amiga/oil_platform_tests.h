@@ -64,16 +64,22 @@ static UBYTE oilContract(void) {
  if(!oil.p1Gunner || oil.rescueRestart || g.lives!=2 || !oil.p2Present)return 81;
  PowerupState drop={0};drop.worldX=g.wingman.interceptScreenX;drop.y=g.wingman.screenY;
  if(!powerupHitsPlayer(&g,&drop))return 82;
- /* P1 uses its own sprite slot; P2 remains a visible grey Harrier. */
- updatePlayerSprite(a,b,&g);if(!a[0] || b[0])return 87;
- g.enemyPlane.active=1;g.enemyPlane.x=140;g.enemyPlane.y=40;
+ /* The gun and its independently positioned sight leave P2's sprite free. */
+ updatePlayerSprite(a,b,&g);
+ if(!a[0] || !b[0] || (b[1]&HW_SPRITE_ATTACH_BIT) || b[8]!=0xee00)return 87;
+ UWORD cursorPosition=b[0]; WORD aimX=g.defence.aimX;
+ g.enemyPlane.active=g.helicopter.active=0;
  memset(g.helicopterBullets,0,sizeof(g.helicopterBullets));
- oil.p1GunFire=0;
- for(UBYTE tick=0;tick<32;tick++){g.defence.clock++;oilCpuUpdate(&g);}
+ in.right=1;
+ for(UBYTE tick=0;tick<16;tick++)oilUpdate(&g,&in,&old,&p2,buffers);
+ updatePlayerSprite(a,b,&g);
+ if(g.defence.aimX!=aimX+32 || cursorPosition==b[0])return 87;
  if(g.helicopterBullets[0].active || g.helicopterBullets[1].active)return 88;
- oil.p1GunFire=1;
- for(UBYTE tick=0;tick<8;tick++){g.defence.clock++;oilCpuUpdate(&g);}
- if(!g.helicopterBullets[0].active && !g.helicopterBullets[1].active)return 89;
+ in.right=0;in.fire=1;
+ g.defence.clock=32;oilUpdate(&g,&in,&old,&p2,buffers);
+ if(!g.helicopterBullets[0].active || g.helicopterBullets[0].vx16<=0 ||
+    g.helicopterBullets[0].vy16>=0 || g.rocketShot.active)return 89;
+ in.fire=0;
  g.enemyPlane.active=0;memset(g.helicopterBullets,0,sizeof(g.helicopterBullets));
  UWORD raidClock=g.defence.clock;
  activatePowerup(&g,POWERUP_WINGMAN);
@@ -208,7 +214,7 @@ static UBYTE oilContract(void) {
  FreeMem(bitmap,GAME_WORLD_BITMAP_BYTES);
  oilFinish(&g);if(oil.active || g.defence.phase || g.defence.hull!=100)return 15;
  g.wingmanControl=WINGMAN_CONTROL_CPU;g.wingman.destroyed=0;oilBegin(&g);
- for(UWORD t=0;t<140;t++){g.defence.clock++;oilCpuUpdate(&g);}
+ for(UWORD t=0;t<140;t++){g.defence.clock++;oilUpdateGun(&g,&in);}
  if(oil.cpuState!=2 || !g.wingman.destroyed)return 16;
  /* Bombing removes the gun, then a collected red drop remans it without
   * creating an aircraft. Only a surviving crew earns the departure reward. */
@@ -219,7 +225,7 @@ static UBYTE oilContract(void) {
  if(!g.powerup.active || g.powerup.type!=POWERUP_WINGMAN)return 75;
  g.powerup.logicalY=24;activatePowerup(&g,POWERUP_WINGMAN);g.powerup.active=0;
  if(oil.cpuState!=1 || g.wingman.active || !g.wingman.destroyed)return 76;
- for(UWORD t=0;t<160;t++){g.defence.clock++;oilCpuUpdate(&g);}
+ for(UWORD t=0;t<160;t++){g.defence.clock++;oilUpdateGun(&g,&in);}
  if(oil.cpuState!=2)return 77;
  ULONG crewScore=g.missionBaseScore;oilCrewBonus(&g);
  if(g.missionBaseScore!=crewScore+500)return 78;
@@ -231,8 +237,13 @@ static UBYTE oilContract(void) {
   initGameState(&g,12040,12040,1);g.gameMode=GAME_MODE_ENHANCED;
   g.wingmanControl=control;g.wingman.destroyed=0;g.skillLevel=g.levelDifficulty=1;g.lives=3;
   oilBegin(&g);UWORD ticks=0,lullTicks=0,warningTicks=0;
+  /* Use the opening service stop, then fly both waves and depart airborne. */
+  g.playerX=76;g.playerY=OIL_PLAYER_Y;g.defence.landed=1;
+  if(oil.p2Present){g.wingman.interceptScreenX=94;g.wingman.screenY=OIL_PLAYER_Y;oil.p2Landed=1;}
   for(;ticks<10000 && g.defence.phase!=DEFENCE_SECURE;ticks++) {
-   g.respawnSafeTimer=100;g.playerX=32;g.playerY=16;
+   in.up=p2.up=ticks==OIL_OPENING_SERVICE_TICKS-100;
+   g.respawnSafeTimer=100;
+   if(!g.defence.landed){g.playerX=32;g.playerY=16;}
    if(g.enemyPlane.active)carrierDefenceKillJet(&g);
    if(g.helicopter.active)carrierDefenceKillHeli(&g);
    memset(g.defence.bombs,0,sizeof(g.defence.bombs));g.enemyMissile.active=0;
@@ -274,9 +285,19 @@ static UBYTE oilContract(void) {
    sawVtol|=playerLandingLampVisual(&g)==COCKPIT_INDICATOR_RED;
   }
   if(ticks==512 || !sawWheels || !sawVtol || g.scrollX || g.speedLevel ||
-     g.defence.phase!=DEFENCE_ALARM || g.defence.phaseTicks!=150 ||
+     g.defence.phase!=DEFENCE_ALARM || g.defence.phaseTicks!=OIL_OPENING_SERVICE_TICKS ||
      oil.carrierHull!=63 || oil.carrierCargo || g.defence.cargo!=20)return 53;
   if((control==WINGMAN_CONTROL_PLAYER2)!=!!g.wingman.active)return 54;
+  if(control==WINGMAN_CONTROL_PLAYER2) {
+   oil.p2Landed=1;g.wingman.screenY=OIL_PLAYER_Y;g.wingman.interceptScreenX=80;
+   g.rockets=g.bombs=0;
+   for(UWORD t=0;t<OIL_OPENING_SERVICE_TICKS;t++) {
+    oilUpdate(&g,&in,&old,&p2,buffers);
+    if(g.defence.phase!=DEFENCE_ALARM || g.enemyPlane.active || g.helicopter.active ||
+       (!!g.radarDetection!=(g.defence.phaseTicks<100)))return 98;
+   }
+   if(!g.rockets || !g.bombs)return 99;
+  }
  }
 
  /* Platform loss ends the mission, but must not freeze a healthy aircraft. */

@@ -307,8 +307,15 @@ static UBYTE referenceEnhancedEncountersMatch(void) {
     collideEnhancedEncounters(&game, 0, &hud, &weapon, &wing);
     if (game.helicopterHits != 1 || !game.helicopter.active || game.rocketShot.active) return 12;
     game.rocketShot.active = 1;
+    /* P1 delivers the fatal hit and P2 hits the falling wreck in the same tick. */
+    game.wingman.rocket = game.rocketShot;
     collideEnhancedEncounters(&game, 0, &hud, &weapon, &wing);
-    if (game.helicopterHits != 2 || !game.helicopter.active || game.helicopter.dy != 1 || !hud) return 13;
+    if (game.helicopterHits != 2 || game.helicopter.active || game.wingman.rocket.active ||
+        game.helicopterCooldown != 750 || !hud) return 13;
+    for (UWORD t=0;t<750;t++) {
+        updateHelicopter(&game,0,0);
+        if (game.helicopter.active) return 13;
+    }
     modPlaying = savedMod;
     /* A non-grid formation target must settle from either side. */
     game.scrollX = 0; game.playerX = 77; game.playerY = 48;

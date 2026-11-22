@@ -26,6 +26,13 @@ if ($normalizedVersion -notmatch '^[0-9A-Za-z][0-9A-Za-z.-]*$') {
 }
 
 $tagName = "v$normalizedVersion"
+$releaseLabel = if ($normalizedVersion -match '-rc\.') {
+    'Release Candidate'
+} elseif ($normalizedVersion -match '-beta\.') {
+    'Public Beta'
+} else {
+    'Release'
+}
 $assetBaseName = "HarrierAttackReloaded-Amiga-$tagName"
 $hdPackageName = "$assetBaseName-HD"
 $stagingDir = Join-Path $OutputRootPath $hdPackageName
@@ -90,7 +97,7 @@ try {
 }
 
 $versionText = @(
-    "Harrier Attack Reloaded - Amiga Public Beta",
+    "Harrier Attack Reloaded - Amiga $releaseLabel",
     "Version: $tagName",
     "Git commit: $gitCommit",
     "Created: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')",
@@ -147,7 +154,7 @@ $checksumLines = foreach ($assetPath in $releaseAssets) {
 }
 Set-Content -LiteralPath $checksumPath -Value $checksumLines -Encoding ASCII
 
-Write-Host "Public beta-pakke er klar:"
+Write-Host "$releaseLabel-pakke er klar:"
 Write-Host "  ADF:       $releaseAdfPath"
 if (-not $NoZip) {
     Write-Host "  HD ZIP:    $zipPath"

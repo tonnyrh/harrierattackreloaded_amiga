@@ -54,6 +54,12 @@ static DEFENCE_SMALL UBYTE carrierDefenceOnDeck(WORD x, WORD y) {
         x >= 64 && x <= 144 && !carrierHullOverlap(x + 2, y, 12, 7);
 }
 
+static void serviceAircraftAmmo(GameState* g) {
+    UBYTE bombs, rockets; ammoForGame(g, &bombs, &rockets);
+    if (g->rockets < rockets) g->rockets++;
+    if (g->bombs < bombs) g->bombs++;
+}
+
 static DEFENCE_SMALL void carrierServiceAircraft(GameState* g) {
     UWORD q = g->fuelGaugeLevel ? (g->fuelGaugeLevel - 1) * CPC_FUEL_SUBCOUNT_FULL + g->fuelSubCounter : 0;
     q += 4;
@@ -65,9 +71,7 @@ static DEFENCE_SMALL void carrierServiceAircraft(GameState* g) {
     }
     if (g->armour < 100) g->armour = g->armour > 98 ? 100 : g->armour + 2;
     g->flakDamageCount = 0; g->missileDamageThirds = (100 - g->armour) * 3;
-    UBYTE bombs, rockets; ammoForGame(g, &bombs, &rockets);
-    if (g->rockets < rockets) g->rockets++;
-    if (g->bombs < bombs) g->bombs++;
+    serviceAircraftAmmo(g);
 }
 
 static DEFENCE_SMALL UBYTE carrierBombsActive(const GameState* g) {
@@ -684,7 +688,7 @@ static DEFENCE_SMALL void updateCarrierDefence(GameState* g, const InputState* i
                 carrierDefenceLaunch(g, &g->rocketShot, x + 4, y, d->facing);
                 if (!debugInfiniteRockets) g->rockets--; d->fireCooldown = 10;
             }
-            if (BombPressed(in, previous) && !g->bombShot.active && g->bombs) launchBomb(g);
+            if (Pressed(in->bomb, previous->bomb) && !g->bombShot.active && g->bombs) launchBomb(g);
         }
         if (d->landed) {
             /* Stop only our engine voice, once: leave deck ambience and alarms alone. */
